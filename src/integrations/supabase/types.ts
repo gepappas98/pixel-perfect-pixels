@@ -14,7 +14,298 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      composite_signals: {
+        Row: {
+          confidence: number | null
+          council_signal_id: string | null
+          created_at: string
+          id: string
+          indicator_snapshot_id: string | null
+          prediction_snapshot_id: string | null
+          reasoning: string | null
+          recommendation: string | null
+          symbol: string
+          whale_alert_id: string | null
+        }
+        Insert: {
+          confidence?: number | null
+          council_signal_id?: string | null
+          created_at?: string
+          id?: string
+          indicator_snapshot_id?: string | null
+          prediction_snapshot_id?: string | null
+          reasoning?: string | null
+          recommendation?: string | null
+          symbol: string
+          whale_alert_id?: string | null
+        }
+        Update: {
+          confidence?: number | null
+          council_signal_id?: string | null
+          created_at?: string
+          id?: string
+          indicator_snapshot_id?: string | null
+          prediction_snapshot_id?: string | null
+          reasoning?: string | null
+          recommendation?: string | null
+          symbol?: string
+          whale_alert_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "composite_signals_council_signal_id_fkey"
+            columns: ["council_signal_id"]
+            isOneToOne: false
+            referencedRelation: "council_signals"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "composite_signals_indicator_snapshot_id_fkey"
+            columns: ["indicator_snapshot_id"]
+            isOneToOne: false
+            referencedRelation: "indicator_snapshots"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "composite_signals_prediction_snapshot_id_fkey"
+            columns: ["prediction_snapshot_id"]
+            isOneToOne: false
+            referencedRelation: "prediction_snapshots"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "composite_signals_whale_alert_id_fkey"
+            columns: ["whale_alert_id"]
+            isOneToOne: false
+            referencedRelation: "whale_alerts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      council_signals: {
+        Row: {
+          conviction: number | null
+          depth: string | null
+          final_verdict: string
+          id: string
+          price_at: number | null
+          reflection: string | null
+          source_created_at: string
+          source_id: string
+          symbol: string
+          synced_at: string
+          token_id: string | null
+        }
+        Insert: {
+          conviction?: number | null
+          depth?: string | null
+          final_verdict: string
+          id?: string
+          price_at?: number | null
+          reflection?: string | null
+          source_created_at?: string
+          source_id: string
+          symbol: string
+          synced_at?: string
+          token_id?: string | null
+        }
+        Update: {
+          conviction?: number | null
+          depth?: string | null
+          final_verdict?: string
+          id?: string
+          price_at?: number | null
+          reflection?: string | null
+          source_created_at?: string
+          source_id?: string
+          symbol?: string
+          synced_at?: string
+          token_id?: string | null
+        }
+        Relationships: []
+      }
+      indicator_snapshots: {
+        Row: {
+          bb_lower: number | null
+          bb_upper: number | null
+          created_at: string
+          id: string
+          macd: number | null
+          macd_signal: number | null
+          price: number | null
+          raw: Json | null
+          rsi: number | null
+          signal: string | null
+          symbol: string
+          timeframe: string
+        }
+        Insert: {
+          bb_lower?: number | null
+          bb_upper?: number | null
+          created_at?: string
+          id?: string
+          macd?: number | null
+          macd_signal?: number | null
+          price?: number | null
+          raw?: Json | null
+          rsi?: number | null
+          signal?: string | null
+          symbol: string
+          timeframe: string
+        }
+        Update: {
+          bb_lower?: number | null
+          bb_upper?: number | null
+          created_at?: string
+          id?: string
+          macd?: number | null
+          macd_signal?: number | null
+          price?: number | null
+          raw?: Json | null
+          rsi?: number | null
+          signal?: string | null
+          symbol?: string
+          timeframe?: string
+        }
+        Relationships: []
+      }
+      prediction_snapshots: {
+        Row: {
+          created_at: string
+          id: string
+          market_slug: string
+          no_price: number | null
+          question: string | null
+          raw: Json | null
+          related_symbol: string | null
+          volume_24h: number | null
+          yes_price: number | null
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          market_slug: string
+          no_price?: number | null
+          question?: string | null
+          raw?: Json | null
+          related_symbol?: string | null
+          volume_24h?: number | null
+          yes_price?: number | null
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          market_slug?: string
+          no_price?: number | null
+          question?: string | null
+          raw?: Json | null
+          related_symbol?: string | null
+          volume_24h?: number | null
+          yes_price?: number | null
+        }
+        Relationships: []
+      }
+      trades: {
+        Row: {
+          closed_at: string | null
+          composite_signal_id: string | null
+          created_at: string
+          entry_price: number
+          exchange_order_id: string | null
+          exit_price: number | null
+          id: string
+          mode: string
+          pnl: number | null
+          quantity: number
+          side: string
+          status: string
+          stop_loss: number | null
+          symbol: string
+          take_profit: number | null
+        }
+        Insert: {
+          closed_at?: string | null
+          composite_signal_id?: string | null
+          created_at?: string
+          entry_price: number
+          exchange_order_id?: string | null
+          exit_price?: number | null
+          id?: string
+          mode?: string
+          pnl?: number | null
+          quantity: number
+          side: string
+          status?: string
+          stop_loss?: number | null
+          symbol: string
+          take_profit?: number | null
+        }
+        Update: {
+          closed_at?: string | null
+          composite_signal_id?: string | null
+          created_at?: string
+          entry_price?: number
+          exchange_order_id?: string | null
+          exit_price?: number | null
+          id?: string
+          mode?: string
+          pnl?: number | null
+          quantity?: number
+          side?: string
+          status?: string
+          stop_loss?: number | null
+          symbol?: string
+          take_profit?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "trades_composite_signal_id_fkey"
+            columns: ["composite_signal_id"]
+            isOneToOne: false
+            referencedRelation: "composite_signals"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      whale_alerts: {
+        Row: {
+          chain: string | null
+          created_at: string
+          direction: string
+          id: string
+          raw: Json | null
+          source: string
+          symbol: string
+          tx_hash: string | null
+          usd_value: number
+          wallet_address: string | null
+        }
+        Insert: {
+          chain?: string | null
+          created_at?: string
+          direction: string
+          id?: string
+          raw?: Json | null
+          source?: string
+          symbol: string
+          tx_hash?: string | null
+          usd_value: number
+          wallet_address?: string | null
+        }
+        Update: {
+          chain?: string | null
+          created_at?: string
+          direction?: string
+          id?: string
+          raw?: Json | null
+          source?: string
+          symbol?: string
+          tx_hash?: string | null
+          usd_value?: number
+          wallet_address?: string | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
