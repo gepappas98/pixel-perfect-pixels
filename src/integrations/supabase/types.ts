@@ -19,7 +19,6 @@ export type Database = {
           confidence: number | null
           council_signal_id: string | null
           created_at: string
-          fingerprint: string
           id: string
           indicator_snapshot_id: string | null
           prediction_snapshot_id: string | null
@@ -32,7 +31,6 @@ export type Database = {
           confidence?: number | null
           council_signal_id?: string | null
           created_at?: string
-          fingerprint: string
           id?: string
           indicator_snapshot_id?: string | null
           prediction_snapshot_id?: string | null
@@ -45,7 +43,6 @@ export type Database = {
           confidence?: number | null
           council_signal_id?: string | null
           created_at?: string
-          fingerprint?: string
           id?: string
           indicator_snapshot_id?: string | null
           prediction_snapshot_id?: string | null
