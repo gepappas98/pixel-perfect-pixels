@@ -88,6 +88,59 @@ export async function collectWhaleAlerts(): Promise<number> {
   return data?.length ?? 0;
 }
 
+/* ───────────── Whale alerts — Binance public aggTrades (spot) ───────────── */
+
+interface BinanceAggTrade {
+  a: number;
+  p: string;
+  q: string;
+  T: number;
+  m: boolean;
+}
+
+export async function collectExchangeWhaleAlerts(): Promise<number> {
+  const db = await admin();
+  const rows: Record<string, unknown>[] = [];
+
+  for (const coin of WATCHLIST) {
+    try {
+      const res = await fetchWithTimeout(
+        `https://api.binance.com/api/v3/aggTrades?symbol=${coin}USDT&limit=1000`,
+      );
+      if (!res.ok) continue;
+      const trades = (await res.json()) as BinanceAggTrade[];
+      if (!Array.isArray(trades)) continue;
+
+      for (const t of trades) {
+        const usd = parseFloat(t.p) * parseFloat(t.q);
+        if (!Number.isFinite(usd) || usd < whaleFloor(coin)) continue;
+        rows.push({
+          symbol: coin,
+          chain: "binance-spot",
+          // m === true means the buyer was the maker, i.e. an aggressive sell.
+          direction: t.m ? "distribution" : "accumulation",
+          usd_value: usd,
+          tx_hash: String(t.a),
+          source: "binance-agg-trades",
+          created_at: new Date(t.T).toISOString(),
+          raw: t as unknown as Record<string, unknown>,
+        });
+      }
+    } catch (e) {
+      console.error(`binance whale fetch failed for ${coin}`, e);
+    }
+  }
+
+  if (rows.length === 0) return 0;
+  const { data, error } = await db
+    .from("whale_alerts")
+    .upsert(rows as never, { onConflict: "source,tx_hash", ignoreDuplicates: true })
+    .select("id");
+  if (error) throw error;
+  return data?.length ?? 0;
+}
+
+
 /* ───────────── Technical indicators — Binance public klines ───────────── */
 
 function rsi(closes: number[], period = 14): number {
