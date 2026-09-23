@@ -294,9 +294,111 @@ export async function collectPredictions(): Promise<number> {
   return data?.length ?? 0;
 }
 
-/* ───────────── Signal combiner ───────────── */
+/* ───────────── AI trading council ───────────── */
 
 type Row = Record<string, unknown> | null;
+
+type CouncilVerdict = "BUY" | "SELL" | "HOLD" | "AVOID";
+
+function councilEvaluation(whale: Row, indicator: Row, prediction: Row) {
+  const votes: CouncilVerdict[] = [];
+  const reasons: string[] = [];
+
+  // Quant member: momentum and mean-reversion context from the latest snapshot.
+  const technical = indicator?.["signal"];
+  if (technical === "bullish") {
+    votes.push("BUY");
+    reasons.push("quant sees bullish RSI/MACD alignment");
+  } else if (technical === "bearish") {
+    votes.push("SELL");
+    reasons.push("quant sees bearish RSI/MACD alignment");
+  } else {
+    votes.push("HOLD");
+    reasons.push("quant sees mixed technicals");
+  }
+
+  // Whale tracker member: use the largest recent flow signal available.
+  const flow = whale?.["direction"];
+  if (flow === "accumulation") {
+    votes.push("BUY");
+    reasons.push("whale tracker sees accumulation");
+  } else if (flow === "distribution") {
+    votes.push("SELL");
+    reasons.push("whale tracker sees distribution");
+  } else {
+    votes.push("HOLD");
+    reasons.push("whale tracker has no directional flow");
+  }
+
+  // Sentiment member: prediction markets are intentionally a soft vote.
+  const yes = typeof prediction?.["yes_price"] === "number" ? prediction["yes_price"] as number : null;
+  if (yes != null && yes >= 0.6) {
+    votes.push("BUY");
+    reasons.push(`sentiment leans yes (${Math.round(yes * 100)}%)`);
+  } else if (yes != null && yes <= 0.4) {
+    votes.push("SELL");
+    reasons.push(`sentiment leans no (${Math.round((1 - yes) * 100)}%)`);
+  } else {
+    votes.push("HOLD");
+    reasons.push("sentiment is inconclusive");
+  }
+
+  const counts = votes.reduce<Record<string, number>>((all, vote) => {
+    all[vote] = (all[vote] ?? 0) + 1;
+    return all;
+  }, {});
+  const ordered = (Object.entries(counts) as [CouncilVerdict, number][]).sort((a, b) => b[1] - a[1]);
+  const [topVote, topCount] = ordered[0] ?? ["HOLD", 0];
+  const conviction = Math.round((topCount / votes.length) * 100);
+  const verdict: CouncilVerdict = topCount === 1 ? "AVOID" : topVote;
+
+  return {
+    final_verdict: verdict,
+    conviction,
+    reflection: `${verdict} with ${conviction}% consensus: ${reasons.join("; ")}.`,
+  };
+}
+
+export async function collectCouncilSignals(): Promise<number> {
+  const db = await admin();
+  const rows: Record<string, unknown>[] = [];
+
+  for (const symbol of WATCHLIST) {
+    const [whales, indicators, predictions] = await Promise.all([
+      db.from("whale_alerts").select("*").eq("symbol", symbol).order("created_at", { ascending: false }).limit(1),
+      db.from("indicator_snapshots").select("*").ilike("symbol", `${symbol}%`).order("created_at", { ascending: false }).limit(1),
+      db.from("prediction_snapshots").select("*").eq("related_symbol", symbol).order("created_at", { ascending: false }).limit(1),
+    ]);
+    const whale = (whales.data?.[0] ?? null) as Row;
+    const indicator = (indicators.data?.[0] ?? null) as Row;
+    const prediction = (predictions.data?.[0] ?? null) as Row;
+    if (!whale && !indicator && !prediction) continue;
+
+    const sourceId = [symbol, whale?.["id"], indicator?.["id"], prediction?.["id"]].join(":");
+    const result = councilEvaluation(whale, indicator, prediction);
+    rows.push({
+      symbol,
+      source_id: sourceId,
+      final_verdict: result.final_verdict,
+      conviction: result.conviction,
+      price_at: typeof indicator?.["price"] === "number" ? indicator["price"] : null,
+      reflection: result.reflection,
+      depth: "ai-synthesis",
+      source_created_at: new Date().toISOString(),
+    });
+  }
+
+  if (rows.length === 0) return 0;
+  const { data, error } = await db
+    .from("council_signals")
+    .upsert(rows as never, { onConflict: "source_id" })
+    .select("id");
+  if (error) throw error;
+  return data?.length ?? 0;
+}
+
+/* ───────────── Signal combiner ───────────── */
+
 
 function ruleBased(whale: Row, indicator: Row, prediction: Row, council: Row) {
   let score = 0;
@@ -528,7 +630,8 @@ export async function runFullPipeline() {
   const whales = hlWhales + exWhales;
   const indicators = await collectIndicators();
   const predictions = await collectPredictions();
+  const council = await collectCouncilSignals();
   const signals = await combineSignals();
   const trades = await executeTrades();
-  return { whales, indicators, predictions, signals, trades, mode: tradingMode() };
+  return { whales, indicators, predictions, council, signals, trades, mode: tradingMode() };
 }
