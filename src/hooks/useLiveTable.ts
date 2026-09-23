@@ -27,7 +27,21 @@ export function useLiveTable<T>(table: string, limit = 20, orderBy = "created_at
     const channel = supabase
       .channel(`realtime:${table}`)
       .on("postgres_changes", { event: "INSERT", schema: "public", table }, (payload) => {
-        setRows((prev) => [payload.new as T, ...prev].slice(0, limit));
+        setRows((prev) => {
+          const next = [payload.new as T, ...prev];
+          const seen = new Set<string>();
+          return next.filter((row) => {
+            const id = String((row as { id?: string }).id ?? "");
+            if (!id || seen.has(id)) return false;
+            seen.add(id);
+            return true;
+          }).slice(0, limit);
+        });
+      })
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table }, (payload) => {
+        setRows((prev) => prev.map((row) => (
+          (row as { id?: string }).id === payload.new["id"] ? payload.new as T : row
+        )));
       })
       .subscribe();
 

@@ -8,6 +8,11 @@ const MIN_CONFIDENCE = 0.6;
 const PAPER_POSITION_USD = 1000;
 const STOP_LOSS_PCT = 0.03;
 const TAKE_PROFIT_PCT = 0.06;
+const FETCH_TIMEOUT_MS = 12_000;
+
+async function fetchWithTimeout(input: string, init?: RequestInit) {
+  return fetch(input, { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+}
 
 type Admin = Awaited<
   typeof import("@/integrations/supabase/client.server")
@@ -35,7 +40,7 @@ export async function collectWhaleAlerts(): Promise<number> {
 
   for (const coin of WATCHLIST) {
     try {
-      const res = await fetch("https://api.hyperliquid.xyz/info", {
+      const res = await fetchWithTimeout("https://api.hyperliquid.xyz/info", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type: "recentTrades", coin }),
@@ -54,6 +59,7 @@ export async function collectWhaleAlerts(): Promise<number> {
           usd_value: usd,
           tx_hash: t.hash ?? String(t.tid),
           source: "hyperliquid-recent-trades",
+          created_at: new Date(t.time).toISOString(),
           raw: t as unknown as Record<string, unknown>,
         });
       }
@@ -63,9 +69,12 @@ export async function collectWhaleAlerts(): Promise<number> {
   }
 
   if (rows.length === 0) return 0;
-  const { error } = await db.from("whale_alerts").insert(rows as never);
+  const { data, error } = await db
+    .from("whale_alerts")
+    .upsert(rows as never, { onConflict: "source,tx_hash", ignoreDuplicates: true })
+    .select("id");
   if (error) throw error;
-  return rows.length;
+  return data?.length ?? 0;
 }
 
 /* ───────────── Technical indicators — Binance public klines ───────────── */
@@ -121,13 +130,13 @@ export async function collectIndicators(): Promise<number> {
   for (const coin of WATCHLIST) {
     const symbol = `${coin}USDT`;
     try {
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${TIMEFRAME}&limit=${KLINE_LIMIT}`,
       );
       if (!res.ok) continue;
       const raw = (await res.json()) as unknown[][];
       const closes = raw.map((r) => parseFloat(String(r[4])));
-      if (closes.length < 30) continue;
+      if (closes.length < 30 || closes.some((close) => !Number.isFinite(close))) continue;
 
       const r = rsi(closes);
       const { macd: m, signal: s } = macd(closes);
@@ -142,6 +151,7 @@ export async function collectIndicators(): Promise<number> {
         bb_lower: bb.lower,
         price: closes[closes.length - 1]!,
         signal: classify(r, m, s),
+        created_at: new Date(Number(raw[raw.length - 1]?.[6])).toISOString(),
         raw: { closes_tail: closes.slice(-5) },
       });
     } catch (e) {
@@ -150,9 +160,12 @@ export async function collectIndicators(): Promise<number> {
   }
 
   if (rows.length === 0) return 0;
-  const { error } = await db.from("indicator_snapshots").insert(rows as never);
+  const { data, error } = await db
+    .from("indicator_snapshots")
+    .upsert(rows as never, { onConflict: "symbol,timeframe,created_at", ignoreDuplicates: true })
+    .select("id");
   if (error) throw error;
-  return rows.length;
+  return data?.length ?? 0;
 }
 
 /* ───────────── Prediction markets — Polymarket Gamma API ───────────── */
@@ -165,7 +178,7 @@ const WATCH_KEYWORDS: Record<string, string[]> = {
 
 export async function collectPredictions(): Promise<number> {
   const db = await admin();
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     "https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=200",
   );
   if (!res.ok) return 0;
@@ -178,6 +191,7 @@ export async function collectPredictions(): Promise<number> {
 
   const rows: Record<string, unknown>[] = [];
   for (const m of markets) {
+    if (!m.slug) continue;
     const q = (m.question ?? "").toLowerCase();
     const symbol = Object.entries(WATCH_KEYWORDS).find(([, kws]) =>
       kws.some((kw) => q.includes(kw)),
@@ -194,6 +208,8 @@ export async function collectPredictions(): Promise<number> {
       /* unparsable prices stay null */
     }
 
+    if (yes == null || !Number.isFinite(yes) || yes < 0 || yes > 1) continue;
+
     rows.push({
       market_slug: m.slug,
       question: m.question ?? null,
@@ -206,9 +222,12 @@ export async function collectPredictions(): Promise<number> {
   }
 
   if (rows.length === 0) return 0;
-  const { error } = await db.from("prediction_snapshots").insert(rows as never);
+  const { data, error } = await db
+    .from("prediction_snapshots")
+    .upsert(rows as never, { onConflict: "market_slug" })
+    .select("id");
   if (error) throw error;
-  return rows.length;
+  return data?.length ?? 0;
 }
 
 /* ───────────── Signal combiner ───────────── */
@@ -273,6 +292,27 @@ function ruleBased(whale: Row, indicator: Row, prediction: Row, council: Row) {
   };
 }
 
+function signalFingerprint(
+  symbol: string,
+  whale: Row,
+  indicator: Row,
+  prediction: Row,
+  council: Row,
+  result: ReturnType<typeof ruleBased>,
+) {
+  return [
+    symbol,
+    whale?.["id"],
+    indicator?.["id"],
+    prediction?.["id"],
+    council?.["id"],
+    result.recommendation,
+    result.reasoning,
+  ]
+    .map((value) => value ?? "")
+    .join("|");
+}
+
 export async function combineSignals(): Promise<number> {
   const db = await admin();
 
@@ -297,7 +337,8 @@ export async function combineSignals(): Promise<number> {
     if (!whale && !indicator && !prediction && !council) continue;
 
     const result = ruleBased(whale, indicator, prediction, council);
-    const { error } = await db.from("composite_signals").insert({
+    const fingerprint = signalFingerprint(symbol, whale, indicator, prediction, council, result);
+    const { data, error } = await db.from("composite_signals").upsert({
       symbol,
       whale_alert_id: (whale?.["id"] as string) ?? null,
       indicator_snapshot_id: (indicator?.["id"] as string) ?? null,
@@ -306,9 +347,10 @@ export async function combineSignals(): Promise<number> {
       confidence: result.confidence,
       recommendation: result.recommendation,
       reasoning: result.reasoning,
-    } as never);
+      fingerprint,
+    } as never, { onConflict: "fingerprint", ignoreDuplicates: true }).select("id");
     if (error) throw error;
-    created += 1;
+    if (data?.length) created += 1;
   }
   return created;
 }
