@@ -1,7 +1,18 @@
 import { createHmac } from "crypto";
 
 export const WATCHLIST = ["BTC", "ETH", "SOL", "CRV", "LINK", "ARB"];
-const MIN_WHALE_USD = 250_000;
+// Per-market notional floors: large-cap books print far bigger clips than alts,
+// so a single global floor either floods BTC or starves CRV/LINK/ARB.
+const WHALE_MIN_USD: Record<string, number> = {
+  BTC: 50_000,
+  ETH: 50_000,
+  SOL: 25_000,
+  CRV: 5_000,
+  LINK: 5_000,
+  ARB: 5_000,
+};
+const DEFAULT_MIN_WHALE_USD = 25_000;
+const whaleFloor = (coin: string) => WHALE_MIN_USD[coin] ?? DEFAULT_MIN_WHALE_USD;
 const TIMEFRAME = "4h";
 const KLINE_LIMIT = 100;
 const MIN_CONFIDENCE = 0.6;
@@ -51,7 +62,7 @@ export async function collectWhaleAlerts(): Promise<number> {
 
       for (const t of trades.slice(0, 200)) {
         const usd = parseFloat(t.px) * parseFloat(t.sz);
-        if (!Number.isFinite(usd) || usd < MIN_WHALE_USD) continue;
+        if (!Number.isFinite(usd) || usd < whaleFloor(coin)) continue;
         rows.push({
           symbol: coin,
           chain: "hyperliquid-perp",
@@ -76,6 +87,59 @@ export async function collectWhaleAlerts(): Promise<number> {
   if (error) throw error;
   return data?.length ?? 0;
 }
+
+/* ───────────── Whale alerts — Binance public aggTrades (spot) ───────────── */
+
+interface BinanceAggTrade {
+  a: number;
+  p: string;
+  q: string;
+  T: number;
+  m: boolean;
+}
+
+export async function collectExchangeWhaleAlerts(): Promise<number> {
+  const db = await admin();
+  const rows: Record<string, unknown>[] = [];
+
+  for (const coin of WATCHLIST) {
+    try {
+      const res = await fetchWithTimeout(
+        `https://api.binance.com/api/v3/aggTrades?symbol=${coin}USDT&limit=1000`,
+      );
+      if (!res.ok) continue;
+      const trades = (await res.json()) as BinanceAggTrade[];
+      if (!Array.isArray(trades)) continue;
+
+      for (const t of trades) {
+        const usd = parseFloat(t.p) * parseFloat(t.q);
+        if (!Number.isFinite(usd) || usd < whaleFloor(coin)) continue;
+        rows.push({
+          symbol: coin,
+          chain: "binance-spot",
+          // m === true means the buyer was the maker, i.e. an aggressive sell.
+          direction: t.m ? "distribution" : "accumulation",
+          usd_value: usd,
+          tx_hash: String(t.a),
+          source: "binance-agg-trades",
+          created_at: new Date(t.T).toISOString(),
+          raw: t as unknown as Record<string, unknown>,
+        });
+      }
+    } catch (e) {
+      console.error(`binance whale fetch failed for ${coin}`, e);
+    }
+  }
+
+  if (rows.length === 0) return 0;
+  const { data, error } = await db
+    .from("whale_alerts")
+    .upsert(rows as never, { onConflict: "source,tx_hash", ignoreDuplicates: true })
+    .select("id");
+  if (error) throw error;
+  return data?.length ?? 0;
+}
+
 
 /* ───────────── Technical indicators — Binance public klines ───────────── */
 
@@ -457,7 +521,11 @@ export async function executeTrades(): Promise<number> {
 }
 
 export async function runFullPipeline() {
-  const whales = await collectWhaleAlerts();
+  const [hlWhales, exWhales] = await Promise.all([
+    collectWhaleAlerts(),
+    collectExchangeWhaleAlerts(),
+  ]);
+  const whales = hlWhales + exWhales;
   const indicators = await collectIndicators();
   const predictions = await collectPredictions();
   const signals = await combineSignals();
