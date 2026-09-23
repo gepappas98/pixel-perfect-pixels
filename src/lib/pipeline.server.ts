@@ -521,7 +521,11 @@ export async function executeTrades(): Promise<number> {
 }
 
 export async function runFullPipeline() {
-  const whales = await collectWhaleAlerts();
+  const [hlWhales, exWhales] = await Promise.all([
+    collectWhaleAlerts(),
+    collectExchangeWhaleAlerts(),
+  ]);
+  const whales = hlWhales + exWhales;
   const indicators = await collectIndicators();
   const predictions = await collectPredictions();
   const signals = await combineSignals();
