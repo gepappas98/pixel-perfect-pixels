@@ -62,7 +62,7 @@ export async function collectWhaleAlerts(): Promise<number> {
 
       for (const t of trades.slice(0, 200)) {
         const usd = parseFloat(t.px) * parseFloat(t.sz);
-        if (!Number.isFinite(usd) || usd < MIN_WHALE_USD) continue;
+        if (!Number.isFinite(usd) || usd < whaleFloor(coin)) continue;
         rows.push({
           symbol: coin,
           chain: "hyperliquid-perp",
