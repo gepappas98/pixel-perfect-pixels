@@ -263,13 +263,31 @@ export async function collectPredictions(): Promise<number> {
   const payload = (await res.json()) as PolymarketEvent[] | PolymarketMarket[];
   const markets = eventMarkets(payload);
 
-  // Remove the previously persisted Hegseth false positive and any similar
-  // political result before the verified crypto feed is displayed again.
-  const { error: cleanupError } = await db
+  // Unlink legacy non-crypto snapshots before pruning them. This keeps the
+  // historical composite signal while allowing databases with restrictive
+  // foreign keys to delete the invalid source row safely.
+  const { data: staleSnapshots, error: staleLookupError } = await db
     .from("prediction_snapshots")
-    .delete()
+    .select("id")
     .ilike("question", "%hegseth%");
-  if (cleanupError) throw cleanupError;
+  if (staleLookupError) throw staleLookupError;
+
+  const staleIds = (staleSnapshots ?? [])
+    .map((snapshot) => snapshot.id as string)
+    .filter(Boolean);
+  if (staleIds.length > 0) {
+    const { error: unlinkError } = await db
+      .from("composite_signals")
+      .update({ prediction_snapshot_id: null })
+      .in("prediction_snapshot_id", staleIds);
+    if (unlinkError) throw unlinkError;
+
+    const { error: cleanupError } = await db
+      .from("prediction_snapshots")
+      .delete()
+      .in("id", staleIds);
+    if (cleanupError) throw cleanupError;
+  }
 
   const rows: Record<string, unknown>[] = [];
   for (const m of markets) {
