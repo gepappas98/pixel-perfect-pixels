@@ -25,9 +25,7 @@ async function fetchWithTimeout(input: string, init?: RequestInit) {
   return fetch(input, { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
 }
 
-type Admin = Awaited<
-  typeof import("@/integrations/supabase/client.server")
->["supabaseAdmin"];
+type Admin = Awaited<typeof import("@/integrations/supabase/client.server")>["supabaseAdmin"];
 
 async function admin(): Promise<Admin> {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
@@ -140,7 +138,6 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
   return data?.length ?? 0;
 }
 
-
 /* ───────────── Technical indicators — Binance public klines ───────────── */
 
 function rsi(closes: number[], period = 14): number {
@@ -240,25 +237,48 @@ const WATCH_KEYWORDS: Record<string, string[]> = {
   SOL: ["solana", "sol"],
 };
 
+const cryptoWord = /\b(bitcoin|btc|ethereum|eth|solana|sol)\b/i;
+
+interface PolymarketMarket {
+  slug?: string;
+  question?: string;
+  outcomePrices?: string;
+  volume24hr?: number;
+}
+
+interface PolymarketEvent {
+  markets?: PolymarketMarket[];
+}
+
+function eventMarkets(payload: PolymarketEvent[] | PolymarketMarket[]) {
+  return payload.flatMap((item) => ("markets" in item ? (item.markets ?? []) : [item]));
+}
+
 export async function collectPredictions(): Promise<number> {
   const db = await admin();
   const res = await fetchWithTimeout(
-    "https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=200",
+    "https://gamma-api.polymarket.com/events?tag_slug=crypto&active=true&closed=false&limit=200",
   );
   if (!res.ok) return 0;
-  const markets = (await res.json()) as {
-    slug: string;
-    question?: string;
-    outcomePrices?: string;
-    volume24hr?: number;
-  }[];
+  const payload = (await res.json()) as PolymarketEvent[] | PolymarketMarket[];
+  const markets = eventMarkets(payload);
+
+  // Remove the previously persisted Hegseth false positive and any similar
+  // political result before the verified crypto feed is displayed again.
+  const { error: cleanupError } = await db
+    .from("prediction_snapshots")
+    .delete()
+    .ilike("question", "%hegseth%");
+  if (cleanupError) throw cleanupError;
 
   const rows: Record<string, unknown>[] = [];
   for (const m of markets) {
     if (!m.slug) continue;
-    const q = (m.question ?? "").toLowerCase();
-    const symbol = Object.entries(WATCH_KEYWORDS).find(([, kws]) =>
-      kws.some((kw) => q.includes(kw)),
+    const question = m.question ?? "";
+    const q = question.toLowerCase();
+    if (!cryptoWord.test(q)) continue;
+    const symbol = Object.entries(WATCH_KEYWORDS).find(([, keywords]) =>
+      keywords.some((keyword) => new RegExp(`\\b${keyword}\\b`, "i").test(q)),
     )?.[0];
     if (!symbol) continue;
 
@@ -276,7 +296,7 @@ export async function collectPredictions(): Promise<number> {
 
     rows.push({
       market_slug: m.slug,
-      question: m.question ?? null,
+      question,
       related_symbol: symbol,
       yes_price: yes,
       no_price: no,
@@ -331,7 +351,8 @@ function councilEvaluation(whale: Row, indicator: Row, prediction: Row) {
   }
 
   // Sentiment member: prediction markets are intentionally a soft vote.
-  const yes = typeof prediction?.["yes_price"] === "number" ? prediction["yes_price"] as number : null;
+  const yes =
+    typeof prediction?.["yes_price"] === "number" ? (prediction["yes_price"] as number) : null;
   if (yes != null && yes >= 0.6) {
     votes.push("BUY");
     reasons.push(`sentiment leans yes (${Math.round(yes * 100)}%)`);
@@ -347,7 +368,9 @@ function councilEvaluation(whale: Row, indicator: Row, prediction: Row) {
     all[vote] = (all[vote] ?? 0) + 1;
     return all;
   }, {});
-  const ordered = (Object.entries(counts) as [CouncilVerdict, number][]).sort((a, b) => b[1] - a[1]);
+  const ordered = (Object.entries(counts) as [CouncilVerdict, number][]).sort(
+    (a, b) => b[1] - a[1],
+  );
   const [topVote, topCount] = ordered[0] ?? ["HOLD", 0];
   const conviction = Math.round((topCount / votes.length) * 100);
   const verdict: CouncilVerdict = topCount === 1 ? "AVOID" : topVote;
@@ -365,9 +388,24 @@ export async function collectCouncilSignals(): Promise<number> {
 
   for (const symbol of WATCHLIST) {
     const [whales, indicators, predictions] = await Promise.all([
-      db.from("whale_alerts").select("*").eq("symbol", symbol).order("created_at", { ascending: false }).limit(1),
-      db.from("indicator_snapshots").select("*").ilike("symbol", `${symbol}%`).order("created_at", { ascending: false }).limit(1),
-      db.from("prediction_snapshots").select("*").eq("related_symbol", symbol).order("created_at", { ascending: false }).limit(1),
+      db
+        .from("whale_alerts")
+        .select("*")
+        .eq("symbol", symbol)
+        .order("created_at", { ascending: false })
+        .limit(1),
+      db
+        .from("indicator_snapshots")
+        .select("*")
+        .ilike("symbol", `${symbol}%`)
+        .order("created_at", { ascending: false })
+        .limit(1),
+      db
+        .from("prediction_snapshots")
+        .select("*")
+        .eq("related_symbol", symbol)
+        .order("created_at", { ascending: false })
+        .limit(1),
     ]);
     const whale = (whales.data?.[0] ?? null) as Row;
     const indicator = (indicators.data?.[0] ?? null) as Row;
@@ -398,7 +436,6 @@ export async function collectCouncilSignals(): Promise<number> {
 }
 
 /* ───────────── Signal combiner ───────────── */
-
 
 function ruleBased(whale: Row, indicator: Row, prediction: Row, council: Row) {
   let score = 0;
@@ -484,16 +521,39 @@ export async function combineSignals(): Promise<number> {
 
   const { data: councilRows } = await db.from("council_signals").select("symbol");
   const symbols = [
-    ...new Set([...WATCHLIST, ...((councilRows ?? []) as { symbol: string }[]).map((r) => r.symbol)]),
+    ...new Set([
+      ...WATCHLIST,
+      ...((councilRows ?? []) as { symbol: string }[]).map((r) => r.symbol),
+    ]),
   ];
 
   let created = 0;
   for (const symbol of symbols) {
     const [whales, indicators, predictions, councils] = await Promise.all([
-      db.from("whale_alerts").select("*").eq("symbol", symbol).order("created_at", { ascending: false }).limit(1),
-      db.from("indicator_snapshots").select("*").ilike("symbol", `${symbol}%`).order("created_at", { ascending: false }).limit(1),
-      db.from("prediction_snapshots").select("*").eq("related_symbol", symbol).order("created_at", { ascending: false }).limit(1),
-      db.from("council_signals").select("*").eq("symbol", symbol).order("source_created_at", { ascending: false }).limit(1),
+      db
+        .from("whale_alerts")
+        .select("*")
+        .eq("symbol", symbol)
+        .order("created_at", { ascending: false })
+        .limit(1),
+      db
+        .from("indicator_snapshots")
+        .select("*")
+        .ilike("symbol", `${symbol}%`)
+        .order("created_at", { ascending: false })
+        .limit(1),
+      db
+        .from("prediction_snapshots")
+        .select("*")
+        .eq("related_symbol", symbol)
+        .order("created_at", { ascending: false })
+        .limit(1),
+      db
+        .from("council_signals")
+        .select("*")
+        .eq("symbol", symbol)
+        .order("source_created_at", { ascending: false })
+        .limit(1),
     ]);
 
     const whale = (whales.data?.[0] ?? null) as Row;
@@ -504,17 +564,23 @@ export async function combineSignals(): Promise<number> {
 
     const result = ruleBased(whale, indicator, prediction, council);
     const fingerprint = signalFingerprint(symbol, whale, indicator, prediction, council, result);
-    const { data, error } = await db.from("composite_signals").upsert({
-      symbol,
-      whale_alert_id: (whale?.["id"] as string) ?? null,
-      indicator_snapshot_id: (indicator?.["id"] as string) ?? null,
-      prediction_snapshot_id: (prediction?.["id"] as string) ?? null,
-      council_signal_id: (council?.["id"] as string) ?? null,
-      confidence: result.confidence,
-      recommendation: result.recommendation,
-      reasoning: result.reasoning,
-      fingerprint,
-    } as never, { onConflict: "fingerprint", ignoreDuplicates: true }).select("id");
+    const { data, error } = await db
+      .from("composite_signals")
+      .upsert(
+        {
+          symbol,
+          whale_alert_id: (whale?.["id"] as string) ?? null,
+          indicator_snapshot_id: (indicator?.["id"] as string) ?? null,
+          prediction_snapshot_id: (prediction?.["id"] as string) ?? null,
+          council_signal_id: (council?.["id"] as string) ?? null,
+          confidence: result.confidence,
+          recommendation: result.recommendation,
+          reasoning: result.reasoning,
+          fingerprint,
+        } as never,
+        { onConflict: "fingerprint", ignoreDuplicates: true },
+      )
+      .select("id");
     if (error) throw error;
     if (data?.length) created += 1;
   }
@@ -551,10 +617,13 @@ async function placeLiveOrder(coin: string, side: "buy" | "sell", quantity: numb
   });
   const signature = createHmac("sha256", apiSecret).update(params.toString()).digest("hex");
 
-  const res = await fetch(`https://api.binance.com/api/v3/order?${params.toString()}&signature=${signature}`, {
-    method: "POST",
-    headers: { "X-MBX-APIKEY": apiKey },
-  });
+  const res = await fetch(
+    `https://api.binance.com/api/v3/order?${params.toString()}&signature=${signature}`,
+    {
+      method: "POST",
+      headers: { "X-MBX-APIKEY": apiKey },
+    },
+  );
   const body = (await res.json()) as { orderId?: number; msg?: string };
   if (!res.ok) throw new Error(`Binance order rejected: ${body.msg ?? res.status}`);
   return String(body.orderId ?? "");
@@ -574,7 +643,11 @@ export async function executeTrades(): Promise<number> {
   if (error) throw error;
 
   let opened = 0;
-  for (const signal of (signals ?? []) as { id: string; symbol: string; recommendation: string }[]) {
+  for (const signal of (signals ?? []) as {
+    id: string;
+    symbol: string;
+    recommendation: string;
+  }[]) {
     const { data: existing } = await db
       .from("trades")
       .select("id")
@@ -592,7 +665,8 @@ export async function executeTrades(): Promise<number> {
     const side = signal.recommendation as "buy" | "sell";
     const quantity = PAPER_POSITION_USD / price;
     const stopLoss = side === "buy" ? price * (1 - STOP_LOSS_PCT) : price * (1 + STOP_LOSS_PCT);
-    const takeProfit = side === "buy" ? price * (1 + TAKE_PROFIT_PCT) : price * (1 - TAKE_PROFIT_PCT);
+    const takeProfit =
+      side === "buy" ? price * (1 + TAKE_PROFIT_PCT) : price * (1 - TAKE_PROFIT_PCT);
 
     let exchangeOrderId: string | null = null;
     if (mode === "live") {
