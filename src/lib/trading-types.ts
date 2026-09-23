@@ -31,7 +31,22 @@ export interface CouncilSignal {
   symbol: string;
   final_verdict: string;
   conviction: number | null;
-  source_created_at: string;
+  price_at?: number | null;
+  reflection?: string | null;
+  depth?: string | null;
+  source_created_at?: string | null;
+  created_at?: string | null;
+}
+
+export interface PublicCouncilDecision extends CouncilSignal {
+  id: string;
+  final_verdict: string;
+  conviction: number;
+  created_at: string;
+}
+
+export interface PublicCouncilFeed {
+  decisions: PublicCouncilDecision[];
 }
 
 export interface CompositeSignal {
