@@ -1,7 +1,18 @@
 import { createHmac } from "crypto";
 
 export const WATCHLIST = ["BTC", "ETH", "SOL", "CRV", "LINK", "ARB"];
-const MIN_WHALE_USD = 250_000;
+// Per-market notional floors: large-cap books print far bigger clips than alts,
+// so a single global floor either floods BTC or starves CRV/LINK/ARB.
+const WHALE_MIN_USD: Record<string, number> = {
+  BTC: 50_000,
+  ETH: 50_000,
+  SOL: 25_000,
+  CRV: 5_000,
+  LINK: 5_000,
+  ARB: 5_000,
+};
+const DEFAULT_MIN_WHALE_USD = 25_000;
+const whaleFloor = (coin: string) => WHALE_MIN_USD[coin] ?? DEFAULT_MIN_WHALE_USD;
 const TIMEFRAME = "4h";
 const KLINE_LIMIT = 100;
 const MIN_CONFIDENCE = 0.6;
