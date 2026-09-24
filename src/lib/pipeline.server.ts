@@ -220,7 +220,12 @@ export async function collectIndicators(): Promise<number> {
   const db = await admin();
   const rows: Record<string, unknown>[] = [];
 
-  for (const coin of WATCHLIST) {
+  // Base watchlist + dynamic Hyperliquid top movers; coins without a Binance
+  // USDT pair are skipped silently (per-coin try/catch + res.ok check below).
+  const movers = await hyperliquidTopMovers();
+  const coins = [...new Set([...WATCHLIST, ...movers])];
+
+  for (const coin of coins) {
     const symbol = `${coin}USDT`;
     try {
       const res = await fetchWithTimeout(
