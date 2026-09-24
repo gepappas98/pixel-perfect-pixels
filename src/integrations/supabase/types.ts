@@ -413,6 +413,10 @@ export type Database = {
     }
     Functions: {
       check_and_close_trades: { Args: never; Returns: number }
+      get_risk_summary: {
+        Args: { p_context?: string; p_symbol: string }
+        Returns: string
+      }
       refresh_pattern_stats: { Args: never; Returns: number }
       set_pipeline_schedule: { Args: { _minutes: number }; Returns: number }
       verify_cron_secret: { Args: { _secret: string }; Returns: boolean }
