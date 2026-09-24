@@ -39,7 +39,8 @@ export function CronHealthPanel() {
   });
 
   if (isLoading) return <section className="panel">Loading pipeline health…</section>;
-  if (error || !health) {
+  if (error || !health || health.available === false) {
+    const reason = health && "reason" in health ? health.reason : "Health storage is unavailable";
     return (
       <section className="panel border-destructive/30 bg-destructive/5">
         <div className="flex items-center gap-2 text-destructive">
@@ -49,6 +50,7 @@ export function CronHealthPanel() {
         <p className="mt-3 text-xs text-destructive/80">
           Health data is unavailable. Apply the pipeline health migration and confirm the cron can write run records.
         </p>
+        <p className="mt-2 break-words font-mono text-[10px] text-destructive/60">{reason}</p>
       </section>
     );
   }
