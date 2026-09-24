@@ -226,8 +226,56 @@ export type Database = {
         }
         Relationships: []
       }
+      trade_alerts: {
+        Row: {
+          created_at: string
+          entry_price: number
+          event_type: string
+          exit_price: number
+          id: string
+          pnl: number
+          pnl_pct: number
+          side: string
+          symbol: string
+          trade_id: string
+        }
+        Insert: {
+          created_at?: string
+          entry_price: number
+          event_type: string
+          exit_price: number
+          id?: string
+          pnl: number
+          pnl_pct: number
+          side: string
+          symbol: string
+          trade_id: string
+        }
+        Update: {
+          created_at?: string
+          entry_price?: number
+          event_type?: string
+          exit_price?: number
+          id?: string
+          pnl?: number
+          pnl_pct?: number
+          side?: string
+          symbol?: string
+          trade_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "trade_alerts_trade_id_fkey"
+            columns: ["trade_id"]
+            isOneToOne: false
+            referencedRelation: "trades"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       trades: {
         Row: {
+          close_reason: string | null
           closed_at: string | null
           composite_signal_id: string | null
           created_at: string
@@ -245,6 +293,7 @@ export type Database = {
           take_profit: number | null
         }
         Insert: {
+          close_reason?: string | null
           closed_at?: string | null
           composite_signal_id?: string | null
           created_at?: string
@@ -262,6 +311,7 @@ export type Database = {
           take_profit?: number | null
         }
         Update: {
+          close_reason?: string | null
           closed_at?: string | null
           composite_signal_id?: string | null
           created_at?: string
@@ -332,6 +382,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      check_and_close_trades: { Args: never; Returns: number }
       set_pipeline_schedule: { Args: { _minutes: number }; Returns: number }
       verify_cron_secret: { Args: { _secret: string }; Returns: boolean }
     }
