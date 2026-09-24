@@ -71,3 +71,16 @@ export interface Trade {
   pnl: number | null;
   created_at: string;
 }
+
+export interface TradeAlert {
+  id: string;
+  trade_id: string;
+  symbol: string;
+  side: "buy" | "sell";
+  event_type: "stop_loss" | "take_profit";
+  entry_price: number;
+  exit_price: number;
+  pnl: number;
+  pnl_pct: number;
+  created_at: string;
+}
