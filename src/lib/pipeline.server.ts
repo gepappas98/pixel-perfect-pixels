@@ -258,11 +258,8 @@ export async function collectIndicators(): Promise<number> {
         bb_lower: bb.lower,
         price: closes[closes.length - 1]!,
         signal: classify(r, m, s),
-        created_at: new Date().toISOString(),
-        raw: {
-          closes_tail: closes.slice(-5),
-          candle_close_at: new Date(Number(raw[raw.length - 1]?.[6])).toISOString(),
-        },
+        created_at: new Date(Number(raw[raw.length - 1]?.[6])).toISOString(),
+        raw: { closes_tail: closes.slice(-5) },
       });
     } catch (e) {
       console.error(`indicator fetch failed for ${symbol}`, e);
@@ -272,7 +269,7 @@ export async function collectIndicators(): Promise<number> {
   if (rows.length === 0) return 0;
   const { data, error } = await db
     .from("indicator_snapshots")
-    .insert(rows as never)
+    .upsert(rows as never, { onConflict: "symbol,timeframe,created_at", ignoreDuplicates: true })
     .select("id");
   if (error) throw error;
   return data?.length ?? 0;
@@ -680,10 +677,20 @@ export function tradingMode(): "paper" | "live" {
 }
 
 async function currentPrice(coin: string): Promise<number> {
-  const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${coin}USDT`);
-  if (!res.ok) throw new Error(`price fetch failed for ${coin}`);
+  const symbol = binanceSymbol(coin);
+  const res = await fetch(
+    `https://api.binance.com/api/v3/ticker/price?symbol=${encodeURIComponent(symbol)}`,
+  );
+  if (!res.ok) throw new Error(`price fetch failed for ${coin} (${symbol})`);
+
   const data = (await res.json()) as { price: string };
-  return parseFloat(data.price);
+  const price = Number(data.price);
+
+  if (!Number.isFinite(price)) {
+    throw new Error(`invalid price received for ${coin} (${symbol})`);
+  }
+
+  return price;
 }
 
 async function placeLiveOrder(coin: string, side: "buy" | "sell", quantity: number) {
@@ -691,8 +698,9 @@ async function placeLiveOrder(coin: string, side: "buy" | "sell", quantity: numb
   const apiSecret = process.env["BINANCE_API_SECRET"];
   if (!apiKey || !apiSecret) throw new Error("Binance API credentials are not configured");
 
+  const symbol = binanceSymbol(coin);
   const params = new URLSearchParams({
-    symbol: `${coin}USDT`,
+    symbol,
     side: side.toUpperCase(),
     type: "MARKET",
     quantity: quantity.toFixed(6),
@@ -713,9 +721,72 @@ async function placeLiveOrder(coin: string, side: "buy" | "sell", quantity: numb
   return String(body.orderId ?? "");
 }
 
+async function closeTriggeredTrades(): Promise<number> {
+  const db = await admin();
+
+  const { data: openTrades, error } = await db
+    .from("trades")
+    .select("id, symbol, side, quantity, entry_price, stop_loss, take_profit")
+    .eq("status", "open");
+
+  if (error) throw error;
+
+  let closed = 0;
+
+  for (const trade of (openTrades ?? []) as {
+    id: string;
+    symbol: string;
+    side: "buy" | "sell";
+    quantity: number;
+    entry_price: number;
+    stop_loss: number | null;
+    take_profit: number | null;
+  }[]) {
+    let price: number;
+
+    try {
+      price = await currentPrice(trade.symbol);
+    } catch (error) {
+      console.error(`position close check failed for ${trade.symbol}`, error);
+      continue;
+    }
+
+    const hitStopLoss =
+      trade.stop_loss != null &&
+      (trade.side === "buy" ? price <= trade.stop_loss : price >= trade.stop_loss);
+
+    const hitTakeProfit =
+      trade.take_profit != null &&
+      (trade.side === "buy" ? price >= trade.take_profit : price <= trade.take_profit);
+
+    if (!hitStopLoss && !hitTakeProfit) continue;
+
+    const pnl =
+      (trade.side === "buy" ? price - trade.entry_price : trade.entry_price - price) *
+      Number(trade.quantity);
+
+    const { error: closeError } = await db
+      .from("trades")
+      .update({
+        status: "closed",
+        pnl,
+      })
+      .eq("id", trade.id)
+      .eq("status", "open");
+
+    if (closeError) throw closeError;
+    closed += 1;
+  }
+
+  return closed;
+}
+
 export async function executeTrades(): Promise<number> {
   const db = await admin();
   const mode = tradingMode();
+
+  await closeTriggeredTrades();
+
   const since = new Date(Date.now() - 15 * 60 * 1000).toISOString();
 
   const { data: signals, error } = await db
@@ -787,6 +858,7 @@ export async function executeTrades(): Promise<number> {
       exchange_order_id: exchangeOrderId,
     } as never);
     if (tradeErr) throw tradeErr;
+
     openSymbols.add(signal.symbol);
     opened += 1;
   }
