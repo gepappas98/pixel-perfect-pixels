@@ -11,7 +11,7 @@ export const getSchedule = createServerFn({ method: "GET" }).handler(async () =>
 });
 
 export const setSchedule = createServerFn({ method: "POST" })
-  .inputValidator((d) => z.object({ minutes: z.union([z.literal(0), z.literal(2), z.literal(5), z.literal(10)]) }).parse(d))
+  .validator((d) => z.object({ minutes: z.union([z.literal(0), z.literal(2), z.literal(5), z.literal(10)]) }).parse(d))
   .handler(async ({ data }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { error } = await (supabaseAdmin.rpc as any)("set_pipeline_schedule", { _minutes: data.minutes });
