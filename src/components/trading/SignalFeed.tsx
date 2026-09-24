@@ -50,3 +50,5 @@ export function SignalFeed() {
     </section>
   );
 }
+
+export default SignalFeed;
