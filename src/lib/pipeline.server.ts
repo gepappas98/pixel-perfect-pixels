@@ -1,6 +1,9 @@
 import { createHmac } from "crypto";
 
-export const WATCHLIST = ["BTC", "ETH", "SOL", "CRV", "LINK", "ARB"];
+export const WATCHLIST = [
+  "BTC", "ETH", "SOL", "CRV", "LINK", "ARB",
+  "DOGE", "XRP", "AVAX", "ADA", "MATIC",
+];
 // Per-market notional floors: large-cap books print far bigger clips than alts,
 // so a single global floor either floods BTC or starves CRV/LINK/ARB.
 const WHALE_MIN_USD: Record<string, number> = {
@@ -34,6 +37,10 @@ async function admin(): Promise<Admin> {
 
 /* ───────────── Whale alerts — Hyperliquid public recentTrades ───────────── */
 
+const HL_INFO_URL = "https://api.hyperliquid.xyz/info";
+const HL_WHALE_MIN_USD = 100_000;
+const TOP_MOVERS_COUNT = 25;
+
 interface HlTrade {
   px: string;
   sz: string;
@@ -43,31 +50,56 @@ interface HlTrade {
   hash?: string;
 }
 
+async function hlPost<T>(body: Record<string, unknown>): Promise<T> {
+  const res = await fetchWithTimeout(HL_INFO_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Hyperliquid ${String(body["type"])} HTTP ${res.status}`);
+  return (await res.json()) as T;
+}
+
+/** Top perps by 24h notional volume; empty array if the call fails. */
+async function hyperliquidTopMovers(): Promise<string[]> {
+  try {
+    const [meta, ctxs] = await hlPost<
+      [{ universe: { name: string }[] }, { dayNtlVlm?: string }[]]
+    >({ type: "metaAndAssetCtxs" });
+    return meta.universe
+      .map((u, i) => ({ coin: u.name, vol: parseFloat(ctxs[i]?.dayNtlVlm ?? "0") || 0 }))
+      .sort((a, b) => b.vol - a.vol)
+      .slice(0, TOP_MOVERS_COUNT)
+      .map((m) => m.coin);
+  } catch (e) {
+    console.error("metaAndAssetCtxs failed, falling back to base watchlist", e);
+    return [];
+  }
+}
+
 export async function collectWhaleAlerts(): Promise<number> {
   const db = await admin();
   const rows: Record<string, unknown>[] = [];
+  const base = new Set(WATCHLIST);
+  const movers = await hyperliquidTopMovers();
+  const coins = [...new Set([...WATCHLIST, ...movers])];
 
-  for (const coin of WATCHLIST) {
+  for (const coin of coins) {
     try {
-      const res = await fetchWithTimeout("https://api.hyperliquid.xyz/info", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "recentTrades", coin }),
-      });
-      if (!res.ok) continue;
-      const trades = (await res.json()) as HlTrade[];
+      const trades = await hlPost<HlTrade[]>({ type: "recentTrades", coin });
       if (!Array.isArray(trades)) continue;
+      const source = base.has(coin) ? "hyperliquid-recent-trades" : "hyperliquid-top-mover";
 
-      for (const t of trades.slice(0, 200)) {
+      for (const t of trades) {
         const usd = parseFloat(t.px) * parseFloat(t.sz);
-        if (!Number.isFinite(usd) || usd < whaleFloor(coin)) continue;
+        if (!Number.isFinite(usd) || usd < HL_WHALE_MIN_USD) continue;
         rows.push({
           symbol: coin,
           chain: "hyperliquid-perp",
           direction: t.side === "B" ? "accumulation" : "distribution",
           usd_value: usd,
           tx_hash: t.hash ?? String(t.tid),
-          source: "hyperliquid-recent-trades",
+          source,
           created_at: new Date(t.time).toISOString(),
           raw: t as unknown as Record<string, unknown>,
         });
