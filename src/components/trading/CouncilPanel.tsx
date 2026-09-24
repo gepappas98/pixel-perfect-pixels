@@ -1,8 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
 import { useLiveTable } from "@/hooks/useLiveTable";
-import type { CouncilSignal, PublicCouncilFeed } from "@/lib/trading-types";
+import type { CouncilSignal } from "@/lib/trading-types";
 
-const FEED_URL = "https://piywvcmebdrxwhujphqp.supabase.co/functions/v1/public-council-feed";
 const tone: Record<string, string> = {
   BUY: "text-bull",
   SELL: "text-bear",
@@ -32,18 +30,8 @@ export function CouncilPanel() {
     12,
     "created_at",
   );
-  const feed = useQuery({
-    queryKey: ["public-council-feed"],
-    queryFn: async () => {
-      const response = await fetch(FEED_URL);
-      if (!response.ok) throw new Error("Council feed unavailable");
-      return (await response.json()) as PublicCouncilFeed;
-    },
-    refetchInterval: 60_000,
-    staleTime: 30_000,
-  });
-  const rawRows = feed.data?.decisions?.length ? feed.data.decisions : syncedRows;
-  const rows = rawRows.filter(
+
+  const rows = syncedRows.filter(
     (row, index, all) => all.findIndex((candidate) => candidate.symbol === row.symbol) === index,
   );
   const updated = rows[0]?.created_at ?? rows[0]?.source_created_at;
@@ -54,18 +42,15 @@ export function CouncilPanel() {
         <div>
           <h2 className="panel-title">AI council</h2>
           <p className="mt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-            Whale Radar · live feed
+            Whale Radar · synced feed
           </p>
         </div>
         <span className="flex items-center gap-1.5 text-[10px] text-bull">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-bull" /> live
         </span>
       </div>
-      {(feed.isLoading || syncing) && (
+      {syncing && (
         <p className="text-sm text-muted-foreground">Reading latest council decisions…</p>
-      )}
-      {feed.isError && syncedRows.length === 0 && (
-        <p className="text-sm text-muted-foreground">Council feed temporarily unavailable.</p>
       )}
       <ul className="space-y-2">
         {rows.slice(0, 8).map((c) => {
@@ -104,13 +89,13 @@ export function CouncilPanel() {
             </li>
           );
         })}
-        {!feed.isLoading && !syncing && rows.length === 0 && (
+        {!syncing && rows.length === 0 && (
           <p className="text-sm text-muted-foreground">No council verdicts synced yet.</p>
         )}
       </ul>
       {updated && (
         <p className="mt-3 border-t border-border/70 pt-2 text-[10px] text-muted-foreground">
-          Last update {timeAgo(updated)} · refreshes every minute
+          Last update {timeAgo(updated)} · refreshes live
         </p>
       )}
     </section>
