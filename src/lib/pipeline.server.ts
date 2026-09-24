@@ -761,20 +761,46 @@ async function closeTriggeredTrades(): Promise<number> {
 
     if (!hitStopLoss && !hitTakeProfit) continue;
 
+    const closeReason = hitStopLoss ? "stop_loss" : "take_profit";
+    const closedAt = new Date().toISOString();
+    const entryPrice = Number(trade.entry_price);
     const pnl =
-      (trade.side === "buy" ? price - trade.entry_price : trade.entry_price - price) *
-      Number(trade.quantity);
+      (trade.side === "buy" ? price - entryPrice : entryPrice - price) * Number(trade.quantity);
+    const pnlPct =
+      entryPrice > 0
+        ? ((trade.side === "buy" ? price - entryPrice : entryPrice - price) / entryPrice) * 100
+        : 0;
 
-    const { error: closeError } = await db
+    const { data: closedTrade, error: closeError } = await db
       .from("trades")
       .update({
         status: "closed",
         pnl,
+        exit_price: price,
+        close_reason: closeReason,
+        closed_at: closedAt,
       })
       .eq("id", trade.id)
-      .eq("status", "open");
+      .eq("status", "open")
+      .select("id")
+      .maybeSingle();
 
     if (closeError) throw closeError;
+    if (!closedTrade) continue;
+
+    const { error: alertError } = await db.from("trade_alerts").insert({
+      trade_id: trade.id,
+      symbol: trade.symbol,
+      side: trade.side,
+      event_type: closeReason,
+      entry_price: entryPrice,
+      exit_price: price,
+      pnl,
+      pnl_pct: pnlPct,
+      created_at: closedAt,
+    } as never);
+
+    if (alertError) throw alertError;
     closed += 1;
   }
 
