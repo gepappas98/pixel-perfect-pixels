@@ -258,8 +258,11 @@ export async function collectIndicators(): Promise<number> {
         bb_lower: bb.lower,
         price: closes[closes.length - 1]!,
         signal: classify(r, m, s),
-        created_at: new Date(Number(raw[raw.length - 1]?.[6])).toISOString(),
-        raw: { closes_tail: closes.slice(-5) },
+        created_at: new Date().toISOString(),
+        raw: {
+          closes_tail: closes.slice(-5),
+          candle_close_at: new Date(Number(raw[raw.length - 1]?.[6])).toISOString(),
+        },
       });
     } catch (e) {
       console.error(`indicator fetch failed for ${symbol}`, e);
@@ -269,7 +272,7 @@ export async function collectIndicators(): Promise<number> {
   if (rows.length === 0) return 0;
   const { data, error } = await db
     .from("indicator_snapshots")
-    .upsert(rows as never, { onConflict: "symbol,timeframe,created_at", ignoreDuplicates: true })
+    .insert(rows as never)
     .select("id");
   if (error) throw error;
   return data?.length ?? 0;
