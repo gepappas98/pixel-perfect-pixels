@@ -120,6 +120,11 @@ export async function collectWhaleAlerts(): Promise<number> {
 
 /* ───────────── Whale alerts — Binance public aggTrades (spot) ───────────── */
 
+/** Watchlist coins whose Binance ticker differs (renames/delistings). */
+const BINANCE_SYMBOL_MAP: Record<string, string> = { MATIC: "POL" };
+
+const binanceSymbol = (coin: string) => `${BINANCE_SYMBOL_MAP[coin] ?? coin}USDT`;
+
 interface BinanceAggTrade {
   a: number;
   p: string;
@@ -135,7 +140,7 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
   for (const coin of WATCHLIST) {
     try {
       const res = await fetchWithTimeout(
-        `https://api.binance.com/api/v3/aggTrades?symbol=${coin}USDT&limit=1000`,
+        `https://api.binance.com/api/v3/aggTrades?symbol=${binanceSymbol(coin)}&limit=1000`,
       );
       if (!res.ok) continue;
       const trades = (await res.json()) as BinanceAggTrade[];
@@ -226,7 +231,7 @@ export async function collectIndicators(): Promise<number> {
   const coins = [...new Set([...WATCHLIST, ...movers])];
 
   for (const coin of coins) {
-    const symbol = `${coin}USDT`;
+    const symbol = binanceSymbol(coin);
     try {
       const res = await fetchWithTimeout(
         `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${TIMEFRAME}&limit=${KLINE_LIMIT}`,
