@@ -723,6 +723,17 @@ export async function executeTrades(): Promise<number> {
     .in("recommendation", ["buy", "sell"]);
   if (error) throw error;
 
+  const { data: openTrades, error: openTradesError } = await db
+    .from("trades")
+    .select("symbol")
+    .eq("status", "open");
+
+  if (openTradesError) throw openTradesError;
+
+  const openSymbols = new Set(
+    ((openTrades ?? []) as { symbol: string }[]).map((trade) => trade.symbol),
+  );
+
   let opened = 0;
   for (const signal of (signals ?? []) as {
     id: string;
@@ -735,6 +746,7 @@ export async function executeTrades(): Promise<number> {
       .eq("composite_signal_id", signal.id)
       .limit(1);
     if (existing && existing.length > 0) continue;
+    if (openSymbols.has(signal.symbol)) continue;
 
     let price: number;
     try {
@@ -772,6 +784,7 @@ export async function executeTrades(): Promise<number> {
       exchange_order_id: exchangeOrderId,
     } as never);
     if (tradeErr) throw tradeErr;
+    openSymbols.add(signal.symbol);
     opened += 1;
   }
   return opened;
