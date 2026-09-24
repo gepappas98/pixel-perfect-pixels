@@ -216,8 +216,12 @@ function bollinger(closes: number[], period = 20, mult = 2) {
 }
 
 function classify(r: number, m: number, s: number): "bullish" | "bearish" | "neutral" {
-  if (r < 35 && m > s) return "bullish";
-  if (r > 65 && m < s) return "bearish";
+  // Use a composite technical vote instead of requiring an extreme RSI and
+  // crossover at the same time. This gives every liquid asset a fair chance
+  // while keeping flat/mixed markets neutral.
+  const momentum = m - s;
+  if ((r <= 45 && momentum > 0) || (r < 55 && momentum > 0.001 * Math.abs(m))) return "bullish";
+  if ((r >= 55 && momentum < 0) || (r > 45 && momentum < -0.001 * Math.abs(m))) return "bearish";
   return "neutral";
 }
 
@@ -454,8 +458,9 @@ export async function collectCouncilSignals(): Promise<number> {
         .from("whale_alerts")
         .select("*")
         .eq("symbol", symbol)
-        .order("created_at", { ascending: false })
-        .limit(1),
+        .gte("created_at", new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString())
+        .order("usd_value", { ascending: false })
+        .limit(20),
       db
         .from("indicator_snapshots")
         .select("*")
@@ -469,7 +474,21 @@ export async function collectCouncilSignals(): Promise<number> {
         .order("created_at", { ascending: false })
         .limit(1),
     ]);
-    const whale = (whales.data?.[0] ?? null) as Row;
+    const whaleRows = (whales.data ?? []) as Record<string, unknown>[];
+    const accumulation = whaleRows.filter((row) => row["direction"] === "accumulation").length;
+    const distribution = whaleRows.filter((row) => row["direction"] === "distribution").length;
+    const whale = whaleRows.length
+      ? ({
+          direction:
+            accumulation === distribution
+              ? undefined
+              : accumulation > distribution
+                ? "accumulation"
+                : "distribution",
+          id: whaleRows[0]?.["id"],
+          usd_value: whaleRows.reduce((sum, row) => sum + Number(row["usd_value"] ?? 0), 0),
+        } as Row)
+      : null;
     const indicator = (indicators.data?.[0] ?? null) as Row;
     const prediction = (predictions.data?.[0] ?? null) as Row;
     if (!whale && !indicator && !prediction) continue;
