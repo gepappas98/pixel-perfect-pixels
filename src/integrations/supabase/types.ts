@@ -22,6 +22,7 @@ export type Database = {
           fingerprint: string | null
           id: string
           indicator_snapshot_id: string | null
+          pattern_key: string | null
           prediction_snapshot_id: string | null
           reasoning: string | null
           recommendation: string | null
@@ -35,6 +36,7 @@ export type Database = {
           fingerprint?: string | null
           id?: string
           indicator_snapshot_id?: string | null
+          pattern_key?: string | null
           prediction_snapshot_id?: string | null
           reasoning?: string | null
           recommendation?: string | null
@@ -48,6 +50,7 @@ export type Database = {
           fingerprint?: string | null
           id?: string
           indicator_snapshot_id?: string | null
+          pattern_key?: string | null
           prediction_snapshot_id?: string | null
           reasoning?: string | null
           recommendation?: string | null
@@ -226,6 +229,33 @@ export type Database = {
         }
         Relationships: []
       }
+      signal_pattern_stats: {
+        Row: {
+          avg_pnl_pct: number | null
+          pattern_key: string
+          sample_size: number
+          updated_at: string
+          win_rate: number | null
+          wins: number
+        }
+        Insert: {
+          avg_pnl_pct?: number | null
+          pattern_key: string
+          sample_size?: number
+          updated_at?: string
+          win_rate?: number | null
+          wins?: number
+        }
+        Update: {
+          avg_pnl_pct?: number | null
+          pattern_key?: string
+          sample_size?: number
+          updated_at?: string
+          win_rate?: number | null
+          wins?: number
+        }
+        Relationships: []
+      }
       trade_alerts: {
         Row: {
           created_at: string
@@ -383,6 +413,7 @@ export type Database = {
     }
     Functions: {
       check_and_close_trades: { Args: never; Returns: number }
+      refresh_pattern_stats: { Args: never; Returns: number }
       set_pipeline_schedule: { Args: { _minutes: number }; Returns: number }
       verify_cron_secret: { Args: { _secret: string }; Returns: boolean }
     }
