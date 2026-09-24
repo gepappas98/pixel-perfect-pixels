@@ -282,8 +282,10 @@ interface PolymarketEvent {
   markets?: PolymarketMarket[];
 }
 
-function eventMarkets(payload: PolymarketEvent[] | PolymarketMarket[]) {
-  return payload.flatMap((item) => ("markets" in item ? (item.markets ?? []) : [item]));
+function eventMarkets(payload: (PolymarketEvent | PolymarketMarket)[]): PolymarketMarket[] {
+  return payload.flatMap((item) =>
+    "markets" in item ? ((item as PolymarketEvent).markets ?? []) : [item as PolymarketMarket],
+  );
 }
 
 export async function collectPredictions(): Promise<number> {

@@ -78,7 +78,7 @@ export function CouncilPanel() {
               <div className="flex items-center justify-between gap-2">
                 <span className="font-mono text-sm font-semibold">{c.symbol}</span>
                 <span
-                  className={`rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold ${badge[verdict] ?? badge.HOLD} ${tone[verdict] ?? tone.HOLD}`}
+                  className={`rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold ${badge[verdict] ?? badge["HOLD"]} ${tone[verdict] ?? tone["HOLD"]}`}
                 >
                   {verdict}
                 </span>
