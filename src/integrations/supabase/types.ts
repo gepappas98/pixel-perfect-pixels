@@ -172,6 +172,24 @@ export type Database = {
         }
         Relationships: []
       }
+      pipeline_settings: {
+        Row: {
+          id: number
+          interval_minutes: number
+          updated_at: string
+        }
+        Insert: {
+          id?: number
+          interval_minutes?: number
+          updated_at?: string
+        }
+        Update: {
+          id?: number
+          interval_minutes?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
       prediction_snapshots: {
         Row: {
           created_at: string
@@ -314,7 +332,8 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      set_pipeline_schedule: { Args: { _minutes: number }; Returns: number }
+      verify_cron_secret: { Args: { _secret: string }; Returns: boolean }
     }
     Enums: {
       [_ in never]: never
