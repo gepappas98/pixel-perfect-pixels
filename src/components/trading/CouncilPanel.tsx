@@ -28,7 +28,7 @@ export function CouncilPanel() {
   const { rows: syncedRows, loading: syncing } = useLiveTable<CouncilSignal>(
     "council_signals",
     12,
-    "created_at",
+    "source_created_at",
   );
 
   const rows = syncedRows.filter(
