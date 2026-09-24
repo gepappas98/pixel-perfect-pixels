@@ -15,6 +15,13 @@
       "when": 1790142805185,
       "tag": "0001_add_pipeline_dedupe_constraints",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790243935057,
+      "tag": "0002_pipeline_cron_schedule",
+      "breakpoints": true
     }
   ]
 }

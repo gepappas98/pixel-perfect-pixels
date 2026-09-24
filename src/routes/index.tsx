@@ -8,6 +8,33 @@ import { PredictionPanel } from "@/components/trading/PredictionPanel";
 import { CouncilPanel } from "@/components/trading/CouncilPanel";
 import { TradesPanel } from "@/components/trading/TradesPanel";
 import { getTradingStatus, runPipeline } from "@/lib/pipeline.functions";
+import { getSchedule, setSchedule } from "@/lib/schedule.functions";
+import { useQueryClient } from "@tanstack/react-query";
+
+function ScheduleControl() {
+  const getFn = useServerFn(getSchedule);
+  const setFn = useServerFn(setSchedule);
+  const qc = useQueryClient();
+  const { data } = useQuery({ queryKey: ["schedule"], queryFn: () => getFn() });
+  const m = useMutation({
+    mutationFn: (minutes: 0 | 2 | 5 | 10) => setFn({ data: { minutes } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["schedule"] }),
+  });
+  return (
+    <select
+      aria-label="Auto-run interval"
+      value={data?.minutes ?? 0}
+      disabled={m.isPending}
+      onChange={(e) => m.mutate(Number(e.target.value) as 0 | 2 | 5 | 10)}
+      className="rounded-md border border-border bg-muted px-2 py-1.5 font-mono text-xs text-foreground"
+    >
+      <option value={0}>Auto: Off</option>
+      <option value={2}>Every 2 min</option>
+      <option value={5}>Every 5 min</option>
+      <option value={10}>Every 10 min</option>
+    </select>
+  );
+}
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -64,6 +91,7 @@ function CommandCenter() {
             >
               {status?.mode ?? "paper"} mode
             </span>
+            <ScheduleControl />
             <button
               onClick={() => run.mutate()}
               disabled={run.isPending}
