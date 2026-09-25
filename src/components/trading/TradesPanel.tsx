@@ -32,10 +32,17 @@ const money = new Intl.NumberFormat("en-US", {
 
 export function TradesPanel() {
   const { rows, loading } = useLiveTable<Trade>("trades", 15);
+
+  // Φιλτράρουμε ΜΟΝΟ τις ανοιχτές θέσεις. Οι κλειστές θέσεις έχουν
+  // "παγωμένο" realized PnL στο t.pnl (από το backend), και δεν πρέπει
+  // να ξαναϋπολογίζονται με live τιμές — αλλιώς το PnL αλλάζει συνέχεια
+  // αφού η θέση έχει κλείσει.
+  const openTrades = rows.filter((t) => t.status === "open");
+
   const prices = useQuery({
-    queryKey: ["position-prices", rows.map((row) => row.symbol).sort().join(",")],
-    queryFn: () => getPrices([...new Set(rows.map((row) => row.symbol))]),
-    enabled: rows.length > 0,
+    queryKey: ["position-prices", openTrades.map((row) => row.symbol).sort().join(",")],
+    queryFn: () => getPrices([...new Set(openTrades.map((row) => row.symbol))]),
+    enabled: openTrades.length > 0,
     refetchInterval: 30_000,
     staleTime: 25_000,
   });
@@ -46,16 +53,18 @@ export function TradesPanel() {
         <div>
           <h2 className="panel-title">Positions</h2>
           <p className="mt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-            Live PnL · refreshes every 30s
+            Open only · Live PnL · refreshes every 30s
           </p>
         </div>
-        {prices.dataUpdatedAt > 0 && (
+        {prices.dataUpdatedAt > 0 && openTrades.length > 0 && (
           <span className="text-[10px] text-muted-foreground">
             Updated {new Date(prices.dataUpdatedAt).toLocaleTimeString()}
           </span>
         )}
       </div>
+
       {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
+
       <div className="overflow-x-auto">
         <table className="w-full min-w-[760px] text-sm">
           <thead>
@@ -71,30 +80,42 @@ export function TradesPanel() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((t) => {
+            {openTrades.map((t) => {
               const current = prices.data?.[t.symbol] ?? null;
               const entry = Number(t.entry_price);
               const quantity = Number(t.quantity);
               const pnl =
-                current == null ? null : (t.side === "buy" ? current - entry : entry - current) * quantity;
+                current == null
+                  ? null
+                  : (t.side === "buy" ? current - entry : entry - current) * quantity;
               const pnlPct =
-                pnl == null || entry <= 0 || quantity <= 0 ? null : (pnl / (entry * quantity)) * 100;
+                pnl == null || entry <= 0 || quantity <= 0
+                  ? null
+                  : (pnl / (entry * quantity)) * 100;
               const positive = (pnl ?? 0) >= 0;
 
               return (
                 <tr key={t.id} className="border-t border-border font-mono text-xs">
                   <td className="py-1.5 font-semibold">{t.symbol}</td>
-                  <td className={`py-1.5 ${t.side === "buy" ? "text-bull" : "text-bear"}`}>{t.side}</td>
+                  <td className={`py-1.5 ${t.side === "buy" ? "text-bull" : "text-bear"}`}>
+                    {t.side}
+                  </td>
                   <td className="py-1.5 text-muted-foreground">{entry.toFixed(2)}</td>
                   <td className="py-1.5">{current == null ? "—" : current.toFixed(2)}</td>
-                  <td className="py-1.5 text-muted-foreground">{money.format(quantity * entry)}</td>
+                  <td className="py-1.5 text-muted-foreground">
+                    {money.format(quantity * entry)}
+                  </td>
                   <td
-                    className={`py-1.5 font-semibold ${pnl == null ? "text-muted-foreground" : positive ? "text-bull" : "text-bear"}`}
+                    className={`py-1.5 font-semibold ${
+                      pnl == null ? "text-muted-foreground" : positive ? "text-bull" : "text-bear"
+                    }`}
                   >
                     {pnl == null ? "—" : `${pnl >= 0 ? "+" : "-"}${money.format(Math.abs(pnl))}`}
                   </td>
                   <td
-                    className={`py-1.5 ${pnlPct == null ? "text-muted-foreground" : positive ? "text-bull" : "text-bear"}`}
+                    className={`py-1.5 ${
+                      pnlPct == null ? "text-muted-foreground" : positive ? "text-bull" : "text-bear"
+                    }`}
                   >
                     {pnlPct == null ? "—" : `${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%`}
                   </td>
@@ -105,8 +126,9 @@ export function TradesPanel() {
           </tbody>
         </table>
       </div>
-      {!loading && rows.length === 0 && (
-        <p className="text-sm text-muted-foreground">No positions opened yet.</p>
+
+      {!loading && openTrades.length === 0 && (
+        <p className="text-sm text-muted-foreground">No open positions right now.</p>
       )}
     </section>
   );
