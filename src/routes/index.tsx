@@ -126,8 +126,8 @@ function CommandCenter() {
         <IndicatorPanel />
         <PredictionPanel />
         <CouncilPanel />
-        <AIRiskSummary />
         <CronHealthPanel />
+        <PortfolioPanel />
         <div className="lg:col-span-3">
           <TradesPanel />
         </div>
