@@ -1,5 +1,7 @@
 import { createHmac } from "crypto";
 
+/* ───────────── Watchlist & market config ───────────── */
+
 export const WATCHLIST = [
   // ── Majors / L1 ───────────────────────────────────────────────
   "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "TRX", "AVAX", "DOT",
@@ -19,15 +21,63 @@ export const WATCHLIST = [
   // ── Storage / Infra ───────────────────────────────────────────
   "FIL", "AR", "STORJ", "GRT", "ANKR", "BAT", "BAND",
 ];
+
 // Per-market notional floors: large-cap books print far bigger clips than alts,
 // so a single global floor either floods BTC or starves CRV/LINK/ARB.
 const WHALE_MIN_USD: Record<string, number> = {
   BTC: 50_000,
   ETH: 50_000,
+  BNB: 50_000,
   SOL: 25_000,
+  XRP: 25_000,
+  ADA: 25_000,
+  DOGE: 25_000,
+  TRX: 20_000,
+  AVAX: 15_000,
+  DOT: 15_000,
+  LTC: 15_000,
+  BCH: 15_000,
+  LINK: 10_000,
+  MATIC: 10_000,
+  ATOM: 10_000,
+  NEAR: 10_000,
+  APT: 10_000,
+  SUI: 10_000,
+  UNI: 10_000,
+  AAVE: 10_000,
+  MKR: 10_000,
+  ETC: 10_000,
+  XLM: 10_000,
+  ICP: 10_000,
+  FIL: 10_000,
+  RNDR: 10_000,
+  // Mid-caps & DeFi
   CRV: 5_000,
-  LINK: 5_000,
   ARB: 5_000,
+  OP: 5_000,
+  INJ: 5_000,
+  TIA: 5_000,
+  SEI: 5_000,
+  RUNE: 5_000,
+  FTM: 5_000,
+  HBAR: 5_000,
+  ALGO: 5_000,
+  VET: 5_000,
+  SAND: 5_000,
+  MANA: 5_000,
+  AXS: 5_000,
+  GALA: 5_000,
+  IMX: 5_000,
+  GRT: 5_000,
+  // Memes & small caps
+  SHIB: 5_000,
+  PEPE: 5_000,
+  WIF: 3_000,
+  BONK: 3_000,
+  FLOKI: 3_000,
+  ORDI: 5_000,
+  BOME: 3_000,
+  MEME: 3_000,
 };
 const DEFAULT_MIN_WHALE_USD = 25_000;
 const whaleFloor = (coin: string) => WHALE_MIN_USD[coin] ?? DEFAULT_MIN_WHALE_USD;
@@ -38,6 +88,8 @@ const PAPER_POSITION_USD = 1000;
 const STOP_LOSS_PCT = 0.03;
 const TAKE_PROFIT_PCT = 0.06;
 const FETCH_TIMEOUT_MS = 12_000;
+const MAX_OPEN_TRADES = 15;
+const SYMBOL_COOLDOWN_MINUTES = 60;
 
 async function fetchWithTimeout(input: string, init?: RequestInit) {
   return fetch(input, { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
@@ -136,7 +188,10 @@ export async function collectWhaleAlerts(): Promise<number> {
 /* ───────────── Whale alerts — Binance public aggTrades (spot) ───────────── */
 
 /** Watchlist coins whose Binance ticker differs (renames/delistings). */
-const BINANCE_SYMBOL_MAP: Record<string, string> = { MATIC: "POL" };
+const BINANCE_SYMBOL_MAP: Record<string, string> = {
+  MATIC: "POL",
+  RNDR: "RENDER",
+};
 
 const binanceSymbol = (coin: string) => `${BINANCE_SYMBOL_MAP[coin] ?? coin}USDT`;
 
@@ -231,9 +286,6 @@ function bollinger(closes: number[], period = 20, mult = 2) {
 }
 
 function classify(r: number, m: number, s: number): "bullish" | "bearish" | "neutral" {
-  // Use a composite technical vote instead of requiring an extreme RSI and
-  // crossover at the same time. This gives every liquid asset a fair chance
-  // while keeping flat/mixed markets neutral.
   const momentum = m - s;
   if ((r <= 45 && momentum > 0) || (r < 55 && momentum > 0.001 * Math.abs(m))) return "bullish";
   if ((r >= 55 && momentum < 0) || (r > 45 && momentum < -0.001 * Math.abs(m))) return "bearish";
@@ -244,8 +296,6 @@ export async function collectIndicators(): Promise<number> {
   const db = await admin();
   const rows: Record<string, unknown>[] = [];
 
-  // Base watchlist + dynamic Hyperliquid top movers; coins without a Binance
-  // USDT pair are skipped silently (per-coin try/catch + res.ok check below).
   const movers = await hyperliquidTopMovers();
   const coins = [...new Set([...WATCHLIST, ...movers])];
 
@@ -285,7 +335,7 @@ export async function collectIndicators(): Promise<number> {
   const { data, error } = await db
     .from("indicator_snapshots")
     // ignoreDuplicates: false → τα υπάρχοντα rows με ίδιο (symbol, timeframe,
-    // created_at) ενημερώνονται αντί να αγνοούνται. Αυτό επιτρέπει intra-candle
+    // created_at) ενημερώνονται αντί να αγνοούνται. Επιτρέπει intra-candle
     // refreshes του RSI/MACD/price χωρίς να περιμένουμε το κλείσιμο του 4ωρου.
     .upsert(rows as never, {
       onConflict: "symbol,timeframe,created_at",
@@ -302,9 +352,30 @@ const WATCH_KEYWORDS: Record<string, string[]> = {
   BTC: ["bitcoin", "btc"],
   ETH: ["ethereum", "eth"],
   SOL: ["solana", "sol"],
+  XRP: ["xrp", "ripple"],
+  DOGE: ["dogecoin", "doge"],
+  ADA: ["cardano", "ada"],
+  AVAX: ["avalanche", "avax"],
+  LINK: ["chainlink", "link"],
+  DOT: ["polkadot", "dot"],
+  LTC: ["litecoin", "ltc"],
+  MATIC: ["polygon", "matic", "pol"],
+  BNB: ["bnb", "binance coin"],
+  TRX: ["tron", "trx"],
+  SHIB: ["shiba", "shib"],
+  PEPE: ["pepe"],
+  ATOM: ["cosmos", "atom"],
+  NEAR: ["near protocol"],
+  APT: ["aptos", "apt"],
+  SUI: ["sui"],
+  INJ: ["injective", "inj"],
+  ARB: ["arbitrum", "arb"],
+  OP: ["optimism"],
+  UNI: ["uniswap", "uni"],
+  AAVE: ["aave"],
 };
 
-const cryptoWord = /\b(bitcoin|btc|ethereum|eth|solana|sol)\b/i;
+const cryptoWord = /\b(bitcoin|btc|ethereum|eth|solana|sol|xrp|ripple|dogecoin|doge|cardano|ada|avalanche|avax|chainlink|link|polkadot|dot|litecoin|ltc|polygon|matic|pol|bnb|binance coin|tron|trx|shiba|shib|pepe|cosmos|atom|near protocol|aptos|apt|sui|injective|inj|arbitrum|arb|optimism|uniswap|uni|aave)\b/i;
 
 interface PolymarketMarket {
   slug?: string;
@@ -332,9 +403,6 @@ export async function collectPredictions(): Promise<number> {
   const payload = (await res.json()) as PolymarketEvent[] | PolymarketMarket[];
   const markets = eventMarkets(payload);
 
-  // Unlink legacy non-crypto snapshots before pruning them. This keeps the
-  // historical composite signal while allowing databases with restrictive
-  // foreign keys to delete the invalid source row safely.
   const { data: staleSnapshots, error: staleLookupError } = await db
     .from("prediction_snapshots")
     .select("id")
@@ -411,7 +479,6 @@ function councilEvaluation(whale: Row, indicator: Row, prediction: Row) {
   const votes: CouncilVerdict[] = [];
   const reasons: string[] = [];
 
-  // Quant member: momentum and mean-reversion context from the latest snapshot.
   const technical = indicator?.["signal"];
   if (technical === "bullish") {
     votes.push("BUY");
@@ -424,7 +491,6 @@ function councilEvaluation(whale: Row, indicator: Row, prediction: Row) {
     reasons.push("quant sees mixed technicals");
   }
 
-  // Whale tracker member: use the largest recent flow signal available.
   const flow = whale?.["direction"];
   if (flow === "accumulation") {
     votes.push("BUY");
@@ -437,7 +503,6 @@ function councilEvaluation(whale: Row, indicator: Row, prediction: Row) {
     reasons.push("whale tracker has no directional flow");
   }
 
-  // Sentiment member: prediction markets are intentionally a soft vote.
   const yes =
     typeof prediction?.["yes_price"] === "number" ? (prediction["yes_price"] as number) : null;
   if (yes != null && yes >= 0.6) {
@@ -469,35 +534,71 @@ function councilEvaluation(whale: Row, indicator: Row, prediction: Row) {
   };
 }
 
+/**
+ * Batch-query version: αντί για 3 queries × N symbols, εκτελεί 3 συνολικά
+ * queries και κάνει group-by-symbol σε JS. Μειώνει το DB load από ~285 σε 3.
+ */
 export async function collectCouncilSignals(): Promise<number> {
   const db = await admin();
   const rows: Record<string, unknown>[] = [];
 
-  for (const symbol of WATCHLIST) {
-    const [whales, indicators, predictions] = await Promise.all([
-      db
-        .from("whale_alerts")
-        .select("*")
-        .eq("symbol", symbol)
-        .gte("created_at", new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString())
-        .order("usd_value", { ascending: false })
-        .limit(20),
-      db
-        .from("indicator_snapshots")
-        .select("*")
-        .ilike("symbol", `${symbol}%`)
-        .order("created_at", { ascending: false })
-        .limit(1),
-      db
-        .from("prediction_snapshots")
-        .select("*")
-        .eq("related_symbol", symbol)
-        .order("created_at", { ascending: false })
-        .limit(1),
-    ]);
-    const whaleRows = (whales.data ?? []) as Record<string, unknown>[];
-    const accumulation = whaleRows.filter((row) => row["direction"] === "accumulation").length;
-    const distribution = whaleRows.filter((row) => row["direction"] === "distribution").length;
+  const movers = await hyperliquidTopMovers();
+  const symbols = [...new Set([...WATCHLIST, ...movers])];
+  if (symbols.length === 0) return 0;
+
+  const binSymbols = symbols.map(binanceSymbol);
+  const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+
+  const [whalesRes, indicatorsRes, predictionsRes] = await Promise.all([
+    db
+      .from("whale_alerts")
+      .select("*")
+      .in("symbol", symbols)
+      .gte("created_at", sixHoursAgo)
+      .order("usd_value", { ascending: false })
+      .limit(2000),
+    // Το symbol στα indicators είναι "BTCUSDT" — φιλτράρουμε με τα binSymbols.
+    db
+      .from("indicator_snapshots")
+      .select("*")
+      .in("symbol", binSymbols)
+      .order("created_at", { ascending: false })
+      .limit(2000),
+    db
+      .from("prediction_snapshots")
+      .select("*")
+      .in("related_symbol", symbols)
+      .order("created_at", { ascending: false })
+      .limit(1000),
+  ]);
+
+  // Group whales by symbol (κρατάμε έως 20 πιο χοντρές ανά symbol).
+  const whalesBySymbol = new Map<string, Record<string, unknown>[]>();
+  for (const w of (whalesRes.data ?? []) as Record<string, unknown>[]) {
+    const s = w["symbol"] as string;
+    const bucket = whalesBySymbol.get(s);
+    if (!bucket) whalesBySymbol.set(s, [w]);
+    else if (bucket.length < 20) bucket.push(w);
+  }
+
+  // Latest indicator per binSymbol (first = latest λόγω order desc).
+  const latestIndicator = new Map<string, Record<string, unknown>>();
+  for (const i of (indicatorsRes.data ?? []) as Record<string, unknown>[]) {
+    const s = i["symbol"] as string;
+    if (!latestIndicator.has(s)) latestIndicator.set(s, i);
+  }
+
+  // Latest prediction per related_symbol.
+  const latestPrediction = new Map<string, Record<string, unknown>>();
+  for (const p of (predictionsRes.data ?? []) as Record<string, unknown>[]) {
+    const s = p["related_symbol"] as string | undefined;
+    if (s && !latestPrediction.has(s)) latestPrediction.set(s, p);
+  }
+
+  for (const symbol of symbols) {
+    const whaleRows = whalesBySymbol.get(symbol) ?? [];
+    const accumulation = whaleRows.filter((r) => r["direction"] === "accumulation").length;
+    const distribution = whaleRows.filter((r) => r["direction"] === "distribution").length;
     const whale = whaleRows.length
       ? ({
           direction:
@@ -507,11 +608,11 @@ export async function collectCouncilSignals(): Promise<number> {
                 ? "accumulation"
                 : "distribution",
           id: whaleRows[0]?.["id"],
-          usd_value: whaleRows.reduce((sum, row) => sum + Number(row["usd_value"] ?? 0), 0),
+          usd_value: whaleRows.reduce((sum, r) => sum + Number(r["usd_value"] ?? 0), 0),
         } as Row)
       : null;
-    const indicator = (indicators.data?.[0] ?? null) as Row;
-    const prediction = (predictions.data?.[0] ?? null) as Row;
+    const indicator = (latestIndicator.get(binanceSymbol(symbol)) ?? null) as Row;
+    const prediction = (latestPrediction.get(symbol) ?? null) as Row;
     if (!whale && !indicator && !prediction) continue;
 
     const sourceId = [symbol, whale?.["id"], indicator?.["id"], prediction?.["id"]].join(":");
@@ -618,6 +719,9 @@ function signalFingerprint(
     .join("|");
 }
 
+/**
+ * Batch-query version: 4 queries συνολικά αντί για 4 × N symbols.
+ */
 export async function combineSignals(): Promise<number> {
   const db = await admin();
 
@@ -628,40 +732,64 @@ export async function combineSignals(): Promise<number> {
       ...((councilRows ?? []) as { symbol: string }[]).map((r) => r.symbol),
     ]),
   ];
+  if (symbols.length === 0) return 0;
+
+  const binSymbols = symbols.map(binanceSymbol);
+
+  const [whalesRes, indicatorsRes, predictionsRes, councilsRes] = await Promise.all([
+    db
+      .from("whale_alerts")
+      .select("*")
+      .in("symbol", symbols)
+      .order("created_at", { ascending: false })
+      .limit(3000),
+    db
+      .from("indicator_snapshots")
+      .select("*")
+      .in("symbol", binSymbols)
+      .order("created_at", { ascending: false })
+      .limit(2000),
+    db
+      .from("prediction_snapshots")
+      .select("*")
+      .in("related_symbol", symbols)
+      .order("created_at", { ascending: false })
+      .limit(1000),
+    db
+      .from("council_signals")
+      .select("*")
+      .in("symbol", symbols)
+      .order("source_created_at", { ascending: false })
+      .limit(1000),
+  ]);
+
+  const latestWhale = new Map<string, Record<string, unknown>>();
+  for (const w of (whalesRes.data ?? []) as Record<string, unknown>[]) {
+    const s = w["symbol"] as string;
+    if (!latestWhale.has(s)) latestWhale.set(s, w);
+  }
+  const latestIndicator = new Map<string, Record<string, unknown>>();
+  for (const i of (indicatorsRes.data ?? []) as Record<string, unknown>[]) {
+    const s = i["symbol"] as string;
+    if (!latestIndicator.has(s)) latestIndicator.set(s, i);
+  }
+  const latestPrediction = new Map<string, Record<string, unknown>>();
+  for (const p of (predictionsRes.data ?? []) as Record<string, unknown>[]) {
+    const s = p["related_symbol"] as string | undefined;
+    if (s && !latestPrediction.has(s)) latestPrediction.set(s, p);
+  }
+  const latestCouncil = new Map<string, Record<string, unknown>>();
+  for (const c of (councilsRes.data ?? []) as Record<string, unknown>[]) {
+    const s = c["symbol"] as string;
+    if (!latestCouncil.has(s)) latestCouncil.set(s, c);
+  }
 
   let created = 0;
   for (const symbol of symbols) {
-    const [whales, indicators, predictions, councils] = await Promise.all([
-      db
-        .from("whale_alerts")
-        .select("*")
-        .eq("symbol", symbol)
-        .order("created_at", { ascending: false })
-        .limit(1),
-      db
-        .from("indicator_snapshots")
-        .select("*")
-        .ilike("symbol", `${symbol}%`)
-        .order("created_at", { ascending: false })
-        .limit(1),
-      db
-        .from("prediction_snapshots")
-        .select("*")
-        .eq("related_symbol", symbol)
-        .order("created_at", { ascending: false })
-        .limit(1),
-      db
-        .from("council_signals")
-        .select("*")
-        .eq("symbol", symbol)
-        .order("source_created_at", { ascending: false })
-        .limit(1),
-    ]);
-
-    const whale = (whales.data?.[0] ?? null) as Row;
-    const indicator = (indicators.data?.[0] ?? null) as Row;
-    const prediction = (predictions.data?.[0] ?? null) as Row;
-    const council = (councils.data?.[0] ?? null) as Row;
+    const whale = (latestWhale.get(symbol) ?? null) as Row;
+    const indicator = (latestIndicator.get(binanceSymbol(symbol)) ?? null) as Row;
+    const prediction = (latestPrediction.get(symbol) ?? null) as Row;
+    const council = (latestCouncil.get(symbol) ?? null) as Row;
     if (!whale && !indicator && !prediction && !council) continue;
 
     const result = ruleBased(whale, indicator, prediction, council);
@@ -699,19 +827,30 @@ export function tradingMode(): "paper" | "live" {
 
 async function currentPrice(coin: string): Promise<number> {
   const symbol = binanceSymbol(coin);
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     `https://api.binance.com/api/v3/ticker/price?symbol=${encodeURIComponent(symbol)}`,
   );
   if (!res.ok) throw new Error(`price fetch failed for ${coin} (${symbol})`);
 
   const data = (await res.json()) as { price: string };
   const price = Number(data.price);
-
   if (!Number.isFinite(price)) {
     throw new Error(`invalid price received for ${coin} (${symbol})`);
   }
-
   return price;
+}
+
+/** Φέρνει ΟΛΕΣ τις τιμές Binance σε ένα request (αντί για 1 call per symbol). */
+async function allBinancePrices(): Promise<Map<string, number>> {
+  const res = await fetchWithTimeout("https://api.binance.com/api/v3/ticker/price");
+  if (!res.ok) throw new Error(`batch price fetch failed HTTP ${res.status}`);
+  const data = (await res.json()) as { symbol: string; price: string }[];
+  const map = new Map<string, number>();
+  for (const d of data) {
+    const p = Number(d.price);
+    if (Number.isFinite(p)) map.set(d.symbol, p);
+  }
+  return map;
 }
 
 async function placeLiveOrder(coin: string, side: "buy" | "sell", quantity: number) {
@@ -749,12 +888,9 @@ async function closeTriggeredTrades(): Promise<number> {
     .from("trades")
     .select("id, symbol, side, quantity, entry_price, stop_loss, take_profit")
     .eq("status", "open");
-
   if (error) throw error;
 
-  let closed = 0;
-
-  for (const trade of (openTrades ?? []) as {
+  const trades = (openTrades ?? []) as {
     id: string;
     symbol: string;
     side: "buy" | "sell";
@@ -762,24 +898,34 @@ async function closeTriggeredTrades(): Promise<number> {
     entry_price: number;
     stop_loss: number | null;
     take_profit: number | null;
-  }[]) {
-    let price: number;
+  }[];
+  if (trades.length === 0) return 0;
 
-    try {
-      price = await currentPrice(trade.symbol);
-    } catch (error) {
-      console.error(`position close check failed for ${trade.symbol}`, error);
+  // Ένα request για όλες τις τιμές αντί για N.
+  let prices: Map<string, number>;
+  try {
+    prices = await allBinancePrices();
+  } catch (e) {
+    console.error("batch price fetch failed, skipping close checks", e);
+    return 0;
+  }
+
+  let closed = 0;
+
+  for (const trade of trades) {
+    const binSym = binanceSymbol(trade.symbol);
+    const price = prices.get(binSym);
+    if (price == null) {
+      console.error(`no price for ${trade.symbol} (${binSym})`);
       continue;
     }
 
     const hitStopLoss =
       trade.stop_loss != null &&
       (trade.side === "buy" ? price <= trade.stop_loss : price >= trade.stop_loss);
-
     const hitTakeProfit =
       trade.take_profit != null &&
       (trade.side === "buy" ? price >= trade.take_profit : price <= trade.take_profit);
-
     if (!hitStopLoss && !hitTakeProfit) continue;
 
     const closeReason = hitStopLoss ? "stop_loss" : "take_profit";
@@ -805,7 +951,6 @@ async function closeTriggeredTrades(): Promise<number> {
       .eq("status", "open")
       .select("id")
       .maybeSingle();
-
     if (closeError) throw closeError;
     if (!closedTrade) continue;
 
@@ -820,7 +965,6 @@ async function closeTriggeredTrades(): Promise<number> {
       pnl_pct: pnlPct,
       created_at: closedAt,
     } as never);
-
     if (alertError) throw alertError;
     closed += 1;
   }
@@ -835,39 +979,53 @@ export async function executeTrades(): Promise<number> {
   await closeTriggeredTrades();
 
   const since = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+  const cooldownSince = new Date(
+    Date.now() - SYMBOL_COOLDOWN_MINUTES * 60 * 1000,
+  ).toISOString();
 
-  const { data: signals, error } = await db
-    .from("composite_signals")
-    .select("*")
-    .gte("created_at", since)
-    .gte("confidence", MIN_CONFIDENCE)
-    .in("recommendation", ["buy", "sell"]);
-  if (error) throw error;
-
-  const { data: openTrades, error: openTradesError } = await db
-    .from("trades")
-    .select("symbol")
-    .eq("status", "open");
-
-  if (openTradesError) throw openTradesError;
+  const [signalsRes, openTradesRes, recentlyClosedRes] = await Promise.all([
+    db
+      .from("composite_signals")
+      .select("*")
+      .gte("created_at", since)
+      .gte("confidence", MIN_CONFIDENCE)
+      .in("recommendation", ["buy", "sell"]),
+    db.from("trades").select("symbol").eq("status", "open"),
+    db
+      .from("trades")
+      .select("symbol")
+      .eq("status", "closed")
+      .gte("closed_at", cooldownSince),
+  ]);
+  if (signalsRes.error) throw signalsRes.error;
+  if (openTradesRes.error) throw openTradesRes.error;
+  if (recentlyClosedRes.error) throw recentlyClosedRes.error;
 
   const openSymbols = new Set(
-    ((openTrades ?? []) as { symbol: string }[]).map((trade) => trade.symbol),
+    ((openTradesRes.data ?? []) as { symbol: string }[]).map((t) => t.symbol),
+  );
+  const cooldownSymbols = new Set(
+    ((recentlyClosedRes.data ?? []) as { symbol: string }[]).map((t) => t.symbol),
   );
 
+  if (openSymbols.size >= MAX_OPEN_TRADES) return 0;
+
   let opened = 0;
-  for (const signal of (signals ?? []) as {
+  for (const signal of (signalsRes.data ?? []) as {
     id: string;
     symbol: string;
     recommendation: string;
   }[]) {
+    if (openSymbols.size >= MAX_OPEN_TRADES) break;
+    if (openSymbols.has(signal.symbol)) continue;
+    if (cooldownSymbols.has(signal.symbol)) continue;
+
     const { data: existing } = await db
       .from("trades")
       .select("id")
       .eq("composite_signal_id", signal.id)
       .limit(1);
     if (existing && existing.length > 0) continue;
-    if (openSymbols.has(signal.symbol)) continue;
 
     let price: number;
     try {
