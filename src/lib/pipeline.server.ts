@@ -457,6 +457,34 @@ export async function collectPredictions(): Promise<number> {
   return data?.length ?? 0;
 }
 
+/**
+ * Picks the most informative prediction market per symbol and normalises
+ * yes_price into a *bullish* probability:
+ *  - skips near-resolved (<5% / >95%) and thin (<$500 24h vol) markets,
+ *    which are mostly far-out-of-the-money price targets that always read "no";
+ *  - keeps the highest-volume market per symbol;
+ *  - inverts bearish questions ("dip to", "below", "fall") so yes = bearish.
+ */
+function pickPredictions(rows: Record<string, unknown>[]) {
+  const best = new Map<string, Record<string, unknown>>();
+  for (const p of rows) {
+    const s = p["related_symbol"] as string | undefined;
+    const yes = Number(p["yes_price"]);
+    const vol = Number(p["volume_24h"] ?? 0) || 0;
+    if (!s || !Number.isFinite(yes) || yes < 0.05 || yes > 0.95 || vol < 500) continue;
+    const cur = best.get(s);
+    if (!cur || vol > (Number(cur["volume_24h"] ?? 0) || 0)) best.set(s, p);
+  }
+  const out = new Map<string, Record<string, unknown>>();
+  for (const [s, p] of best) {
+    const q = String(p["question"] ?? "").toLowerCase();
+    const bearish = /\b(dip|below|fall|drop|crash|under)\b/.test(q);
+    const yes = Number(p["yes_price"]);
+    out.set(s, { ...p, yes_price: bearish ? 1 - yes : yes });
+  }
+  return out;
+}
+
 /* ───────────── AI trading council ───────────── */
 
 type Row = Record<string, unknown> | null;
@@ -576,12 +604,9 @@ export async function collectCouncilSignals(): Promise<number> {
     if (!latestIndicator.has(s)) latestIndicator.set(s, i);
   }
 
-  // Latest prediction per related_symbol.
-  const latestPrediction = new Map<string, Record<string, unknown>>();
-  for (const p of (predictionsRes.data ?? []) as Record<string, unknown>[]) {
-    const s = p["related_symbol"] as string | undefined;
-    if (s && !latestPrediction.has(s)) latestPrediction.set(s, p);
-  }
+  const latestPrediction = pickPredictions(
+    (predictionsRes.data ?? []) as Record<string, unknown>[],
+  );
 
   for (const symbol of symbols) {
     const whaleRows = whalesBySymbol.get(symbol) ?? [];
@@ -761,11 +786,9 @@ export async function combineSignals(): Promise<number> {
     const s = i["symbol"] as string;
     if (!latestIndicator.has(s)) latestIndicator.set(s, i);
   }
-  const latestPrediction = new Map<string, Record<string, unknown>>();
-  for (const p of (predictionsRes.data ?? []) as Record<string, unknown>[]) {
-    const s = p["related_symbol"] as string | undefined;
-    if (s && !latestPrediction.has(s)) latestPrediction.set(s, p);
-  }
+  const latestPrediction = pickPredictions(
+    (predictionsRes.data ?? []) as Record<string, unknown>[],
+  );
   const latestCouncil = new Map<string, Record<string, unknown>>();
   for (const c of (councilsRes.data ?? []) as Record<string, unknown>[]) {
     const s = c["symbol"] as string;
