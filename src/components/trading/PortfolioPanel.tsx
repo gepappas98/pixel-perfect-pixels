@@ -1,7 +1,8 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
+import { useServerFn } from "@tanstack/react-start";
+import { getPortfolioSummary } from "@/lib/pipeline.functions";
 import {
   Briefcase,
   TrendingUp,
@@ -11,7 +12,7 @@ import {
   Loader2,
 } from "lucide-react";
 
-/* ─────────────  Types ───────────── */
+/* ───────────── Types ───────────── */
 
 interface PortfolioSummary {
   open_count: number;
@@ -53,15 +54,11 @@ function fmtSigned(value: number): string {
 /* ───────────── Component ───────────── */
 
 export function PortfolioPanel() {
+  const portfolioFn = useServerFn(getPortfolioSummary);
+
   const { data, isLoading, error, dataUpdatedAt } = useQuery<PortfolioSummary | null>({
     queryKey: ["portfolio-summary"],
-    queryFn: async () => {
-      const { data, error } = await supabase.rpc("get_portfolio_summary");
-      if (error) throw error;
-      if (!data) return null;
-      // returns json scalar — cast directly
-      return data as unknown as PortfolioSummary;
-    },
+    queryFn: () => portfolioFn(),
     refetchInterval: 30_000,
     staleTime: 25_000,
   });
