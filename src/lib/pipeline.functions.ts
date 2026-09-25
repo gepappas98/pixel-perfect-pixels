@@ -54,3 +54,25 @@ export const getCronHealth = createServerFn({ method: "GET" }).handler(async () 
     };
   }
 });
+
+export const getPortfolioSummary = createServerFn({ method: "GET" }).handler(async () => {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const { data, error } = await (supabaseAdmin.rpc as any)("get_portfolio_summary");
+  if (error) throw new Error(error.message);
+  return data as {
+    open_count: number;
+    open_notional: number;
+    closed_count: number;
+    realized_pnl: number;
+    win_rate_pct: number;
+    win_count: number;
+    loss_count: number;
+    gross_profit: number;
+    gross_loss: number;
+    profit_factor: number | null;
+    avg_win_usd: number;
+    avg_loss_usd: number;
+    last_24h_closed: number;
+    last_24h_pnl: number;
+  } | null;
+});
