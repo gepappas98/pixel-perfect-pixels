@@ -3,27 +3,19 @@ import { createHmac } from "crypto";
 /* ───────────── Watchlist & market config ───────────── */
 
 export const WATCHLIST = [
-  // ── Majors / L1 ───────────────────────────────────────────────
   "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "TRX", "AVAX", "DOT",
   "LINK", "MATIC", "LTC", "BCH", "XLM", "ETC", "ATOM", "ALGO", "VET", "ICP",
   "HBAR", "THETA", "FTM", "RUNE", "KAVA", "EOS", "NEO", "IOTA", "KSM", "CELO",
   "ROSE", "ONE", "ZIL", "NEAR", "APT", "SUI", "SEI", "TIA", "INJ", "ARB",
   "OP", "STRK", "MANTA", "ZK", "BLAST", "LRC", "METIS", "MINA", "W",
-  // ── Meme / High-beta ──────────────────────────────────────────
   "SHIB", "PEPE", "WIF", "BONK", "FLOKI", "ORDI", "BOME", "MEME",
-  // ── DeFi ──────────────────────────────────────────────────────
   "UNI", "CRV", "AAVE", "MKR", "COMP", "SNX", "SUSHI", "1INCH", "CAKE", "DYDX",
   "GMX", "LDO", "ENS", "BAL", "YFI", "UMA", "JUP", "PYTH", "JTO",
-  // ── AI / Data ─────────────────────────────────────────────────
   "FET", "RNDR", "WLD", "ARKM", "TAO",
-  // ── Gaming / Metaverse ────────────────────────────────────────
   "SAND", "MANA", "AXS", "GALA", "IMX", "APE", "ENJ", "CHZ",
-  // ── Storage / Infra ───────────────────────────────────────────
   "FIL", "AR", "STORJ", "GRT", "ANKR", "BAT", "BAND",
 ];
 
-// Per-market notional floors: large-cap books print far bigger clips than alts,
-// so a single global floor either floods BTC or starves CRV/LINK/ARB.
 const WHALE_MIN_USD: Record<string, number> = {
   BTC: 50_000,
   ETH: 50_000,
@@ -51,7 +43,6 @@ const WHALE_MIN_USD: Record<string, number> = {
   ICP: 10_000,
   FIL: 10_000,
   RNDR: 10_000,
-  // Mid-caps & DeFi
   CRV: 5_000,
   ARB: 5_000,
   OP: 5_000,
@@ -69,7 +60,6 @@ const WHALE_MIN_USD: Record<string, number> = {
   GALA: 5_000,
   IMX: 5_000,
   GRT: 5_000,
-  // Memes & small caps
   SHIB: 5_000,
   PEPE: 5_000,
   WIF: 3_000,
@@ -102,7 +92,7 @@ async function admin(): Promise<Admin> {
   return supabaseAdmin;
 }
 
-/* ───────────── Whale alerts — Hyperliquid public recentTrades ───────────── */
+/* ───────────── Whale alerts — Hyperliquid ───────────── */
 
 const HL_INFO_URL = "https://api.hyperliquid.xyz/info";
 const HL_WHALE_MIN_USD = 100_000;
@@ -127,7 +117,6 @@ async function hlPost<T>(body: Record<string, unknown>): Promise<T> {
   return (await res.json()) as T;
 }
 
-/** Top perps by 24h notional volume; empty array if the call fails. */
 async function hyperliquidTopMovers(): Promise<string[]> {
   try {
     const [meta, ctxs] = await hlPost<
@@ -185,9 +174,8 @@ export async function collectWhaleAlerts(): Promise<number> {
   return data?.length ?? 0;
 }
 
-/* ───────────── Whale alerts — Binance public aggTrades (spot) ───────────── */
+/* ───────────── Whale alerts — Binance spot ───────────── */
 
-/** Watchlist coins whose Binance ticker differs (renames/delistings). */
 const BINANCE_SYMBOL_MAP: Record<string, string> = {
   MATIC: "POL",
   RNDR: "RENDER",
@@ -222,7 +210,6 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
         rows.push({
           symbol: coin,
           chain: "binance-spot",
-          // m === true means the buyer was the maker, i.e. an aggressive sell.
           direction: t.m ? "distribution" : "accumulation",
           usd_value: usd,
           tx_hash: String(t.a),
@@ -245,7 +232,7 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
   return data?.length ?? 0;
 }
 
-/* ───────────── Technical indicators — Binance public klines ───────────── */
+/* ───────────── Technical indicators ───────────── */
 
 function rsi(closes: number[], period = 14): number {
   if (closes.length < period + 1) return NaN;
@@ -313,6 +300,11 @@ export async function collectIndicators(): Promise<number> {
       const r = rsi(closes);
       const { macd: m, signal: s } = macd(closes);
       const bb = bollinger(closes);
+
+      // Η ώρα που κλείνει το τρέχον 4ωρο κερί — κρατείται μόνο ως reference
+      // μέσα στο raw, όχι ως created_at.
+      const candleCloseTime = new Date(Number(raw[raw.length - 1]?.[6])).toISOString();
+
       rows.push({
         symbol,
         timeframe: TIMEFRAME,
@@ -323,8 +315,11 @@ export async function collectIndicators(): Promise<number> {
         bb_lower: bb.lower,
         price: closes[closes.length - 1]!,
         signal: classify(r, m, s),
-        created_at: new Date(Number(raw[raw.length - 1]?.[6])).toISOString(),
-        raw: { closes_tail: closes.slice(-5) },
+        // Πάντα now() → κάθε pipeline run γράφει "φρέσκια" τιμή. Η μοναδικότητα
+        // είναι στο (symbol, timeframe), άρα γίνεται UPDATE της ίδιας γραμμής
+        // αντί για INSERT που ποτέ δεν συγκρούεται.
+        created_at: new Date().toISOString(),
+        raw: { closes_tail: closes.slice(-5), candle_close_time: candleCloseTime },
       });
     } catch (e) {
       console.error(`indicator fetch failed for ${symbol}`, e);
@@ -334,11 +329,8 @@ export async function collectIndicators(): Promise<number> {
   if (rows.length === 0) return 0;
   const { data, error } = await db
     .from("indicator_snapshots")
-    // ignoreDuplicates: false → τα υπάρχοντα rows με ίδιο (symbol, timeframe,
-    // created_at) ενημερώνονται αντί να αγνοούνται. Επιτρέπει intra-candle
-    // refreshes του RSI/MACD/price χωρίς να περιμένουμε το κλείσιμο του 4ωρου.
     .upsert(rows as never, {
-      onConflict: "symbol,timeframe,created_at",
+      onConflict: "symbol,timeframe",
       ignoreDuplicates: false,
     })
     .select("id");
@@ -346,7 +338,7 @@ export async function collectIndicators(): Promise<number> {
   return data?.length ?? 0;
 }
 
-/* ───────────── Prediction markets — Polymarket Gamma API ───────────── */
+/* ───────────── Prediction markets — Polymarket ───────────── */
 
 const WATCH_KEYWORDS: Record<string, string[]> = {
   BTC: ["bitcoin", "btc"],
@@ -402,29 +394,6 @@ export async function collectPredictions(): Promise<number> {
   if (!res.ok) return 0;
   const payload = (await res.json()) as PolymarketEvent[] | PolymarketMarket[];
   const markets = eventMarkets(payload);
-
-  const { data: staleSnapshots, error: staleLookupError } = await db
-    .from("prediction_snapshots")
-    .select("id")
-    .ilike("question", "%hegseth%");
-  if (staleLookupError) throw staleLookupError;
-
-  const staleIds = (staleSnapshots ?? [])
-    .map((snapshot) => snapshot.id as string)
-    .filter(Boolean);
-  if (staleIds.length > 0) {
-    const { error: unlinkError } = await db
-      .from("composite_signals")
-      .update({ prediction_snapshot_id: null })
-      .in("prediction_snapshot_id", staleIds);
-    if (unlinkError) throw unlinkError;
-
-    const { error: cleanupError } = await db
-      .from("prediction_snapshots")
-      .delete()
-      .in("id", staleIds);
-    if (cleanupError) throw cleanupError;
-  }
 
   const rows: Record<string, unknown>[] = [];
   for (const m of markets) {
@@ -534,10 +503,6 @@ function councilEvaluation(whale: Row, indicator: Row, prediction: Row) {
   };
 }
 
-/**
- * Batch-query version: αντί για 3 queries × N symbols, εκτελεί 3 συνολικά
- * queries και κάνει group-by-symbol σε JS. Μειώνει το DB load από ~285 σε 3.
- */
 export async function collectCouncilSignals(): Promise<number> {
   const db = await admin();
   const rows: Record<string, unknown>[] = [];
@@ -557,7 +522,6 @@ export async function collectCouncilSignals(): Promise<number> {
       .gte("created_at", sixHoursAgo)
       .order("usd_value", { ascending: false })
       .limit(2000),
-    // Το symbol στα indicators είναι "BTCUSDT" — φιλτράρουμε με τα binSymbols.
     db
       .from("indicator_snapshots")
       .select("*")
@@ -572,7 +536,6 @@ export async function collectCouncilSignals(): Promise<number> {
       .limit(1000),
   ]);
 
-  // Group whales by symbol (κρατάμε έως 20 πιο χοντρές ανά symbol).
   const whalesBySymbol = new Map<string, Record<string, unknown>[]>();
   for (const w of (whalesRes.data ?? []) as Record<string, unknown>[]) {
     const s = w["symbol"] as string;
@@ -581,14 +544,12 @@ export async function collectCouncilSignals(): Promise<number> {
     else if (bucket.length < 20) bucket.push(w);
   }
 
-  // Latest indicator per binSymbol (first = latest λόγω order desc).
   const latestIndicator = new Map<string, Record<string, unknown>>();
   for (const i of (indicatorsRes.data ?? []) as Record<string, unknown>[]) {
     const s = i["symbol"] as string;
     if (!latestIndicator.has(s)) latestIndicator.set(s, i);
   }
 
-  // Latest prediction per related_symbol.
   const latestPrediction = new Map<string, Record<string, unknown>>();
   for (const p of (predictionsRes.data ?? []) as Record<string, unknown>[]) {
     const s = p["related_symbol"] as string | undefined;
@@ -719,9 +680,6 @@ function signalFingerprint(
     .join("|");
 }
 
-/**
- * Batch-query version: 4 queries συνολικά αντί για 4 × N symbols.
- */
 export async function combineSignals(): Promise<number> {
   const db = await admin();
 
@@ -840,7 +798,6 @@ async function currentPrice(coin: string): Promise<number> {
   return price;
 }
 
-/** Φέρνει ΟΛΕΣ τις τιμές Binance σε ένα request (αντί για 1 call per symbol). */
 async function allBinancePrices(): Promise<Map<string, number>> {
   const res = await fetchWithTimeout("https://api.binance.com/api/v3/ticker/price");
   if (!res.ok) throw new Error(`batch price fetch failed HTTP ${res.status}`);
@@ -901,7 +858,6 @@ async function closeTriggeredTrades(): Promise<number> {
   }[];
   if (trades.length === 0) return 0;
 
-  // Ένα request για όλες τις τιμές αντί για N.
   let prices: Map<string, number>;
   try {
     prices = await allBinancePrices();
@@ -1070,16 +1026,84 @@ export async function executeTrades(): Promise<number> {
   return opened;
 }
 
+/* ───────────── Full pipeline with health logging ───────────── */
+
 export async function runFullPipeline() {
-  const [hlWhales, exWhales] = await Promise.all([
-    collectWhaleAlerts(),
-    collectExchangeWhaleAlerts(),
-  ]);
-  const whales = hlWhales + exWhales;
-  const indicators = await collectIndicators();
-  const predictions = await collectPredictions();
-  const council = await collectCouncilSignals();
-  const signals = await combineSignals();
-  const trades = await executeTrades();
-  return { whales, indicators, predictions, council, signals, trades, mode: tradingMode() };
+  const db = await admin();
+  const startedAt = new Date();
+
+  // Καταγραφή της αρχής του run στο pipeline_runs — τροφοδοτεί το
+  // CronHealthPanel. Αν αποτύχει το logging, ΔΕΝ ρίχνουμε το pipeline.
+  const { data: runRow, error: insertError } = await db
+    .from("pipeline_runs")
+    .insert({
+      job_name: "runFullPipeline",
+      started_at: startedAt.toISOString(),
+      status: "running",
+    } as never)
+    .select("id")
+    .single();
+
+  if (insertError) {
+    console.error("failed to record pipeline run start", insertError);
+  }
+
+  const runId = (runRow as { id: string } | null)?.id ?? null;
+
+  try {
+    const [hlWhales, exWhales] = await Promise.all([
+      collectWhaleAlerts(),
+      collectExchangeWhaleAlerts(),
+    ]);
+    const whales = hlWhales + exWhales;
+    const indicators = await collectIndicators();
+    const predictions = await collectPredictions();
+    const council = await collectCouncilSignals();
+    const signals = await combineSignals();
+    const trades = await executeTrades();
+    const mode = tradingMode();
+
+    const finishedAt = new Date();
+    const summary = {
+      finished_at: finishedAt.toISOString(),
+      duration_ms: finishedAt.getTime() - startedAt.getTime(),
+      status: "success",
+      whales,
+      indicators,
+      predictions,
+      council,
+      signals,
+      trades,
+      mode,
+      error: null,
+    };
+
+    if (runId) {
+      const { error: updateError } = await db
+        .from("pipeline_runs")
+        .update(summary as never)
+        .eq("id", runId);
+      if (updateError) console.error("failed to update pipeline run", updateError);
+    }
+
+    return { whales, indicators, predictions, council, signals, trades, mode };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    const finishedAt = new Date();
+
+    if (runId) {
+      const { error: updateError } = await db
+        .from("pipeline_runs")
+        .update({
+          finished_at: finishedAt.toISOString(),
+          duration_ms: finishedAt.getTime() - startedAt.getTime(),
+          status: "error",
+          error: message,
+        } as never)
+        .eq("id", runId);
+      if (updateError) console.error("failed to record pipeline error", updateError);
+    }
+
+    throw e;
+  }
 }
