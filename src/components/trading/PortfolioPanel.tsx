@@ -1,8 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { useServerFn } from "@tanstack/react-start";
-import { getPortfolioSummary } from "@/lib/pipeline.functions";
+import { supabase } from "@/integrations/supabase/client";
 import {
   Briefcase,
   TrendingUp,
@@ -54,11 +53,16 @@ function fmtSigned(value: number): string {
 /* ───────────── Component ───────────── */
 
 export function PortfolioPanel() {
-  const portfolioFn = useServerFn(getPortfolioSummary);
-
   const { data, isLoading, error, dataUpdatedAt } = useQuery<PortfolioSummary | null>({
     queryKey: ["portfolio-summary"],
-    queryFn: () => portfolioFn(),
+    queryFn: async () => {
+      // ✅ Καλεί τη νέα SQL function get_portfolio_summary()
+      const { data, error } = await supabase.rpc("get_portfolio_summary");
+      if (error) throw error;
+      // Το RPC επιστρέφει array — παίρνουμε το πρώτο row.
+      const row = Array.isArray(data) ? data[0] : data;
+      return (row ?? null) as PortfolioSummary | null;
+    },
     refetchInterval: 30_000,
     staleTime: 25_000,
   });
@@ -82,7 +86,7 @@ export function PortfolioPanel() {
           <h2 className="panel-title text-destructive">Portfolio Summary</h2>
         </div>
         <p className="mt-3 text-xs text-destructive/80">
-          Failed to load portfolio stats.
+          Failed to load portfolio stats. Confirm the `get_portfolio_summary()` function exists.
         </p>
         <p className="mt-2 break-words font-mono text-[10px] text-destructive/60">
           {(error as Error).message}
@@ -126,9 +130,7 @@ export function PortfolioPanel() {
         )}
       </div>
 
-      {/* Top stats: 3 columns */}
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-        {/* Realized PnL */}
         <div className="rounded-md border border-border/70 bg-background/30 p-3">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -152,7 +154,6 @@ export function PortfolioPanel() {
           </p>
         </div>
 
-        {/* Open positions */}
         <div className="rounded-md border border-border/70 bg-background/30 p-3">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -168,7 +169,6 @@ export function PortfolioPanel() {
           </p>
         </div>
 
-        {/* Last 24h */}
         <div className="rounded-md border border-border/70 bg-background/30 p-3">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -197,7 +197,6 @@ export function PortfolioPanel() {
         </div>
       </div>
 
-      {/* Win rate bar */}
       <div className="mt-3 rounded-md border border-border/70 bg-background/30 p-3">
         <div className="flex items-center justify-between gap-2">
           <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -226,7 +225,6 @@ export function PortfolioPanel() {
         </div>
       </div>
 
-      {/* Advanced stats grid: 2 columns */}
       <div className="mt-3 grid grid-cols-2 gap-2">
         <div className="rounded-md border border-border/70 bg-background/30 p-2.5">
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
