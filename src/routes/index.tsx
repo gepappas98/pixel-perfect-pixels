@@ -10,6 +10,7 @@ import { TradesPanel } from "@/components/trading/TradesPanel";
 import { TradeAlertsPanel } from "@/components/trading/TradeAlertsPanel";
 import { CronHealthPanel } from "@/components/trading/CronHealthPanel";
 import { AIRiskSummary } from "@/components/trading/AIRiskSummary";
+import { PortfolioPanel } from "@/components/trading/PortfolioPanel";
 import { getTradingStatus, runPipeline } from "@/lib/pipeline.functions";
 import { getSchedule, setSchedule } from "@/lib/schedule.functions";
 import { useQueryClient } from "@tanstack/react-query";
