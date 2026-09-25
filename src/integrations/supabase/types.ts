@@ -256,6 +256,7 @@ export type Database = {
           question: string | null
           raw: Json | null
           related_symbol: string | null
+          updated_at: string
           volume_24h: number | null
           yes_price: number | null
         }
@@ -267,6 +268,7 @@ export type Database = {
           question?: string | null
           raw?: Json | null
           related_symbol?: string | null
+          updated_at?: string
           volume_24h?: number | null
           yes_price?: number | null
         }
@@ -278,6 +280,7 @@ export type Database = {
           question?: string | null
           raw?: Json | null
           related_symbol?: string | null
+          updated_at?: string
           volume_24h?: number | null
           yes_price?: number | null
         }
@@ -467,6 +470,7 @@ export type Database = {
     }
     Functions: {
       check_and_close_trades: { Args: never; Returns: number }
+      reconcile_stuck_pipeline_runs: { Args: never; Returns: number }
       refresh_pattern_stats: { Args: never; Returns: number }
       set_pipeline_schedule: { Args: { _minutes: number }; Returns: number }
       verify_cron_secret: { Args: { _secret: string }; Returns: boolean }
