@@ -1,8 +1,23 @@
 import { createHmac } from "crypto";
 
 export const WATCHLIST = [
-  "BTC", "ETH", "SOL", "CRV", "LINK", "ARB",
-  "DOGE", "XRP", "AVAX", "ADA", "MATIC",
+  // ── Majors / L1 ───────────────────────────────────────────────
+  "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "TRX", "AVAX", "DOT",
+  "LINK", "MATIC", "LTC", "BCH", "XLM", "ETC", "ATOM", "ALGO", "VET", "ICP",
+  "HBAR", "THETA", "FTM", "RUNE", "KAVA", "EOS", "NEO", "IOTA", "KSM", "CELO",
+  "ROSE", "ONE", "ZIL", "NEAR", "APT", "SUI", "SEI", "TIA", "INJ", "ARB",
+  "OP", "STRK", "MANTA", "ZK", "BLAST", "LRC", "METIS", "MINA", "W",
+  // ── Meme / High-beta ──────────────────────────────────────────
+  "SHIB", "PEPE", "WIF", "BONK", "FLOKI", "ORDI", "BOME", "MEME",
+  // ── DeFi ──────────────────────────────────────────────────────
+  "UNI", "CRV", "AAVE", "MKR", "COMP", "SNX", "SUSHI", "1INCH", "CAKE", "DYDX",
+  "GMX", "LDO", "ENS", "BAL", "YFI", "UMA", "JUP", "PYTH", "JTO",
+  // ── AI / Data ─────────────────────────────────────────────────
+  "FET", "RNDR", "WLD", "ARKM", "TAO",
+  // ── Gaming / Metaverse ────────────────────────────────────────
+  "SAND", "MANA", "AXS", "GALA", "IMX", "APE", "ENJ", "CHZ",
+  // ── Storage / Infra ───────────────────────────────────────────
+  "FIL", "AR", "STORJ", "GRT", "ANKR", "BAT", "BAND",
 ];
 // Per-market notional floors: large-cap books print far bigger clips than alts,
 // so a single global floor either floods BTC or starves CRV/LINK/ARB.
@@ -269,7 +284,13 @@ export async function collectIndicators(): Promise<number> {
   if (rows.length === 0) return 0;
   const { data, error } = await db
     .from("indicator_snapshots")
-    .upsert(rows as never, { onConflict: "symbol,timeframe,created_at", ignoreDuplicates: true })
+    // ignoreDuplicates: false → τα υπάρχοντα rows με ίδιο (symbol, timeframe,
+    // created_at) ενημερώνονται αντί να αγνοούνται. Αυτό επιτρέπει intra-candle
+    // refreshes του RSI/MACD/price χωρίς να περιμένουμε το κλείσιμο του 4ωρου.
+    .upsert(rows as never, {
+      onConflict: "symbol,timeframe,created_at",
+      ignoreDuplicates: false,
+    })
     .select("id");
   if (error) throw error;
   return data?.length ?? 0;
