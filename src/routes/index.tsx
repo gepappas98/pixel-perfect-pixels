@@ -9,6 +9,7 @@ import { CouncilPanel } from "@/components/trading/CouncilPanel";
 import { TradesPanel } from "@/components/trading/TradesPanel";
 import { TradeAlertsPanel } from "@/components/trading/TradeAlertsPanel";
 import { CronHealthPanel } from "@/components/trading/CronHealthPanel";
+import { AIRiskSummary } from "@/components/trading/AIRiskSummary";
 import { getTradingStatus, runPipeline } from "@/lib/pipeline.functions";
 import { getSchedule, setSchedule } from "@/lib/schedule.functions";
 import { useQueryClient } from "@tanstack/react-query";
@@ -124,6 +125,7 @@ function CommandCenter() {
         <IndicatorPanel />
         <PredictionPanel />
         <CouncilPanel />
+        <AIRiskSummary />
         <CronHealthPanel />
         <div className="lg:col-span-3">
           <TradesPanel />
