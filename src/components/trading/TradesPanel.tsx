@@ -4,6 +4,7 @@ import type { Trade } from "@/lib/trading-types";
 
 const BINANCE_SYMBOL_MAP: Record<string, string> = {
   MATIC: "POL",
+  RNDR: "RENDER",
 };
 
 async function getPrices(symbols: string[]) {
