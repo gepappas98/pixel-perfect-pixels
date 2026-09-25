@@ -1,5 +1,8 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useLiveTable } from "@/hooks/useLiveTable";
+import { supabase } from "@/integrations/supabase/client";
 import type { Trade } from "@/lib/trading-types";
 
 const BINANCE_SYMBOL_MAP: Record<string, string> = {
@@ -31,13 +34,56 @@ const money = new Intl.NumberFormat("en-US", {
 });
 
 export function TradesPanel() {
-  const { rows, loading } = useLiveTable<Trade>("trades", 15);
+  const [openTrades, setOpenTrades] = useState<Trade[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Φιλτράρουμε ΜΟΝΟ τις ανοιχτές θέσεις. Οι κλειστές θέσεις έχουν
-  // "παγωμένο" realized PnL στο t.pnl (από το backend), και δεν πρέπει
-  // να ξαναϋπολογίζονται με live τιμές — αλλιώς το PnL αλλάζει συνέχεια
-  // αφού η θέση έχει κλείσει.
-  const openTrades = rows.filter((t) => t.status === "open");
+  // ── Fetch ΜΟΝΟ ανοιχτές θέσεις, χωρίς artificial limit ─────────
+  // Αντί για useLiveTable("trades", 15) που φέρνει 15 τυχαίες, κάνουμε
+  // απευθείας query με .eq("status", "open"). Έτσι φέρνουμε ΟΛΕΣ τις
+  // ανοιχτές θέσεις ανεξάρτητα από το πόσες κλειστές υπάρχουν.
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      const { data, error } = await supabase
+        .from("trades")
+        .select("*")
+        .eq("status", "open")
+        .order("created_at", { ascending: false });
+
+      if (cancelled) return;
+
+      if (error) {
+        setLoadError(error.message);
+      } else {
+        setOpenTrades((data ?? []) as Trade[]);
+        setLoadError(null);
+      }
+      setLoading(false);
+    }
+
+    load();
+
+    // Realtime: όποια αλλαγή στο trades table → refetch.
+    // Χωρίς filter, γιατί δεν μπορούμε να φιλτράρουμε με ασφάλεια
+    // σε UPDATE (μια θέση μπορεί να μεταβεί open → closed).
+    const channel = supabase
+      .channel("trades-open-realtime")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "trades" },
+        () => {
+          void load();
+        },
+      )
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      void supabase.removeChannel(channel);
+    };
+  }, []);
 
   const prices = useQuery({
     queryKey: ["position-prices", openTrades.map((row) => row.symbol).sort().join(",")],
@@ -53,7 +99,7 @@ export function TradesPanel() {
         <div>
           <h2 className="panel-title">Positions</h2>
           <p className="mt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-            Open only · Live PnL · refreshes every 30s
+            Open only · {openTrades.length} active · Live PnL · refreshes every 30s
           </p>
         </div>
         {prices.dataUpdatedAt > 0 && openTrades.length > 0 && (
@@ -64,6 +110,10 @@ export function TradesPanel() {
       </div>
 
       {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
+
+      {loadError && (
+        <p className="text-sm text-destructive">Failed to load positions: {loadError}</p>
+      )}
 
       <div className="overflow-x-auto">
         <table className="w-full min-w-[760px] text-sm">
@@ -97,7 +147,9 @@ export function TradesPanel() {
               return (
                 <tr key={t.id} className="border-t border-border font-mono text-xs">
                   <td className="py-1.5 font-semibold">{t.symbol}</td>
-                  <td className={`py-1.5 ${t.side === "buy" ? "text-bull" : "text-bear"}`}>
+                  <td
+                    className={`py-1.5 ${t.side === "buy" ? "text-bull" : "text-bear"}`}
+                  >
                     {t.side}
                   </td>
                   <td className="py-1.5 text-muted-foreground">{entry.toFixed(2)}</td>
@@ -110,7 +162,9 @@ export function TradesPanel() {
                       pnl == null ? "text-muted-foreground" : positive ? "text-bull" : "text-bear"
                     }`}
                   >
-                    {pnl == null ? "—" : `${pnl >= 0 ? "+" : "-"}${money.format(Math.abs(pnl))}`}
+                    {pnl == null
+                      ? "—"
+                      : `${pnl >= 0 ? "+" : "-"}${money.format(Math.abs(pnl))}`}
                   </td>
                   <td
                     className={`py-1.5 ${
@@ -127,7 +181,7 @@ export function TradesPanel() {
         </table>
       </div>
 
-      {!loading && openTrades.length === 0 && (
+      {!loading && !loadError && openTrades.length === 0 && (
         <p className="text-sm text-muted-foreground">No open positions right now.</p>
       )}
     </section>
