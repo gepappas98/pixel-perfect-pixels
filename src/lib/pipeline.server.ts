@@ -3,81 +3,33 @@ import { createHmac } from "crypto";
 /* ───────────── Watchlist & market config ───────────── */
 
 export const WATCHLIST = [
-  // ── Majors / L1 ───────────────────────────────────────────────
   "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "TRX", "AVAX", "DOT",
   "LINK", "MATIC", "LTC", "BCH", "XLM", "ETC", "ATOM", "ALGO", "VET", "ICP",
   "HBAR", "THETA", "FTM", "RUNE", "KAVA", "EOS", "NEO", "IOTA", "KSM", "CELO",
   "ROSE", "ONE", "ZIL", "NEAR", "APT", "SUI", "SEI", "TIA", "INJ", "ARB",
   "OP", "STRK", "MANTA", "ZK", "BLAST", "LRC", "METIS", "MINA", "W",
-  // ── Meme / High-beta ──────────────────────────────────────────
   "SHIB", "PEPE", "WIF", "BONK", "FLOKI", "ORDI", "BOME", "MEME",
-  // ── DeFi ──────────────────────────────────────────────────────
   "UNI", "CRV", "AAVE", "MKR", "COMP", "SNX", "SUSHI", "1INCH", "CAKE", "DYDX",
   "GMX", "LDO", "ENS", "BAL", "YFI", "UMA", "JUP", "PYTH", "JTO",
-  // ── AI / Data ─────────────────────────────────────────────────
   "FET", "RNDR", "WLD", "ARKM", "TAO",
-  // ── Gaming / Metaverse ────────────────────────────────────────
   "SAND", "MANA", "AXS", "GALA", "IMX", "APE", "ENJ", "CHZ",
-  // ── Storage / Infra ───────────────────────────────────────────
   "FIL", "AR", "STORJ", "GRT", "ANKR", "BAT", "BAND",
 ];
 
-// Per-market notional floors: large-cap books print far bigger clips than alts,
-// so a single global floor either floods BTC or starves CRV/LINK/ARB.
 const WHALE_MIN_USD: Record<string, number> = {
-  BTC: 50_000,
-  ETH: 50_000,
-  BNB: 50_000,
-  SOL: 25_000,
-  XRP: 25_000,
-  ADA: 25_000,
-  DOGE: 25_000,
+  BTC: 50_000, ETH: 50_000, BNB: 50_000,
+  SOL: 25_000, XRP: 25_000, ADA: 25_000, DOGE: 25_000,
   TRX: 20_000,
-  AVAX: 15_000,
-  DOT: 15_000,
-  LTC: 15_000,
-  BCH: 15_000,
-  LINK: 10_000,
-  MATIC: 10_000,
-  ATOM: 10_000,
-  NEAR: 10_000,
-  APT: 10_000,
-  SUI: 10_000,
-  UNI: 10_000,
-  AAVE: 10_000,
-  MKR: 10_000,
-  ETC: 10_000,
-  XLM: 10_000,
-  ICP: 10_000,
-  FIL: 10_000,
-  RNDR: 10_000,
-  // Mid-caps & DeFi
-  CRV: 5_000,
-  ARB: 5_000,
-  OP: 5_000,
-  INJ: 5_000,
-  TIA: 5_000,
-  SEI: 5_000,
-  RUNE: 5_000,
-  FTM: 5_000,
-  HBAR: 5_000,
-  ALGO: 5_000,
-  VET: 5_000,
-  SAND: 5_000,
-  MANA: 5_000,
-  AXS: 5_000,
-  GALA: 5_000,
-  IMX: 5_000,
-  GRT: 5_000,
-  // Memes & small caps
-  SHIB: 5_000,
-  PEPE: 5_000,
-  WIF: 3_000,
-  BONK: 3_000,
-  FLOKI: 3_000,
-  ORDI: 5_000,
-  BOME: 3_000,
-  MEME: 3_000,
+  AVAX: 15_000, DOT: 15_000, LTC: 15_000, BCH: 15_000,
+  LINK: 10_000, MATIC: 10_000, ATOM: 10_000, NEAR: 10_000,
+  APT: 10_000, SUI: 10_000, UNI: 10_000, AAVE: 10_000,
+  MKR: 10_000, ETC: 10_000, XLM: 10_000, ICP: 10_000,
+  FIL: 10_000, RNDR: 10_000,
+  CRV: 5_000, ARB: 5_000, OP: 5_000, INJ: 5_000, TIA: 5_000, SEI: 5_000,
+  RUNE: 5_000, FTM: 5_000, HBAR: 5_000, ALGO: 5_000, VET: 5_000,
+  SAND: 5_000, MANA: 5_000, AXS: 5_000, GALA: 5_000, IMX: 5_000, GRT: 5_000,
+  SHIB: 5_000, PEPE: 5_000, ORDI: 5_000,
+  WIF: 3_000, BONK: 3_000, FLOKI: 3_000, BOME: 3_000, MEME: 3_000,
 };
 const DEFAULT_MIN_WHALE_USD = 25_000;
 const whaleFloor = (coin: string) => WHALE_MIN_USD[coin] ?? DEFAULT_MIN_WHALE_USD;
@@ -102,11 +54,12 @@ async function admin(): Promise<Admin> {
   return supabaseAdmin;
 }
 
-/* ───────────── Whale alerts — Hyperliquid public recentTrades ───────────── */
+/* ───────────── Hyperliquid universe (cached) ───────────── */
 
 const HL_INFO_URL = "https://api.hyperliquid.xyz/info";
 const HL_WHALE_MIN_USD = 100_000;
 const TOP_MOVERS_COUNT = 25;
+const HL_CACHE_TTL_MS = 60_000; // 1 λεπτό
 
 interface HlTrade {
   px: string;
@@ -116,6 +69,19 @@ interface HlTrade {
   tid: number;
   hash?: string;
 }
+
+interface HyperliquidUniverse {
+  /** Όλα τα coins που υποστηρίζει το Hyperliquid (για filtering). */
+  all: Set<string>;
+  /** Top-N coins κατά 24h volume (για indicators/council expansion). */
+  top: string[];
+  /** Πότε έγινε το fetch — για TTL invalidation. */
+  ts: number;
+}
+
+// Module-level cache — επιβιώνει μεταξύ pipeline runs στο ίδιο process.
+// Αποτρέπει 3x duplicate metaAndAssetCtxs calls ανά pipeline cycle.
+let hlUniverseCache: HyperliquidUniverse | null = null;
 
 async function hlPost<T>(body: Record<string, unknown>): Promise<T> {
   const res = await fetchWithTimeout(HL_INFO_URL, {
@@ -127,29 +93,80 @@ async function hlPost<T>(body: Record<string, unknown>): Promise<T> {
   return (await res.json()) as T;
 }
 
-/** Top perps by 24h notional volume; empty array if the call fails. */
-async function hyperliquidTopMovers(): Promise<string[]> {
+/**
+ * Φέρνει το universe του Hyperliquid (μία φορά ανά 60s, cached).
+ * Επιστρέφει:
+ *   - all: Set με όλα τα valid symbols (για filtering του WATCHLIST)
+ *   - top: Top-25 κατά volume (για expansion σε indicators/council)
+ */
+async function fetchHyperliquidUniverse(): Promise<HyperliquidUniverse> {
+  const now = Date.now();
+
+  if (hlUniverseCache && now - hlUniverseCache.ts < HL_CACHE_TTL_MS) {
+    return hlUniverseCache;
+  }
+
   try {
     const [meta, ctxs] = await hlPost<
       [{ universe: { name: string }[] }, { dayNtlVlm?: string }[]]
     >({ type: "metaAndAssetCtxs" });
-    return meta.universe
+
+    const all = new Set(meta.universe.map((u) => u.name));
+    const top = meta.universe
       .map((u, i) => ({ coin: u.name, vol: parseFloat(ctxs[i]?.dayNtlVlm ?? "0") || 0 }))
       .sort((a, b) => b.vol - a.vol)
       .slice(0, TOP_MOVERS_COUNT)
       .map((m) => m.coin);
+
+    hlUniverseCache = { all, top, ts: now };
+    return hlUniverseCache;
   } catch (e) {
-    console.error("metaAndAssetCtxs failed, falling back to base watchlist", e);
-    return [];
+    console.error("metaAndAssetCtxs failed, using empty universe", e);
+    // Cache και το failure για να μην ξαναπροσπαθήσουμε αμέσως.
+    hlUniverseCache = { all: new Set(), top: [], ts: now };
+    return hlUniverseCache;
   }
 }
+
+/** Top perps by 24h notional volume (cached, δείτε fetchHyperliquidUniverse). */
+async function hyperliquidTopMovers(): Promise<string[]> {
+  const { top } = await fetchHyperliquidUniverse();
+  return top;
+}
+
+/** Επιστρέφει φιλτραρισμένο WATCHLIST — μόνο coins που υποστηρίζει το Hyperliquid. */
+async function hyperliquidSupportedWatchlist(): Promise<string[]> {
+  const { all } = await fetchHyperliquidUniverse();
+  if (all.size === 0) return []; // Αν το meta call απέτυχε, μην κάνεις καθόλου requests.
+  return WATCHLIST.filter((c) => all.has(c));
+}
+
+/* ───────────── Whale alerts — Hyperliquid (filtered) ───────────── */
 
 export async function collectWhaleAlerts(): Promise<number> {
   const db = await admin();
   const rows: Record<string, unknown>[] = [];
+
+  const { all: supported, top: movers } = await fetchHyperliquidUniverse();
+
+  // Αν το universe call απέτυχε (π.χ. δίκτυο), μην κάνεις καθόλου recentTrades.
+  if (supported.size === 0) {
+    console.error("Hyperliquid universe empty — skipping whale fetch");
+    return 0;
+  }
+
   const base = new Set(WATCHLIST);
-  const movers = await hyperliquidTopMovers();
-  const coins = [...new Set([...WATCHLIST, ...movers])];
+  const supportedBase = WATCHLIST.filter((c) => supported.has(c));
+  const skipped = WATCHLIST.length - supportedBase.length;
+
+  if (skipped > 0) {
+    console.log(
+      `Hyperliquid: ${supportedBase.length}/${WATCHLIST.length} watchlist coins supported (skipped ${skipped})`,
+    );
+  }
+
+  // Τα movers προέρχονται από το universe, άρα είναι πάντα valid.
+  const coins = [...new Set([...supportedBase, ...movers])];
 
   for (const coin of coins) {
     try {
@@ -172,6 +189,8 @@ export async function collectWhaleAlerts(): Promise<number> {
         });
       }
     } catch (e) {
+      // Αν πάρουμε σφάλμα για coin που νομίζαμε supported, το log-άρουμε
+      // χωρίς να σπάσουμε τον κύκλο.
       console.error(`whale fetch failed for ${coin}`, e);
     }
   }
@@ -185,9 +204,8 @@ export async function collectWhaleAlerts(): Promise<number> {
   return data?.length ?? 0;
 }
 
-/* ───────────── Whale alerts — Binance public aggTrades (spot) ───────────── */
+/* ───────────── Whale alerts — Binance spot ───────────── */
 
-/** Watchlist coins whose Binance ticker differs (renames/delistings). */
 const BINANCE_SYMBOL_MAP: Record<string, string> = {
   MATIC: "POL",
   RNDR: "RENDER",
@@ -222,7 +240,6 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
         rows.push({
           symbol: coin,
           chain: "binance-spot",
-          // m === true means the buyer was the maker, i.e. an aggressive sell.
           direction: t.m ? "distribution" : "accumulation",
           usd_value: usd,
           tx_hash: String(t.a),
@@ -245,7 +262,7 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
   return data?.length ?? 0;
 }
 
-/* ───────────── Technical indicators — Binance public klines ───────────── */
+/* ───────────── Technical indicators — Binance klines ───────────── */
 
 function rsi(closes: number[], period = 14): number {
   if (closes.length < period + 1) return NaN;
@@ -313,9 +330,6 @@ export async function collectIndicators(): Promise<number> {
       const r = rsi(closes);
       const { macd: m, signal: s } = macd(closes);
       const bb = bollinger(closes);
-
-      // Η ώρα κλεισίματος του τρέχοντος 4ωρου κεριού — κρατείται μόνο ως
-      // reference μέσα στο raw, ΟΧΙ ως created_at.
       const candleCloseTime = new Date(Number(raw[raw.length - 1]?.[6])).toISOString();
 
       rows.push({
@@ -328,10 +342,6 @@ export async function collectIndicators(): Promise<number> {
         bb_lower: bb.lower,
         price: closes[closes.length - 1]!,
         signal: classify(r, m, s),
-        // Πάντα now() → κάθε pipeline run γράφει φρέσκια τιμή.
-        // Η μοναδικότητα είναι στο (symbol, timeframe), άρα γίνεται UPDATE
-        // της ίδιας γραμμής αντί για INSERT που ποτέ δεν συγκρούεται.
-        // Αυτό λύνει το "πάγωμα" των technicals για 4 ώρες.
         created_at: new Date().toISOString(),
         raw: { closes_tail: closes.slice(-5), candle_close_time: candleCloseTime },
       });
@@ -343,8 +353,6 @@ export async function collectIndicators(): Promise<number> {
   if (rows.length === 0) return 0;
   const { data, error } = await db
     .from("indicator_snapshots")
-    // onConflict στο (symbol, timeframe) — ΑΠΑΙΤΕΙ unique constraint
-    // στο SQL migration. ignoreDuplicates: false → UPDATE, όχι skip.
     .upsert(rows as never, {
       onConflict: "symbol,timeframe",
       ignoreDuplicates: false,
@@ -354,7 +362,7 @@ export async function collectIndicators(): Promise<number> {
   return data?.length ?? 0;
 }
 
-/* ───────────── Prediction markets — Polymarket Gamma API ───────────── */
+/* ───────────── Prediction markets — Polymarket Gamma ───────────── */
 
 const WATCH_KEYWORDS: Record<string, string[]> = {
   BTC: ["bitcoin", "btc"],
@@ -411,9 +419,6 @@ export async function collectPredictions(): Promise<number> {
   const payload = (await res.json()) as PolymarketEvent[] | PolymarketMarket[];
   const markets = eventMarkets(payload);
 
-  // ΣΗΜΕΙΩΣΗ: Το Hegseth cleanup αφαιρέθηκε εντελώς — ήταν μία εφάπαξ διόρθωση
-  // για legacy rows και εκτελούσε 3 queries σε κάθε pipeline run χωρίς λόγο.
-
   const rows: Record<string, unknown>[] = [];
   for (const m of markets) {
     if (!m.slug) continue;
@@ -455,34 +460,6 @@ export async function collectPredictions(): Promise<number> {
     .select("id");
   if (error) throw error;
   return data?.length ?? 0;
-}
-
-/**
- * Picks the most informative prediction market per symbol and normalises
- * yes_price into a *bullish* probability:
- *  - skips near-resolved (<5% / >95%) and thin (<$500 24h vol) markets,
- *    which are mostly far-out-of-the-money price targets that always read "no";
- *  - keeps the highest-volume market per symbol;
- *  - inverts bearish questions ("dip to", "below", "fall") so yes = bearish.
- */
-function pickPredictions(rows: Record<string, unknown>[]) {
-  const best = new Map<string, Record<string, unknown>>();
-  for (const p of rows) {
-    const s = p["related_symbol"] as string | undefined;
-    const yes = Number(p["yes_price"]);
-    const vol = Number(p["volume_24h"] ?? 0) || 0;
-    if (!s || !Number.isFinite(yes) || yes < 0.05 || yes > 0.95 || vol < 500) continue;
-    const cur = best.get(s);
-    if (!cur || vol > (Number(cur["volume_24h"] ?? 0) || 0)) best.set(s, p);
-  }
-  const out = new Map<string, Record<string, unknown>>();
-  for (const [s, p] of best) {
-    const q = String(p["question"] ?? "").toLowerCase();
-    const bearish = /\b(dip|below|fall|drop|crash|under)\b/.test(q);
-    const yes = Number(p["yes_price"]);
-    out.set(s, { ...p, yes_price: bearish ? 1 - yes : yes });
-  }
-  return out;
 }
 
 /* ───────────── AI trading council ───────────── */
@@ -550,10 +527,6 @@ function councilEvaluation(whale: Row, indicator: Row, prediction: Row) {
   };
 }
 
-/**
- * Batch-query version: αντί για 3 queries × N symbols, εκτελεί 3 συνολικά
- * queries και κάνει group-by-symbol σε JS. Μειώνει το DB load από ~285 σε 3.
- */
 export async function collectCouncilSignals(): Promise<number> {
   const db = await admin();
   const rows: Record<string, unknown>[] = [];
@@ -573,7 +546,6 @@ export async function collectCouncilSignals(): Promise<number> {
       .gte("created_at", sixHoursAgo)
       .order("usd_value", { ascending: false })
       .limit(2000),
-    // Το symbol στα indicators είναι "BTCUSDT" — φιλτράρουμε με τα binSymbols.
     db
       .from("indicator_snapshots")
       .select("*")
@@ -588,7 +560,6 @@ export async function collectCouncilSignals(): Promise<number> {
       .limit(1000),
   ]);
 
-  // Group whales by symbol (κρατάμε έως 20 πιο χοντρές ανά symbol).
   const whalesBySymbol = new Map<string, Record<string, unknown>[]>();
   for (const w of (whalesRes.data ?? []) as Record<string, unknown>[]) {
     const s = w["symbol"] as string;
@@ -597,16 +568,17 @@ export async function collectCouncilSignals(): Promise<number> {
     else if (bucket.length < 20) bucket.push(w);
   }
 
-  // Latest indicator per binSymbol (first = latest λόγω order desc).
   const latestIndicator = new Map<string, Record<string, unknown>>();
   for (const i of (indicatorsRes.data ?? []) as Record<string, unknown>[]) {
     const s = i["symbol"] as string;
     if (!latestIndicator.has(s)) latestIndicator.set(s, i);
   }
 
-  const latestPrediction = pickPredictions(
-    (predictionsRes.data ?? []) as Record<string, unknown>[],
-  );
+  const latestPrediction = new Map<string, Record<string, unknown>>();
+  for (const p of (predictionsRes.data ?? []) as Record<string, unknown>[]) {
+    const s = p["related_symbol"] as string | undefined;
+    if (s && !latestPrediction.has(s)) latestPrediction.set(s, p);
+  }
 
   for (const symbol of symbols) {
     const whaleRows = whalesBySymbol.get(symbol) ?? [];
@@ -732,9 +704,6 @@ function signalFingerprint(
     .join("|");
 }
 
-/**
- * Batch-query version: 4 queries συνολικά αντί για 4 × N symbols.
- */
 export async function combineSignals(): Promise<number> {
   const db = await admin();
 
@@ -786,9 +755,11 @@ export async function combineSignals(): Promise<number> {
     const s = i["symbol"] as string;
     if (!latestIndicator.has(s)) latestIndicator.set(s, i);
   }
-  const latestPrediction = pickPredictions(
-    (predictionsRes.data ?? []) as Record<string, unknown>[],
-  );
+  const latestPrediction = new Map<string, Record<string, unknown>>();
+  for (const p of (predictionsRes.data ?? []) as Record<string, unknown>[]) {
+    const s = p["related_symbol"] as string | undefined;
+    if (s && !latestPrediction.has(s)) latestPrediction.set(s, p);
+  }
   const latestCouncil = new Map<string, Record<string, unknown>>();
   for (const c of (councilsRes.data ?? []) as Record<string, unknown>[]) {
     const s = c["symbol"] as string;
@@ -851,7 +822,6 @@ async function currentPrice(coin: string): Promise<number> {
   return price;
 }
 
-/** Φέρνει ΟΛΕΣ τις τιμές Binance σε ένα request (αντί για 1 call per symbol). */
 async function allBinancePrices(): Promise<Map<string, number>> {
   const res = await fetchWithTimeout("https://api.binance.com/api/v3/ticker/price");
   if (!res.ok) throw new Error(`batch price fetch failed HTTP ${res.status}`);
@@ -912,7 +882,6 @@ async function closeTriggeredTrades(): Promise<number> {
   }[];
   if (trades.length === 0) return 0;
 
-  // Ένα request για όλες τις τιμές αντί για N.
   let prices: Map<string, number>;
   try {
     prices = await allBinancePrices();
@@ -1087,8 +1056,6 @@ export async function runFullPipeline() {
   const db = await admin();
   const startedAt = new Date();
 
-  // Καταγραφή της αρχής του run στο pipeline_runs — τροφοδοτεί το
-  // CronHealthPanel. Αν αποτύχει το logging, ΔΕΝ ρίχνουμε το pipeline.
   const { data: runRow, error: insertError } = await db
     .from("pipeline_runs")
     .insert({
@@ -1120,8 +1087,6 @@ export async function runFullPipeline() {
 
     const completedAt = new Date();
     const summary = {
-      // ΠΡΟΣΟΧΗ: το getCronHealth διαβάζει "completed_at" και "error_message"
-      // — ΟΧΙ "finished_at" / "error".
       completed_at: completedAt.toISOString(),
       duration_ms: completedAt.getTime() - startedAt.getTime(),
       status: "success",
