@@ -11,7 +11,7 @@ import {
   Loader2,
 } from "lucide-react";
 
-/* ───────────── Types ───────────── */
+/* ─────────────  Types ───────────── */
 
 interface PortfolioSummary {
   open_count: number;
