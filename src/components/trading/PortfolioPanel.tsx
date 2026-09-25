@@ -56,12 +56,10 @@ export function PortfolioPanel() {
   const { data, isLoading, error, dataUpdatedAt } = useQuery<PortfolioSummary | null>({
     queryKey: ["portfolio-summary"],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("portfolio_summary")
-        .select("*")
-        .maybeSingle();
+      const { data, error } = await supabase.rpc("get_portfolio_summary");
       if (error) throw error;
-      return data as PortfolioSummary | null;
+      if (!data || (Array.isArray(data) && data.length === 0)) return null;
+      return (Array.isArray(data) ? data[0] : data) as PortfolioSummary;
     },
     refetchInterval: 30_000,
     staleTime: 25_000,
@@ -86,7 +84,7 @@ export function PortfolioPanel() {
           <h2 className="panel-title text-destructive">Portfolio Summary</h2>
         </div>
         <p className="mt-3 text-xs text-destructive/80">
-          Failed to load portfolio stats. Confirm the `portfolio_summary` view exists.
+          Failed to load portfolio stats.
         </p>
         <p className="mt-2 break-words font-mono text-[10px] text-destructive/60">
           {(error as Error).message}
@@ -109,8 +107,7 @@ export function PortfolioPanel() {
   const realizedPositive = data.realized_pnl >= 0;
   const last24Positive = data.last_24h_pnl >= 0;
   const pf = data.profit_factor;
-  const pfLabel =
-    pf == null ? "—" : pf >= 1 ? pf.toFixed(2) : pf.toFixed(2);
+  const pfLabel = pf == null ? "—" : pf.toFixed(2);
 
   return (
     <section className="panel">
