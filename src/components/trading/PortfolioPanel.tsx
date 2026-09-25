@@ -58,8 +58,9 @@ export function PortfolioPanel() {
     queryFn: async () => {
       const { data, error } = await supabase.rpc("get_portfolio_summary");
       if (error) throw error;
-      if (!data || (Array.isArray(data) && data.length === 0)) return null;
-      return (Array.isArray(data) ? data[0] : data) as PortfolioSummary;
+      if (!data) return null;
+      // returns json scalar — cast directly
+      return data as unknown as PortfolioSummary;
     },
     refetchInterval: 30_000,
     staleTime: 25_000,
