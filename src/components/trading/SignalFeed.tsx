@@ -25,7 +25,7 @@ export function SignalFeed() {
         acc.signals.push(row);
         acc.extraCounts[row.symbol] = 0;
       } else {
-        acc.extraCounts[row.symbol] += 1;
+        acc.extraCounts[row.symbol] = (acc.extraCounts[row.symbol] ?? 0) + 1;
       }
       return acc;
     },

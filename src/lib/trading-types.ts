@@ -23,6 +23,8 @@ export interface PredictionSnapshot {
   question: string | null;
   related_symbol: string | null;
   yes_price: number | null;
+  no_price?: number | null;
+  volume_24h?: number | null;
   created_at: string;
 }
 
