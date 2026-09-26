@@ -470,6 +470,25 @@ export type Database = {
     }
     Functions: {
       check_and_close_trades: { Args: never; Returns: number }
+      get_portfolio_summary: {
+        Args: never
+        Returns: {
+          avg_loss_usd: number
+          avg_win_usd: number
+          closed_count: number
+          gross_loss: number
+          gross_profit: number
+          last_24h_closed: number
+          last_24h_pnl: number
+          loss_count: number
+          open_count: number
+          open_notional: number
+          profit_factor: number
+          realized_pnl: number
+          win_count: number
+          win_rate_pct: number
+        }[]
+      }
       reconcile_stuck_pipeline_runs: { Args: never; Returns: number }
       refresh_pattern_stats: { Args: never; Returns: number }
       set_pipeline_schedule: { Args: { _minutes: number }; Returns: number }
