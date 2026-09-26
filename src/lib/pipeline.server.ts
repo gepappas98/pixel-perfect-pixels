@@ -1,4 +1,5 @@
 import { createHmac } from "crypto";
+import { canOpenTrade } from "./risk.engine";
 
 /* ───────────── Watchlist & market config ───────────── */
 
@@ -36,11 +37,10 @@ const whaleFloor = (coin: string) => WHALE_MIN_USD[coin] ?? DEFAULT_MIN_WHALE_US
 const TIMEFRAME = "4h";
 const KLINE_LIMIT = 100;
 const MIN_CONFIDENCE = 0.6;
-const PAPER_POSITION_USD = 1000;
 const STOP_LOSS_PCT = 0.03;
 const TAKE_PROFIT_PCT = 0.06;
 const FETCH_TIMEOUT_MS = 12_000;
-const MAX_OPEN_TRADES = 15;
+const MAX_OPEN_TRADES = 8;
 const SYMBOL_COOLDOWN_MINUTES = 60;
 
 async function fetchWithTimeout(input: string, init?: RequestInit) {
@@ -59,7 +59,7 @@ async function admin(): Promise<Admin> {
 const HL_INFO_URL = "https://api.hyperliquid.xyz/info";
 const HL_WHALE_MIN_USD = 100_000;
 const TOP_MOVERS_COUNT = 25;
-const HL_CACHE_TTL_MS = 60_000; // 1 λεπτό
+const HL_CACHE_TTL_MS = 60_000;
 
 interface HlTrade {
   px: string;
@@ -71,16 +71,11 @@ interface HlTrade {
 }
 
 interface HyperliquidUniverse {
-  /** Όλα τα coins που υποστηρίζει το Hyperliquid (για filtering). */
   all: Set<string>;
-  /** Top-N coins κατά 24h volume (για indicators/council expansion). */
   top: string[];
-  /** Πότε έγινε το fetch — για TTL invalidation. */
   ts: number;
 }
 
-// Module-level cache — επιβιώνει μεταξύ pipeline runs στο ίδιο process.
-// Αποτρέπει 3x duplicate metaAndAssetCtxs calls ανά pipeline cycle.
 let hlUniverseCache: HyperliquidUniverse | null = null;
 
 async function hlPost<T>(body: Record<string, unknown>): Promise<T> {
@@ -93,12 +88,6 @@ async function hlPost<T>(body: Record<string, unknown>): Promise<T> {
   return (await res.json()) as T;
 }
 
-/**
- * Φέρνει το universe του Hyperliquid (μία φορά ανά 60s, cached).
- * Επιστρέφει:
- *   - all: Set με όλα τα valid symbols (για filtering του WATCHLIST)
- *   - top: Top-25 κατά volume (για expansion σε indicators/council)
- */
 async function fetchHyperliquidUniverse(): Promise<HyperliquidUniverse> {
   const now = Date.now();
 
@@ -122,22 +111,19 @@ async function fetchHyperliquidUniverse(): Promise<HyperliquidUniverse> {
     return hlUniverseCache;
   } catch (e) {
     console.error("metaAndAssetCtxs failed, using empty universe", e);
-    // Cache και το failure για να μην ξαναπροσπαθήσουμε αμέσως.
     hlUniverseCache = { all: new Set(), top: [], ts: now };
     return hlUniverseCache;
   }
 }
 
-/** Top perps by 24h notional volume (cached, δείτε fetchHyperliquidUniverse). */
 async function hyperliquidTopMovers(): Promise<string[]> {
   const { top } = await fetchHyperliquidUniverse();
   return top;
 }
 
-/** Επιστρέφει φιλτραρισμένο WATCHLIST — μόνο coins που υποστηρίζει το Hyperliquid. */
 async function hyperliquidSupportedWatchlist(): Promise<string[]> {
   const { all } = await fetchHyperliquidUniverse();
-  if (all.size === 0) return []; // Αν το meta call απέτυχε, μην κάνεις καθόλου requests.
+  if (all.size === 0) return [];
   return WATCHLIST.filter((c) => all.has(c));
 }
 
@@ -149,7 +135,6 @@ export async function collectWhaleAlerts(): Promise<number> {
 
   const { all: supported, top: movers } = await fetchHyperliquidUniverse();
 
-  // Αν το universe call απέτυχε (π.χ. δίκτυο), μην κάνεις καθόλου recentTrades.
   if (supported.size === 0) {
     console.error("Hyperliquid universe empty — skipping whale fetch");
     return 0;
@@ -165,7 +150,6 @@ export async function collectWhaleAlerts(): Promise<number> {
     );
   }
 
-  // Τα movers προέρχονται από το universe, άρα είναι πάντα valid.
   const coins = [...new Set([...supportedBase, ...movers])];
 
   for (const coin of coins) {
@@ -189,8 +173,6 @@ export async function collectWhaleAlerts(): Promise<number> {
         });
       }
     } catch (e) {
-      // Αν πάρουμε σφάλμα για coin που νομίζαμε supported, το log-άρουμε
-      // χωρίς να σπάσουμε τον κύκλο.
       console.error(`whale fetch failed for ${coin}`, e);
     }
   }
@@ -1015,10 +997,38 @@ export async function executeTrades(): Promise<number> {
     }
 
     const side = signal.recommendation as "buy" | "sell";
-    const quantity = PAPER_POSITION_USD / price;
     const stopLoss = side === "buy" ? price * (1 - STOP_LOSS_PCT) : price * (1 + STOP_LOSS_PCT);
     const takeProfit =
       side === "buy" ? price * (1 + TAKE_PROFIT_PCT) : price * (1 - TAKE_PROFIT_PCT);
+
+    // ── Risk gate ──
+    const risk = await canOpenTrade(db as any, {
+      symbol: signal.symbol,
+      side,
+      entryPrice: price,
+      stopLoss,
+    });
+
+    if (!risk.allowed) {
+      console.log(
+        `[RISK_REJECTED] ${signal.symbol} ${side}: ${risk.reason} | ${risk.message}` +
+        ` | equity=${risk.equity.toFixed(2)} reqRisk=${risk.requestedRisk.toFixed(2)}` +
+        ` | portRisk=${risk.currentPortfolioRisk.toFixed(2)}/${risk.maxPortfolioRisk.toFixed(2)}` +
+        ` | dailyPnL=${risk.dailyPnL.toFixed(2)}/${risk.dailyLossLimit.toFixed(2)}` +
+        ` | openPos=${risk.openPositions}/${RISK_CONFIG.MAX_OPEN_POSITIONS}`,
+      );
+      continue;
+    }
+
+    console.log(
+      `[RISK_APPROVED] ${signal.symbol} ${side}` +
+      ` | qty=${risk.quantity.toFixed(6)} notional=${risk.notional.toFixed(2)}` +
+      ` | reqRisk=${risk.requestedRisk.toFixed(2)}` +
+      ` | portRisk=${risk.currentPortfolioRisk.toFixed(2)}/${risk.maxPortfolioRisk.toFixed(2)}` +
+      ` | dailyPnL=${risk.dailyPnL.toFixed(2)}`,
+    );
+
+    const quantity = risk.quantity;
 
     let exchangeOrderId: string | null = null;
     if (mode === "live") {
