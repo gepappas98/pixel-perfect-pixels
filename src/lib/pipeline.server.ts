@@ -1,5 +1,5 @@
 import { createHmac } from "crypto";
-import { canOpenTrade } from "./risk.engine";
+import { canOpenTrade, RISK_CONFIG } from "./risk.engine";
 
 /* ───────────── Watchlist & market config ───────────── */
 
