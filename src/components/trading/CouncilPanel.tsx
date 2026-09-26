@@ -1,5 +1,8 @@
+import { useState } from "react";
+import { useServerFn } from "@tanstack/react-start";
 import { useLiveTable } from "@/hooks/useLiveTable";
 import type { CouncilSignal } from "@/lib/trading-types";
+import { generateCouncilVerdict } from "@/lib/ai-council.functions";
 
 const tone: Record<string, string> = {
   BUY: "text-bull",
@@ -24,6 +27,52 @@ function timeAgo(value?: string | null) {
   return hours > 24 ? "stale" : `${hours}h ago`;
 }
 
+function AskCouncilForm() {
+  const generateFn = useServerFn(generateCouncilVerdict);
+  const [symbol, setSymbol] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const sym = symbol.trim().toUpperCase();
+    if (!sym) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await generateFn({ data: { symbol: sym } });
+      if (!result.ok) {
+        setError(result.error);
+      } else {
+        setSymbol("");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="mb-3 flex items-center gap-1.5">
+      <input
+        value={symbol}
+        onChange={(e) => setSymbol(e.target.value)}
+        placeholder="Ask council about… (e.g. BTC)"
+        className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 font-mono text-xs text-foreground"
+      />
+      <button
+        type="submit"
+        disabled={loading || !symbol.trim()}
+        className="shrink-0 rounded-md bg-primary px-2.5 py-1 text-[11px] font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+      >
+        {loading ? "Asking…" : "Ask"}
+      </button>
+      {error && <p className="mt-1 text-[10px] text-destructive">{error}</p>}
+    </form>
+  );
+}
+
 export function CouncilPanel() {
   const { rows: syncedRows, loading: syncing } = useLiveTable<CouncilSignal>(
     "council_signals",
@@ -42,26 +91,37 @@ export function CouncilPanel() {
         <div>
           <h2 className="panel-title">AI council</h2>
           <p className="mt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-            Whale Radar · synced feed
+            Whale Radar sync + our own verdicts
           </p>
         </div>
         <span className="flex items-center gap-1.5 text-[10px] text-bull">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-bull" /> live
         </span>
       </div>
+
+      <AskCouncilForm />
+
       {syncing && (
         <p className="text-sm text-muted-foreground">Reading latest council decisions…</p>
       )}
       <ul className="space-y-2">
         {rows.slice(0, 8).map((c) => {
           const verdict = c.final_verdict.toUpperCase();
+          const isInternal = c.depth === "internal-ai";
           return (
             <li
               key={`${c.id}-${c.symbol}`}
               className="rounded-md border border-border/70 bg-background/30 p-2.5"
             >
               <div className="flex items-center justify-between gap-2">
-                <span className="font-mono text-sm font-semibold">{c.symbol}</span>
+                <span className="flex items-center gap-1.5">
+                  <span className="font-mono text-sm font-semibold">{c.symbol}</span>
+                  {isInternal && (
+                    <span className="rounded border border-primary/30 bg-primary/10 px-1 py-0.5 text-[9px] font-medium text-primary">
+                      our AI
+                    </span>
+                  )}
+                </span>
                 <span
                   className={`rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold ${badge[verdict] ?? badge["HOLD"]} ${tone[verdict] ?? tone["HOLD"]}`}
                 >
@@ -84,13 +144,14 @@ export function CouncilPanel() {
                 </p>
               )}
               <p className="mt-2 text-[10px] text-muted-foreground">
-                {timeAgo(c.created_at ?? c.source_created_at)} · {c.depth ?? "council synthesis"}
+                {timeAgo(c.created_at ?? c.source_created_at)} ·{" "}
+                {isInternal ? "our own AI council" : c.depth ?? "council synthesis"}
               </p>
             </li>
           );
         })}
         {!syncing && rows.length === 0 && (
-          <p className="text-sm text-muted-foreground">No council verdicts synced yet.</p>
+          <p className="text-sm text-muted-foreground">No council verdicts yet.</p>
         )}
       </ul>
       {updated && (
