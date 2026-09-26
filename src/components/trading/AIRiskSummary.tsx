@@ -80,7 +80,7 @@ export function AIRiskSummary() {
             AI Risk Summary
           </h2>
           <p className="mt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-            AI Gateway · Lovable AI
+            Pollinations.ai · free
           </p>
         </div>
       </div>
@@ -174,7 +174,7 @@ export function AIRiskSummary() {
       )}
 
       <p className="mt-3 border-t border-border/70 pt-2 text-[10px] text-muted-foreground">
-        Powered by Lovable AI Gateway
+        Powered by Pollinations.ai (free, no key)
       </p>
     </section>
   );
