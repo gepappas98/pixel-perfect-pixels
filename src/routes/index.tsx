@@ -6,6 +6,7 @@ import { WhalePanel } from "@/components/trading/WhalePanel";
 import { IndicatorPanel } from "@/components/trading/IndicatorPanel";
 import { PredictionPanel } from "@/components/trading/PredictionPanel";
 import { CouncilPanel } from "@/components/trading/CouncilPanel";
+import { RiskPanel } from "@/components/trading/RiskPanel";
 import { TradesPanel } from "@/components/trading/TradesPanel";
 import { TradeAlertsPanel } from "@/components/trading/TradeAlertsPanel";
 import { CronHealthPanel } from "@/components/trading/CronHealthPanel";
