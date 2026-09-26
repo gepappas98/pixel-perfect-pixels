@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { formatPrice } from "@/lib/format-price";
 import type { Trade } from "@/lib/trading-types";
 
 const BINANCE_SYMBOL_MAP: Record<string, string> = {
@@ -152,8 +153,8 @@ export function TradesPanel() {
                   >
                     {t.side}
                   </td>
-                  <td className="py-1.5 text-muted-foreground">{entry.toFixed(2)}</td>
-                  <td className="py-1.5">{current == null ? "—" : current.toFixed(2)}</td>
+                  <td className="py-1.5 text-muted-foreground">{formatPrice(entry)}</td>
+                  <td className="py-1.5">{current == null ? "—" : formatPrice(current)}</td>
                   <td className="py-1.5 text-muted-foreground">
                     {money.format(quantity * entry)}
                   </td>
