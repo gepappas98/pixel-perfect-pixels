@@ -125,10 +125,11 @@ function CommandCenter() {
         </div>
         <WhalePanel />
         <IndicatorPanel />
+        <RiskPanel />
+        <PortfolioPanel />
         <PredictionPanel />
         <CouncilPanel />
         <CronHealthPanel />
-        <PortfolioPanel />
         <div className="lg:col-span-3">
           <TradesPanel />
         </div>
