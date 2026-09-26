@@ -509,6 +509,123 @@ function councilEvaluation(whale: Row, indicator: Row, prediction: Row) {
   };
 }
 
+/* ── AI batch layer (Pollinations) — only for coins that actually matter ──
+ *
+ * Strategy (avoids rate limits, keeps the pipeline fast and resilient):
+ *  1. FILTER — a coin only qualifies for an AI call if it has a whale print
+ *     ≥ $100k in the lookback window, OR its 4h RSI is in extreme territory
+ *     (<30 oversold / >70 overbought). Calm coins skip AI entirely and use
+ *     the deterministic 3-voice councilEvaluation() below — instant, free.
+ *  2. CACHE — a qualifying coin still skips the AI call if it already has
+ *     an 'ai-batch' verdict younger than AI_VERDICT_TTL_MS. This spreads
+ *     calls out over time instead of re-asking every cycle.
+ *  3. BATCH — every coin that's qualifying AND stale goes into ONE prompt,
+ *     capped at AI_BATCH_MAX coins (highest whale volume first), and gets
+ *     ONE Pollinations call for the whole batch instead of one-per-coin.
+ *  4. FALLBACK — the call is wrapped in a hard timeout; on any failure
+ *     (timeout, non-200, bad JSON) every coin in that batch silently falls
+ *     back to councilEvaluation() instead. The pipeline never stalls or
+ *     throws because of the AI step.
+ */
+
+const AI_VERDICT_TTL_MS = 40 * 60 * 1000; // 40 minutes
+const AI_BATCH_MAX = 5;
+const AI_RSI_OVERSOLD = 30;
+const AI_RSI_OVERBOUGHT = 70;
+const AI_CALL_TIMEOUT_MS = 6_000;
+
+interface AiCandidate {
+  symbol: string;
+  whale: Row;
+  indicator: Row;
+  prediction: Row;
+  whaleUsd: number;
+}
+
+function qualifiesForAi(whale: Row, indicator: Row): boolean {
+  const whaleUsd = typeof whale?.["usd_value"] === "number" ? (whale["usd_value"] as number) : 0;
+  if (whaleUsd >= HL_WHALE_MIN_USD) return true;
+  const r = typeof indicator?.["rsi"] === "number" ? (indicator["rsi"] as number) : null;
+  if (r != null && (r < AI_RSI_OVERSOLD || r > AI_RSI_OVERBOUGHT)) return true;
+  return false;
+}
+
+async function pollinationsBatchCouncil(
+  candidates: AiCandidate[],
+): Promise<Map<string, { final_verdict: CouncilVerdict; conviction: number; reflection: string }>> {
+  const result = new Map<
+    string,
+    { final_verdict: CouncilVerdict; conviction: number; reflection: string }
+  >();
+  if (candidates.length === 0) return result;
+
+  const payload = candidates.map((c) => ({
+    symbol: c.symbol,
+    whale_direction: c.whale?.["direction"] ?? "none",
+    whale_usd: Math.round(c.whaleUsd),
+    rsi: typeof c.indicator?.["rsi"] === "number" ? Math.round(c.indicator["rsi"] as number) : null,
+    technical_signal: c.indicator?.["signal"] ?? "unknown",
+    price: c.indicator?.["price"] ?? null,
+    prediction_yes_price: c.prediction?.["yes_price"] ?? null,
+  }));
+
+  const prompt = [
+    "You are a crypto trading council analyzing several coins at once.",
+    "For EACH coin in the data below, give an independent verdict.",
+    'Respond with ONLY a minified JSON array, no markdown, no code fences, exactly this shape:',
+    '[{"symbol":"BTC","verdict":"BUY|SELL|HOLD|AVOID","conviction":0-100,"reflection":"one short sentence"}]',
+    "One object per coin, same order as given, same symbol names.",
+    "",
+    JSON.stringify(payload),
+  ].join("\n");
+
+  try {
+    const res = await fetch("https://text.pollinations.ai/openai", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "openai",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.4,
+      }),
+      signal: AbortSignal.timeout(AI_CALL_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`Pollinations AI HTTP ${res.status}`);
+
+    const data = await res.json();
+    const content = data?.choices?.[0]?.message?.content;
+    if (typeof content !== "string") throw new Error("no content in AI response");
+
+    const clean = content.replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(clean) as {
+      symbol: string;
+      verdict: string;
+      conviction: number;
+      reflection?: string;
+    }[];
+    if (!Array.isArray(parsed)) throw new Error("AI response is not an array");
+
+    for (const item of parsed) {
+      const verdict = String(item.verdict ?? "").toUpperCase();
+      if (!["BUY", "SELL", "HOLD", "AVOID"].includes(verdict)) continue;
+      result.set(item.symbol, {
+        final_verdict: verdict as CouncilVerdict,
+        conviction: Math.max(0, Math.min(100, Number(item.conviction) || 0)),
+        reflection: item.reflection ?? "AI batch verdict.",
+      });
+    }
+  } catch (e) {
+    console.error(
+      `pollinationsBatchCouncil failed for [${candidates.map((c) => c.symbol).join(",")}], falling back to deterministic council:`,
+      e,
+    );
+    // Returning what we have (possibly empty) — callers fall back to
+    // councilEvaluation() for any symbol missing from the map.
+  }
+
+  return result;
+}
+
 export async function collectCouncilSignals(): Promise<number> {
   const db = await admin();
   const rows: Record<string, unknown>[] = [];
@@ -519,8 +636,9 @@ export async function collectCouncilSignals(): Promise<number> {
 
   const binSymbols = symbols.map(binanceSymbol);
   const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  const aiCacheSince = new Date(Date.now() - AI_VERDICT_TTL_MS).toISOString();
 
-  const [whalesRes, indicatorsRes, predictionsRes] = await Promise.all([
+  const [whalesRes, indicatorsRes, predictionsRes, freshAiRes] = await Promise.all([
     db
       .from("whale_alerts")
       .select("*")
@@ -540,6 +658,13 @@ export async function collectCouncilSignals(): Promise<number> {
       .in("related_symbol", symbols)
       .order("created_at", { ascending: false })
       .limit(1000),
+    // Cache check: symbols with a still-fresh AI-batch verdict skip AI entirely this cycle.
+    db
+      .from("council_signals")
+      .select("symbol, source_created_at")
+      .eq("depth", "ai-batch")
+      .in("symbol", symbols)
+      .gte("source_created_at", aiCacheSince),
   ]);
 
   const whalesBySymbol = new Map<string, Record<string, unknown>[]>();
@@ -562,10 +687,19 @@ export async function collectCouncilSignals(): Promise<number> {
     if (s && !latestPrediction.has(s)) latestPrediction.set(s, p);
   }
 
+  const freshAiSymbols = new Set(
+    ((freshAiRes.data ?? []) as { symbol: string }[]).map((r) => r.symbol),
+  );
+
+  // Build per-symbol context once, decide calm vs. AI-qualifying vs. cached.
+  const perSymbol = new Map<string, { whale: Row; indicator: Row; prediction: Row }>();
+  const aiCandidates: AiCandidate[] = [];
+
   for (const symbol of symbols) {
     const whaleRows = whalesBySymbol.get(symbol) ?? [];
     const accumulation = whaleRows.filter((r) => r["direction"] === "accumulation").length;
     const distribution = whaleRows.filter((r) => r["direction"] === "distribution").length;
+    const whaleUsdTotal = whaleRows.reduce((sum, r) => sum + Number(r["usd_value"] ?? 0), 0);
     const whale = whaleRows.length
       ? ({
           direction:
@@ -575,23 +709,50 @@ export async function collectCouncilSignals(): Promise<number> {
                 ? "accumulation"
                 : "distribution",
           id: whaleRows[0]?.["id"],
-          usd_value: whaleRows.reduce((sum, r) => sum + Number(r["usd_value"] ?? 0), 0),
+          usd_value: whaleUsdTotal,
         } as Row)
       : null;
     const indicator = (latestIndicator.get(binanceSymbol(symbol)) ?? null) as Row;
     const prediction = (latestPrediction.get(symbol) ?? null) as Row;
     if (!whale && !indicator && !prediction) continue;
 
-    const sourceId = [symbol, whale?.["id"], indicator?.["id"], prediction?.["id"]].join(":");
-    const result = councilEvaluation(whale, indicator, prediction);
+    perSymbol.set(symbol, { whale, indicator, prediction });
+
+    if (!freshAiSymbols.has(symbol) && qualifiesForAi(whale, indicator)) {
+      aiCandidates.push({ symbol, whale, indicator, prediction, whaleUsd: whaleUsdTotal });
+    }
+  }
+
+  // Cap the batch to the most active qualifying coins; anything beyond the
+  // cap this cycle just gets evaluated deterministically instead (it'll be
+  // picked up by AI next cycle if it's still qualifying).
+  aiCandidates.sort((a, b) => b.whaleUsd - a.whaleUsd);
+  const aiBatch = aiCandidates.slice(0, AI_BATCH_MAX);
+  const aiResults = await pollinationsBatchCouncil(aiBatch);
+
+  for (const [symbol, ctx] of perSymbol) {
+    if (freshAiSymbols.has(symbol)) continue; // cached AI verdict still valid — leave it as-is
+
+    const aiResult = aiResults.get(symbol);
+    const usedAi = !!aiResult;
+    const result = aiResult ?? councilEvaluation(ctx.whale, ctx.indicator, ctx.prediction);
+
+    const sourceId = [
+      symbol,
+      ctx.whale?.["id"],
+      ctx.indicator?.["id"],
+      ctx.prediction?.["id"],
+      usedAi ? "ai" : "rule",
+    ].join(":");
+
     rows.push({
       symbol,
       source_id: sourceId,
       final_verdict: result.final_verdict,
       conviction: result.conviction,
-      price_at: typeof indicator?.["price"] === "number" ? indicator["price"] : null,
+      price_at: typeof ctx.indicator?.["price"] === "number" ? ctx.indicator["price"] : null,
       reflection: result.reflection,
-      depth: "ai-synthesis",
+      depth: usedAi ? "ai-batch" : "ai-synthesis",
       source_created_at: new Date().toISOString(),
     });
   }
