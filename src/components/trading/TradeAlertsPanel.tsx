@@ -1,4 +1,5 @@
 import { useLiveTable } from "@/hooks/useLiveTable";
+import { formatPrice } from "@/lib/format-price";
 import type { TradeAlert } from "@/lib/trading-types";
 
 export function TradeAlertsPanel() {
@@ -33,8 +34,8 @@ export function TradeAlertsPanel() {
                 >
                   {a.event_type === "take_profit" ? "target hit" : "stop hit"}
                 </td>
-                <td className="py-1.5 text-muted-foreground">{Number(a.entry_price).toFixed(2)}</td>
-                <td className="py-1.5 text-muted-foreground">{Number(a.exit_price).toFixed(2)}</td>
+                <td className="py-1.5 text-muted-foreground">{formatPrice(a.entry_price)}</td>
+                <td className="py-1.5 text-muted-foreground">{formatPrice(a.exit_price)}</td>
                 <td className={`py-1.5 ${a.pnl >= 0 ? "text-bull" : "text-bear"}`}>
                   {a.pnl >= 0 ? "+" : ""}
                   {Number(a.pnl).toFixed(2)} ({a.pnl_pct >= 0 ? "+" : ""}
