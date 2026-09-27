@@ -44,7 +44,7 @@ const STOP_LOSS_PCT = 0.03;
 const TAKE_PROFIT_PCT = 0.06;
 const FETCH_TIMEOUT_MS = 12_000;
 const MAX_OPEN_TRADES = RISK_CONFIG.MAX_OPEN_POSITIONS;
-const MAX_ENTRY_DRIFT_PCT = 0.02; // 2% max drift -- 1% was too tight for 4h signals
+const MAX_ENTRY_DRIFT_PCT = 0.02;
 const SYMBOL_COOLDOWN_MINUTES = 60;
 const WHALE_LOOKBACK_HOURS = 6;
 
@@ -93,12 +93,19 @@ async function hlPost<T>(body: Record<string, unknown>): Promise<T> {
   return (await res.json()) as T;
 }
 
+/* FIX Bug 1: μην cache-άρεις ποτέ κενό/αποτυχημένο universe.
+ * Το προηγούμενο "hlUniverseCache = { all: new Set(), top: [], ts: now }"
+ * στο catch έκανε poison το cache για 60s → 0 whale prints σε όλα τα επόμενα runs. */
 async function fetchHyperliquidUniverse(): Promise<HyperliquidUniverse> {
   const now = Date.now();
   if (hlUniverseCache && now - hlUniverseCache.ts < HL_CACHE_TTL_MS) return hlUniverseCache;
   try {
     const [meta, ctxs] = await hlPost<[{ universe: { name: string }[] }, { dayNtlVlm?: string }[]]>({ type: "metaAndAssetCtxs" });
     const all = new Set(meta.universe.map((u) => u.name));
+    if (all.size === 0) {
+      console.error("[HL] empty universe returned, not caching");
+      return { all: new Set(), top: [], ts: 0 };
+    }
     const top = meta.universe
       .map((u, i) => ({ coin: u.name, vol: parseFloat(ctxs[i]?.dayNtlVlm ?? "0") || 0 }))
       .sort((a, b) => b.vol - a.vol)
@@ -107,9 +114,8 @@ async function fetchHyperliquidUniverse(): Promise<HyperliquidUniverse> {
     hlUniverseCache = { all, top, ts: now };
     return hlUniverseCache;
   } catch (e) {
-    console.error("metaAndAssetCtxs failed, using empty universe", e);
-    hlUniverseCache = { all: new Set(), top: [], ts: now };
-    return hlUniverseCache;
+    console.error("[HL] metaAndAssetCtxs failed, not caching empty", e);
+    return { all: new Set(), top: [], ts: 0 };
   }
 }
 
@@ -124,11 +130,11 @@ export async function collectWhaleAlerts(): Promise<number> {
   const db = await admin();
   const rows: Record<string, unknown>[] = [];
   const { all: supported, top: movers } = await fetchHyperliquidUniverse();
-  if (supported.size === 0) { console.error("Hyperliquid universe empty — skipping whale fetch"); return 0; }
+  if (supported.size === 0) { console.error("[HL] universe empty — skipping whale fetch"); return 0; }
   const base = new Set(WATCHLIST);
   const supportedBase = WATCHLIST.filter((c) => supported.has(c));
   const skipped = WATCHLIST.length - supportedBase.length;
-  if (skipped > 0) console.log(`Hyperliquid: ${supportedBase.length}/${WATCHLIST.length} watchlist coins supported (skipped ${skipped})`);
+  if (skipped > 0) console.log(`[HL] ${supportedBase.length}/${WATCHLIST.length} watchlist coins supported (skipped ${skipped})`);
   const coins = [...new Set([...supportedBase, ...movers])];
   for (const coin of coins) {
     try {
@@ -146,7 +152,7 @@ export async function collectWhaleAlerts(): Promise<number> {
           raw: t as unknown as Record<string, unknown>,
         });
       }
-    } catch (e) { console.error(`whale fetch failed for ${coin}`, e); }
+    } catch (e) { console.error(`[HL] whale fetch failed for ${coin}`, e); }
   }
   if (rows.length === 0) return 0;
   const { data, error } = await db.from("whale_alerts").upsert(rows as never, { onConflict: "source,tx_hash", ignoreDuplicates: true }).select("id");
@@ -181,7 +187,7 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
           raw: t as unknown as Record<string, unknown>,
         });
       }
-    } catch (e) { console.error(`binance whale fetch failed for ${coin}`, e); }
+    } catch (e) { console.error(`[BINANCE] whale fetch failed for ${coin}`, e); }
   }
   if (rows.length === 0) return 0;
   const { data, error } = await db.from("whale_alerts").upsert(rows as never, { onConflict: "source,tx_hash", ignoreDuplicates: true }).select("id");
@@ -258,7 +264,7 @@ export async function collectIndicators(): Promise<number> {
         created_at: new Date().toISOString(),
         raw: { closes_tail: closes.slice(-5), candle_close_time: candleCloseTime },
       });
-    } catch (e) { console.error(`indicator fetch failed for ${symbol}`, e); }
+    } catch (e) { console.error(`[BINANCE] indicator fetch failed for ${symbol}`, e); }
   }
   if (rows.length === 0) return 0;
   const { data, error } = await db.from("indicator_snapshots").upsert(rows as never, { onConflict: "symbol,timeframe", ignoreDuplicates: false }).select("id");
@@ -342,8 +348,13 @@ function councilEvaluation(whale: Row, indicator: Row, prediction: Row) {
   const counts = votes.reduce<Record<string, number>>((all, vote) => { all[vote] = (all[vote] ?? 0) + 1; return all; }, {});
   const ordered = (Object.entries(counts) as [CouncilVerdict, number][]).sort((a, b) => b[1] - a[1]);
   const [topVote, topCount] = ordered[0] ?? ["HOLD", 0];
-  const conviction = Math.round((topCount / votes.length) * 100);
+  const rawConviction = Math.round((topCount / votes.length) * 100);
   const verdict: CouncilVerdict = topCount === 1 ? "AVOID" : topVote;
+
+  /* FIX Bug 3: HOLD = "δεν έχω directional άποψη" → conviction 0.
+   * Πριν έβγαινε "HOLD (100% conviction)" που είναι παραπλανητικό. */
+  const conviction = verdict === "HOLD" ? 0 : rawConviction;
+
   return { final_verdict: verdict, conviction, reflection: `${verdict} with ${conviction}% consensus: ${reasons.join("; ")}.` };
 }
 
@@ -369,7 +380,6 @@ interface AiCandidate {
 
 function qualifiesForAi(whale: Row, indicator: Row, symbol?: string): boolean {
   const whaleUsd = typeof whale?.["usd_value"] === "number" ? (whale["usd_value"] as number) : 0;
-  // Per-market floor: BTC/ETH χρησιμοποιούν $50k, alts $5k-25k.
   const floor = symbol ? whaleFloor(symbol) : AI_WHALE_MIN_USD;
   if (whaleUsd >= floor) return true;
   const r = typeof indicator?.["rsi"] === "number" ? (indicator["rsi"] as number) : null;
@@ -454,7 +464,6 @@ export async function collectCouncilSignals(): Promise<number> {
     db.from("indicator_snapshots").select("*").in("symbol", binSymbols).order("created_at", { ascending: false }).limit(2000),
     db.from("prediction_snapshots").select("*").in("related_symbol", symbols).order("created_at", { ascending: false }).limit(1000),
     db.from("council_signals").select("symbol, source_created_at").eq("depth", "ai-batch").in("symbol", symbols).gte("source_created_at", aiCacheSince),
-    // Πιο πρόσφατο AI batch (οποιοδήποτε symbol) — για rate limiting
     db.from("council_signals").select("source_created_at").eq("depth", "ai-batch").order("source_created_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
   const whalesBySymbol = new Map<string, Record<string, unknown>[]>();
@@ -475,14 +484,9 @@ export async function collectCouncilSignals(): Promise<number> {
     if (s && !latestPrediction.has(s)) latestPrediction.set(s, p);
   }
   const freshAiSymbols = new Set(((freshAiRes.data ?? []) as { symbol: string }[]).map((r) => r.symbol));
-
-  // ── Rate limit guard: έχει περάσει αρκετός χρόνος από το τελευταίο AI batch; ──
-  const lastAiAt = lastAiRes.data?.source_created_at
-    ? new Date(lastAiRes.data.source_created_at).getTime()
-    : 0;
+  const lastAiAt = lastAiRes.data?.source_created_at ? new Date(lastAiRes.data.source_created_at).getTime() : 0;
   const minutesSinceLastAi = lastAiAt > 0 ? (Date.now() - lastAiAt) / 60_000 : Infinity;
   const aiAllowed = minutesSinceLastAi >= AI_MIN_MINUTES_BETWEEN_BATCHES;
-
   const perSymbol = new Map<string, { whale: Row; indicator: Row; prediction: Row }>();
   const aiCandidates: AiCandidate[] = [];
   for (const symbol of symbols) {
@@ -512,8 +516,6 @@ export async function collectCouncilSignals(): Promise<number> {
       aiCandidates.push({ symbol, whale, indicator, prediction, whaleUsd: whaleUsdTotal });
     }
   }
-
-  // ── AI batch (μόνο αν πέρασε το rate limit window) ──
   let aiResults = new Map<string, { final_verdict: CouncilVerdict; conviction: number; reflection: string }>();
   if (aiAllowed) {
     aiCandidates.sort((a, b) => b.whaleUsd - a.whaleUsd);
@@ -522,7 +524,6 @@ export async function collectCouncilSignals(): Promise<number> {
   } else {
     console.log(`[GROQ] Rate guard: skipping AI batch — only ${minutesSinceLastAi.toFixed(1)}min since last run (min ${AI_MIN_MINUTES_BETWEEN_BATCHES}min)`);
   }
-
   for (const [symbol, ctx] of perSymbol) {
     if (freshAiSymbols.has(symbol)) continue;
     const aiResult = aiResults.get(symbol);
@@ -546,73 +547,37 @@ export async function collectCouncilSignals(): Promise<number> {
 
 /* ───────────── Signal combiner ───────────── */
 
-/*
- * Scoring weights:
- *   Whale flow   = ±1.00  (USD-weighted direction)
- *   Technicals   = ±1.00
- *   Prediction   = ±0.50
- *   AI Council   = ±0.75 max (confirmation layer only)
- *   Max score:   ±3.25
- *
- * AVOID = uncertainty, zero directional pressure.
- * High-conviction AVOID (>=60%) vetoes execution
- * without changing the underlying score.
- */
 const COMPOSITE_AI_MAX_WEIGHT = 0.75;
 
 function ruleBased(whale: Row, indicator: Row, prediction: Row, council: Row) {
   let score = 0;
   const reasons: string[] = [];
   let aiAvoid = false;
-
-  /* 1. Whale flow */
   if (whale?.["direction"] === "accumulation") { score += 1; reasons.push("whale accumulation"); }
   else if (whale?.["direction"] === "distribution") { score -= 1; reasons.push("whale distribution"); }
-
-  /* 2. Technicals */
   if (indicator?.["signal"] === "bullish") { score += 1; reasons.push("bullish technicals (RSI/MACD)"); }
   else if (indicator?.["signal"] === "bearish") { score -= 1; reasons.push("bearish technicals (RSI/MACD)"); }
-
-  /* 3. Prediction market */
   const yes = Number(prediction?.["yes_price"]);
   if (Number.isFinite(yes)) {
     if (yes > 0.6) { score += 0.5; reasons.push("prediction market leaning yes"); }
     else if (yes < 0.4) { score -= 0.5; reasons.push("prediction market leaning no"); }
   }
-
-  /* 4. AI Council — confirmation layer only */
   if (council?.["final_verdict"]) {
     const convictionRaw = Number(council["conviction"]);
     const conviction = Number.isFinite(convictionRaw) ? Math.max(0, Math.min(100, convictionRaw)) : 50;
     const weight = (conviction / 100) * COMPOSITE_AI_MAX_WEIGHT;
     const verdict = String(council["final_verdict"]).toUpperCase();
-    if (verdict === "BUY") {
-      score += weight;
-      reasons.push(`council: BUY (${Math.round(conviction)}% conviction)`);
-    } else if (verdict === "SELL") {
-      score -= weight;
-      reasons.push(`council: SELL (${Math.round(conviction)}% conviction)`);
-    } else if (verdict === "AVOID") {
-      // Zero directional pressure. High-conviction AVOID vetoes execution.
-      aiAvoid = conviction >= 60;
-      reasons.push(`council: AVOID (${Math.round(conviction)}% conviction)`);
-    } else {
-      reasons.push(`council: HOLD (${Math.round(conviction)}% conviction)`);
-    }
+    if (verdict === "BUY") { score += weight; reasons.push(`council: BUY (${Math.round(conviction)}% conviction)`); }
+    else if (verdict === "SELL") { score -= weight; reasons.push(`council: SELL (${Math.round(conviction)}% conviction)`); }
+    else if (verdict === "AVOID") { aiAvoid = conviction >= 60; reasons.push(`council: AVOID (${Math.round(conviction)}% conviction)`); }
+    else { reasons.push(`council: HOLD (${Math.round(conviction)}% conviction)`); }
   }
-
-  /* 5. Decision */
   let recommendation: "buy" | "sell" | "hold" | "watch" = "watch";
   if (score >= 1.5) recommendation = "buy";
   else if (score <= -1.5) recommendation = "sell";
   else if (Math.abs(score) < 0.5) recommendation = "hold";
-
-  // High-conviction AVOID blocks execution while keeping
-  // the directional score intact for UI diagnostics.
   if (aiAvoid) recommendation = "watch";
-
   const confidence = Math.min(1, Math.abs(score) / 3.25);
-
   return {
     recommendation,
     confidence,
@@ -621,11 +586,7 @@ function ruleBased(whale: Row, indicator: Row, prediction: Row, council: Row) {
 }
 
 function signalFingerprint(
-  symbol: string,
-  whale: Row,
-  indicator: Row,
-  prediction: Row,
-  council: Row,
+  symbol: string, whale: Row, indicator: Row, prediction: Row, council: Row,
   result: ReturnType<typeof ruleBased>,
 ) {
   const normalize = (value: unknown): string => {
@@ -635,24 +596,15 @@ function signalFingerprint(
   };
   return [
     symbol,
-    normalize(whale?.["direction"]),
-    normalize(whale?.["buy_usd"]),
-    normalize(whale?.["sell_usd"]),
-    normalize(whale?.["usd_value"]),
-    normalize(indicator?.["created_at"]),
-    normalize(indicator?.["rsi"]),
-    normalize(indicator?.["macd"]),
-    normalize(indicator?.["macd_signal"]),
-    normalize(indicator?.["price"]),
-    normalize(indicator?.["signal"]),
-    normalize(prediction?.["market_slug"]),
-    normalize(prediction?.["yes_price"]),
-    normalize(prediction?.["no_price"]),
-    normalize(council?.["source_created_at"]),
-    normalize(council?.["final_verdict"]),
-    normalize(council?.["conviction"]),
-    result.recommendation,
-    result.confidence.toFixed(4),
+    normalize(whale?.["direction"]), normalize(whale?.["buy_usd"]),
+    normalize(whale?.["sell_usd"]), normalize(whale?.["usd_value"]),
+    normalize(indicator?.["created_at"]), normalize(indicator?.["rsi"]),
+    normalize(indicator?.["macd"]), normalize(indicator?.["macd_signal"]),
+    normalize(indicator?.["price"]), normalize(indicator?.["signal"]),
+    normalize(prediction?.["market_slug"]), normalize(prediction?.["yes_price"]),
+    normalize(prediction?.["no_price"]), normalize(council?.["source_created_at"]),
+    normalize(council?.["final_verdict"]), normalize(council?.["conviction"]),
+    result.recommendation, result.confidence.toFixed(4),
   ].join("|");
 }
 
@@ -704,10 +656,7 @@ export async function combineSignals(): Promise<number> {
       else if (sellUsd > buyUsd * 1.15) direction = "distribution";
       whale = {
         id: whaleRows[0]?.["id"] ?? null,
-        direction,
-        usd_value: whaleUsdTotal,
-        buy_usd: buyUsd,
-        sell_usd: sellUsd,
+        direction, usd_value: whaleUsdTotal, buy_usd: buyUsd, sell_usd: sellUsd,
         buy_count: whaleRows.filter((r) => r["direction"] === "accumulation").length,
         sell_count: whaleRows.filter((r) => r["direction"] === "distribution").length,
       };
@@ -717,6 +666,11 @@ export async function combineSignals(): Promise<number> {
     const council = (latestCouncil.get(symbol) ?? null) as Row;
     if (!whale && !indicator && !prediction && !council) continue;
     const result = ruleBased(whale, indicator, prediction, council);
+
+    /* FIX Bug 2: skip signals χωρίς καμία directional πληροφορία.
+     * Πριν γέμιζε το feed με "hold 0% confidence" rows που δεν προσθέτουν αξία. */
+    if (result.recommendation === "hold" && result.confidence === 0) continue;
+
     const fingerprint = signalFingerprint(symbol, whale, indicator, prediction, council, result);
     const { data, error } = await db
       .from("composite_signals")
@@ -808,20 +762,13 @@ async function closeTriggeredTrades(): Promise<number> {
     const closedAt = new Date().toISOString();
     const entryPrice = Number(trade.entry_price);
     const fee = computeFeeAwarePnl(trade.side, entryPrice, price, Number(trade.quantity));
-    // Write only columns that exist in the schema
     const { data: closedTrade, error: closeError } = await db
       .from("trades")
       .update({
         status: "closed",
-        pnl: fee.netPnl,
-        gross_pnl: fee.grossPnl,
-        net_pnl: fee.netPnl,
-        entry_fee: fee.entryFee,
-        exit_fee: fee.exitFee,
-        total_fees: fee.totalFees,
-        exit_price: price,
-        close_reason: closeReason,
-        closed_at: closedAt,
+        pnl: fee.netPnl, gross_pnl: fee.grossPnl, net_pnl: fee.netPnl,
+        entry_fee: fee.entryFee, exit_fee: fee.exitFee, total_fees: fee.totalFees,
+        exit_price: price, close_reason: closeReason, closed_at: closedAt,
       })
       .eq("id", trade.id)
       .eq("status", "open")
@@ -869,7 +816,6 @@ export async function executeTrades(): Promise<number> {
     if (existing && existing.length > 0) continue;
     let price: number;
     try { price = await currentPrice(signal.symbol); } catch { continue; }
-    // Reject stale signals where price has drifted more than MAX_ENTRY_DRIFT_PCT
     const signalPrice = Number(signal.price_at);
     if (Number.isFinite(signalPrice) && signalPrice > 0 && Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT) {
       console.log(`[ENTRY_REJECTED] ${signal.symbol}: price drift ${(Math.abs(price - signalPrice) / signalPrice * 100).toFixed(2)}% > ${(MAX_ENTRY_DRIFT_PCT * 100).toFixed(2)}%`);
@@ -880,10 +826,10 @@ export async function executeTrades(): Promise<number> {
     const takeProfit = side === "buy" ? price * (1 + TAKE_PROFIT_PCT) : price * (1 - TAKE_PROFIT_PCT);
     const risk = await canOpenTrade(db as any, { symbol: signal.symbol, side, entryPrice: price, stopLoss });
     if (!risk.allowed) {
-      console.log(`[RISK_REJECTED] ${signal.symbol} ${side}: ${risk.reason} | equity=${risk.equity.toFixed(2)} reqRisk=${risk.requestedRisk.toFixed(2)} | portRisk=${risk.currentPortfolioRisk.toFixed(2)}/${risk.maxPortfolioRisk.toFixed(2)} | dailyPnL=${risk.dailyPnL.toFixed(2)}/${risk.dailyLossLimit.toFixed(2)} | openPos=${risk.openPositions}/${RISK_CONFIG.MAX_OPEN_POSITIONS}`);
+      console.log(`[RISK_REJECTED] ${signal.symbol} ${side}: ${risk.reason}`);
       continue;
     }
-    console.log(`[RISK_APPROVED] ${signal.symbol} ${side} | qty=${risk.quantity.toFixed(6)} notional=${risk.notional.toFixed(2)} | reqRisk=${risk.requestedRisk.toFixed(2)} | portRisk=${risk.currentPortfolioRisk.toFixed(2)}/${risk.maxPortfolioRisk.toFixed(2)} | dailyPnL=${risk.dailyPnL.toFixed(2)}`);
+    console.log(`[RISK_APPROVED] ${signal.symbol} ${side} | qty=${risk.quantity.toFixed(6)} notional=${risk.notional.toFixed(2)}`);
     const quantity = risk.quantity;
     let exchangeOrderId: string | null = null;
     if (mode === "live") {
@@ -906,7 +852,7 @@ export async function executeTrades(): Promise<number> {
   return opened;
 }
 
-/* ───────────── Full pipeline ───────────── */
+/* ───────────── Full pipeline with step tracking ───────────── */
 
 export async function runFullPipeline() {
   const db = await admin();
@@ -916,20 +862,35 @@ export async function runFullPipeline() {
     .insert({ job_name: "runFullPipeline", started_at: startedAt.toISOString(), status: "running" } as never)
     .select("id")
     .single();
-  // Log but never throw on insert error -- pipeline continues regardless
   if (insertError) {
     console.error("failed to record pipeline run start", insertError);
   }
   const runId = (runRow as { id: string } | null)?.id ?? null;
+
+  /* Step tracking — γράφουμε ποιο βήμα απέτυχε στο error_message
+   * ώστε να φαίνεται στο UI χωρίς να χρειαστεί SQL access. */
+  let step = "init";
   try {
+    step = "whales";
     const [hlWhales, exWhales] = await Promise.all([collectWhaleAlerts(), collectExchangeWhaleAlerts()]);
     const whales = hlWhales + exWhales;
+
+    step = "indicators";
     const indicators = await collectIndicators();
+
+    step = "predictions";
     const predictions = await collectPredictions();
+
+    step = "council";
     const council = await collectCouncilSignals();
+
+    step = "signals";
     const signals = await combineSignals();
+
+    step = "trades";
     const trades = await executeTrades();
     const mode = tradingMode();
+
     const completedAt = new Date();
     const summary = {
       completed_at: completedAt.toISOString(),
@@ -943,16 +904,19 @@ export async function runFullPipeline() {
     }
     return { whales, indicators, predictions, council, signals, trades, mode };
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
+    const raw = e instanceof Error ? e.message : String(e);
+    const message = `[step: ${step}] ${raw}`;
     const completedAt = new Date();
+    console.error(`[PIPELINE_FAILED] ${message}`);
     if (runId) {
       const { error: updateError } = await db.from("pipeline_runs").update({
         completed_at: completedAt.toISOString(),
         duration_ms: completedAt.getTime() - startedAt.getTime(),
-        status: "error", error_message: message,
+        status: "error",
+        error_message: message,
       } as never).eq("id", runId);
       if (updateError) console.error("failed to record pipeline error", updateError);
     }
-    throw e;
+    throw new Error(message);
   }
 }
