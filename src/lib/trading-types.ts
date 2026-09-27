@@ -70,7 +70,12 @@ export interface Trade {
   take_profit: number | null;
   mode: "paper" | "live";
   status: "open" | "closed" | "cancelled";
-  pnl: number | null;
+  pnl: number | null; // NET realized PnL (after fees) once closed
+  entry_fee?: number | null;
+  exit_fee?: number | null;
+  total_fees?: number | null;
+  gross_pnl?: number | null;
+  net_pnl?: number | null;
   created_at: string;
 }
 
