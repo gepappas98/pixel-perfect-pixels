@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { AlertTriangle, CheckCircle, Clock, AlertCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle, Clock, AlertCircle, ChevronRight } from "lucide-react";
 import { getCronHealth } from "@/lib/pipeline.functions";
 
 function timeAgo(value?: string | null) {
@@ -55,7 +55,23 @@ export function CronHealthPanel() {
     );
   }
 
-  const { lastSuccess, nextRunAt, consecutiveFailures, stale, staleAfterMinutes, intervalMinutes } = health;
+  const {
+    lastSuccess,
+    nextRunAt,
+    consecutiveFailures,
+    stale,
+    staleAfterMinutes,
+    intervalMinutes,
+    recentErrors,
+  } = health as {
+    lastSuccess: { completed_at?: string | null } | null;
+    nextRunAt: string | null;
+    consecutiveFailures: number;
+    stale: boolean;
+    staleAfterMinutes: number;
+    intervalMinutes: number;
+    recentErrors?: { id: string; started_at: string; message: string }[];
+  };
   const healthyStatus = lastSuccess && !stale && consecutiveFailures === 0;
 
   return (
@@ -83,7 +99,6 @@ export function CronHealthPanel() {
       </div>
 
       <div className="space-y-3">
-        {/* Last Run */}
         <div className="rounded-md border border-border/70 bg-background/30 p-3">
           <div className="flex items-center justify-between gap-2">
             <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Last Successful Run</span>
@@ -100,7 +115,6 @@ export function CronHealthPanel() {
           )}
         </div>
 
-        {/* Next Scheduled Run */}
         {nextRunAt && intervalMinutes > 0 && (
           <div className="rounded-md border border-border/70 bg-background/30 p-3">
             <div className="flex items-center justify-between gap-2">
@@ -116,7 +130,6 @@ export function CronHealthPanel() {
           </div>
         )}
 
-        {/* Consecutive Failures */}
         {consecutiveFailures > 0 && (
           <div className="rounded-md border border-warn/30 bg-warn/10 p-3">
             <div className="flex items-center justify-between gap-2">
@@ -124,12 +137,37 @@ export function CronHealthPanel() {
               <span className="font-mono text-sm font-semibold text-warn">{consecutiveFailures}</span>
             </div>
             <p className="mt-2 text-[10px] text-warn/80">
-              Pipeline has failed {consecutiveFailures} time{consecutiveFailures !== 1 ? "s" : ""} in a row. Check logs for details.
+              Pipeline has failed {consecutiveFailures} time{consecutiveFailures !== 1 ? "s" : ""} in a row.
             </p>
           </div>
         )}
 
-        {/* Stale Warning */}
+        {/* Recent Errors — expandable list */}
+        {recentErrors && recentErrors.length > 0 && (
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3">
+            <div className="flex items-center gap-2 mb-2">
+              <AlertCircle className="h-3.5 w-3.5 text-destructive flex-shrink-0" />
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-destructive">
+                Recent Errors ({recentErrors.length})
+              </span>
+            </div>
+            <div className="space-y-1.5">
+              {recentErrors.map((err) => (
+                <details key={err.id} className="group">
+                  <summary className="flex items-center gap-1.5 cursor-pointer text-[10px] text-destructive/90 hover:text-destructive">
+                    <ChevronRight className="h-3 w-3 transition-transform group-open:rotate-90" />
+                    <span className="font-mono">{formatTime(err.started_at)}</span>
+                    <span className="truncate">{err.message.slice(0, 80)}</span>
+                  </summary>
+                  <pre className="mt-1.5 whitespace-pre-wrap break-words rounded border border-destructive/20 bg-background/40 p-2 font-mono text-[10px] text-destructive/80">
+                    {err.message}
+                  </pre>
+                </details>
+              ))}
+            </div>
+          </div>
+        )}
+
         {stale && (
           <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3">
             <div className="flex items-center gap-2">
@@ -137,12 +175,11 @@ export function CronHealthPanel() {
               <span className="text-[11px] font-semibold uppercase tracking-wider text-destructive">Pipeline Stale</span>
             </div>
             <p className="mt-2 text-[10px] text-destructive/80">
-              No successful run in the last {staleAfterMinutes} minutes. The pipeline may be failing silently or cron not triggering.
+              No successful run in the last {staleAfterMinutes} minutes.
             </p>
           </div>
         )}
 
-        {/* Healthy Status */}
         {healthyStatus && (
           <div className="rounded-md border border-bull/30 bg-bull/10 p-3">
             <p className="text-[11px] font-semibold text-bull">
