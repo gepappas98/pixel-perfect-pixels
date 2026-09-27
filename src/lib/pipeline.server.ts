@@ -2,6 +2,32 @@ import { createHmac } from "crypto";
 import { canOpenTrade, RISK_CONFIG } from "./risk.engine";
 import { computeFeeAwarePnl, TRADING_FEE_RATE } from "./fees";
 
+/* ───────────── Concurrency helper ─────────────
+ * Sequential HTTP loops (95+ requests) γίνονται > 5 λεπτά.
+ * Το pMap τρέχει N tasks παράλληλα, αποφεύγοντας rate limits. */
+async function pMap<T, R>(
+  items: T[],
+  fn: (item: T) => Promise<R>,
+  concurrency = 10,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      const idx = cursor++;
+      if (idx >= items.length) return;
+      try {
+        results[idx] = await fn(items[idx]!);
+      } catch (e) {
+        console.error("[pMap] task failed", e);
+        results[idx] = undefined as unknown as R;
+      }
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 /* ───────────── Watchlist & market config ───────────── */
 
 export const WATCHLIST = [
@@ -93,9 +119,6 @@ async function hlPost<T>(body: Record<string, unknown>): Promise<T> {
   return (await res.json()) as T;
 }
 
-/* FIX Bug 1: μην cache-άρεις ποτέ κενό/αποτυχημένο universe.
- * Το προηγούμενο "hlUniverseCache = { all: new Set(), top: [], ts: now }"
- * στο catch έκανε poison το cache για 60s → 0 whale prints σε όλα τα επόμενα runs. */
 async function fetchHyperliquidUniverse(): Promise<HyperliquidUniverse> {
   const now = Date.now();
   if (hlUniverseCache && now - hlUniverseCache.ts < HL_CACHE_TTL_MS) return hlUniverseCache;
@@ -124,11 +147,10 @@ async function hyperliquidTopMovers(): Promise<string[]> {
   return top;
 }
 
-/* ───────────── Whale alerts — Hyperliquid ───────────── */
+/* ───────────── Whale alerts — Hyperliquid (parallel) ───────────── */
 
 export async function collectWhaleAlerts(): Promise<number> {
   const db = await admin();
-  const rows: Record<string, unknown>[] = [];
   const { all: supported, top: movers } = await fetchHyperliquidUniverse();
   if (supported.size === 0) { console.error("[HL] universe empty — skipping whale fetch"); return 0; }
   const base = new Set(WATCHLIST);
@@ -136,15 +158,18 @@ export async function collectWhaleAlerts(): Promise<number> {
   const skipped = WATCHLIST.length - supportedBase.length;
   if (skipped > 0) console.log(`[HL] ${supportedBase.length}/${WATCHLIST.length} watchlist coins supported (skipped ${skipped})`);
   const coins = [...new Set([...supportedBase, ...movers])];
-  for (const coin of coins) {
+
+  // Parallel fetch — 10 coins ταυτόχρονα.
+  const perCoinRows = await pMap(coins, async (coin) => {
+    const out: Record<string, unknown>[] = [];
     try {
       const trades = await hlPost<HlTrade[]>({ type: "recentTrades", coin });
-      if (!Array.isArray(trades)) continue;
+      if (!Array.isArray(trades)) return out;
       const source = base.has(coin) ? "hyperliquid-recent-trades" : "hyperliquid-top-mover";
       for (const t of trades) {
         const usd = parseFloat(t.px) * parseFloat(t.sz);
         if (!Number.isFinite(usd) || usd < HL_WHALE_MIN_USD) continue;
-        rows.push({
+        out.push({
           symbol: coin, chain: "hyperliquid-perp",
           direction: t.side === "B" ? "accumulation" : "distribution",
           usd_value: usd, tx_hash: t.hash ?? String(t.tid), source,
@@ -153,14 +178,17 @@ export async function collectWhaleAlerts(): Promise<number> {
         });
       }
     } catch (e) { console.error(`[HL] whale fetch failed for ${coin}`, e); }
-  }
+    return out;
+  }, 10);
+
+  const rows = perCoinRows.flat();
   if (rows.length === 0) return 0;
   const { data, error } = await db.from("whale_alerts").upsert(rows as never, { onConflict: "source,tx_hash", ignoreDuplicates: true }).select("id");
   if (error) throw error;
   return data?.length ?? 0;
 }
 
-/* ───────────── Whale alerts — Binance spot ───────────── */
+/* ───────────── Whale alerts — Binance spot (parallel) ───────────── */
 
 const BINANCE_SYMBOL_MAP: Record<string, string> = { MATIC: "POL", RNDR: "RENDER" };
 const binanceSymbol = (coin: string) => `${BINANCE_SYMBOL_MAP[coin] ?? coin}USDT`;
@@ -169,17 +197,18 @@ interface BinanceAggTrade { a: number; p: string; q: string; T: number; m: boole
 
 export async function collectExchangeWhaleAlerts(): Promise<number> {
   const db = await admin();
-  const rows: Record<string, unknown>[] = [];
-  for (const coin of WATCHLIST) {
+
+  const perCoinRows = await pMap(WATCHLIST, async (coin) => {
+    const out: Record<string, unknown>[] = [];
     try {
       const res = await fetchWithTimeout(`https://api.binance.com/api/v3/aggTrades?symbol=${binanceSymbol(coin)}&limit=1000`);
-      if (!res.ok) continue;
+      if (!res.ok) return out;
       const trades = (await res.json()) as BinanceAggTrade[];
-      if (!Array.isArray(trades)) continue;
+      if (!Array.isArray(trades)) return out;
       for (const t of trades) {
         const usd = parseFloat(t.p) * parseFloat(t.q);
         if (!Number.isFinite(usd) || usd < whaleFloor(coin)) continue;
-        rows.push({
+        out.push({
           symbol: coin, chain: "binance-spot",
           direction: t.m ? "distribution" : "accumulation",
           usd_value: usd, tx_hash: String(t.a), source: "binance-agg-trades",
@@ -188,7 +217,10 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
         });
       }
     } catch (e) { console.error(`[BINANCE] whale fetch failed for ${coin}`, e); }
-  }
+    return out;
+  }, 10);
+
+  const rows = perCoinRows.flat();
   if (rows.length === 0) return 0;
   const { data, error } = await db.from("whale_alerts").upsert(rows as never, { onConflict: "source,tx_hash", ignoreDuplicates: true }).select("id");
   if (error) throw error;
@@ -240,22 +272,23 @@ function classify(r: number, m: number, s: number): "bullish" | "bearish" | "neu
 
 export async function collectIndicators(): Promise<number> {
   const db = await admin();
-  const rows: Record<string, unknown>[] = [];
   const movers = await hyperliquidTopMovers();
   const coins = [...new Set([...WATCHLIST, ...movers])];
-  for (const coin of coins) {
+
+  // Parallel fetch — 10 coins ταυτόχρονα (Binance allows high parallelism).
+  const perCoinRows = await pMap(coins, async (coin) => {
     const symbol = binanceSymbol(coin);
     try {
       const res = await fetchWithTimeout(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${TIMEFRAME}&limit=${KLINE_LIMIT}`);
-      if (!res.ok) continue;
+      if (!res.ok) return null;
       const raw = (await res.json()) as unknown[][];
       const closes = raw.map((r) => parseFloat(String(r[4])));
-      if (closes.length < 30 || closes.some((c) => !Number.isFinite(c))) continue;
+      if (closes.length < 30 || closes.some((c) => !Number.isFinite(c))) return null;
       const r = rsi(closes);
       const { macd: m, signal: s } = macd(closes);
       const bb = bollinger(closes);
       const candleCloseTime = new Date(Number(raw[raw.length - 1]?.[6])).toISOString();
-      rows.push({
+      return {
         symbol, timeframe: TIMEFRAME,
         rsi: Number.isFinite(r) ? r : null,
         macd: m, macd_signal: s, bb_upper: bb.upper, bb_lower: bb.lower,
@@ -263,9 +296,11 @@ export async function collectIndicators(): Promise<number> {
         signal: classify(r, m, s),
         created_at: new Date().toISOString(),
         raw: { closes_tail: closes.slice(-5), candle_close_time: candleCloseTime },
-      });
-    } catch (e) { console.error(`[BINANCE] indicator fetch failed for ${symbol}`, e); }
-  }
+      } as Record<string, unknown>;
+    } catch (e) { console.error(`[BINANCE] indicator fetch failed for ${symbol}`, e); return null; }
+  }, 10);
+
+  const rows = perCoinRows.filter((r): r is Record<string, unknown> => r != null);
   if (rows.length === 0) return 0;
   const { data, error } = await db.from("indicator_snapshots").upsert(rows as never, { onConflict: "symbol,timeframe", ignoreDuplicates: false }).select("id");
   if (error) throw error;
@@ -350,11 +385,7 @@ function councilEvaluation(whale: Row, indicator: Row, prediction: Row) {
   const [topVote, topCount] = ordered[0] ?? ["HOLD", 0];
   const rawConviction = Math.round((topCount / votes.length) * 100);
   const verdict: CouncilVerdict = topCount === 1 ? "AVOID" : topVote;
-
-  /* FIX Bug 3: HOLD = "δεν έχω directional άποψη" → conviction 0.
-   * Πριν έβγαινε "HOLD (100% conviction)" που είναι παραπλανητικό. */
   const conviction = verdict === "HOLD" ? 0 : rawConviction;
-
   return { final_verdict: verdict, conviction, reflection: `${verdict} with ${conviction}% consensus: ${reasons.join("; ")}.` };
 }
 
@@ -667,9 +698,17 @@ export async function combineSignals(): Promise<number> {
     if (!whale && !indicator && !prediction && !council) continue;
     const result = ruleBased(whale, indicator, prediction, council);
 
-    /* FIX Bug 2: skip signals χωρίς καμία directional πληροφορία.
-     * Πριν γέμιζε το feed με "hold 0% confidence" rows που δεν προσθέτουν αξία. */
+    // ── Filter noise ───────────────────────────────────────────
+    // Skip "hold 0%" — no directional info.
     if (result.recommendation === "hold" && result.confidence === 0) continue;
+    // Skip weak "watch" signals που έχουν μόνο ΕΝΑ input (score ±1.0).
+    // Θέλουμε τουλάχιστον 2 indicators ή 1 indicator + whale/prediction.
+    if (result.recommendation === "watch") {
+      const hasWhale = whale?.["direction"] != null;
+      const hasPrediction = Number.isFinite(Number(prediction?.["yes_price"])) &&
+        (Number(prediction["yes_price"]) > 0.6 || Number(prediction["yes_price"]) < 0.4);
+      if (!hasWhale && !hasPrediction) continue;
+    }
 
     const fingerprint = signalFingerprint(symbol, whale, indicator, prediction, council, result);
     const { data, error } = await db
@@ -867,8 +906,6 @@ export async function runFullPipeline() {
   }
   const runId = (runRow as { id: string } | null)?.id ?? null;
 
-  /* Step tracking — γράφουμε ποιο βήμα απέτυχε στο error_message
-   * ώστε να φαίνεται στο UI χωρίς να χρειαστεί SQL access. */
   let step = "init";
   try {
     step = "whales";
