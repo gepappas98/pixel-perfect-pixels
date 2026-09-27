@@ -1,5 +1,6 @@
 import { createHmac } from "crypto";
 import { canOpenTrade, RISK_CONFIG } from "./risk.engine";
+import { computeFeeAwarePnl, TRADING_FEE_RATE } from "./fees";
 
 /* ───────────── Watchlist & market config ───────────── */
 

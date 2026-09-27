@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { formatPrice } from "@/lib/format-price";
+import { computeFeeAwarePnl } from "@/lib/fees";
 import type { Trade } from "@/lib/trading-types";
 
 const BINANCE_SYMBOL_MAP: Record<string, string> = {
@@ -135,14 +136,13 @@ export function TradesPanel() {
               const current = prices.data?.[t.symbol] ?? null;
               const entry = Number(t.entry_price);
               const quantity = Number(t.quantity);
-              const pnl =
-                current == null
+              // Net unrealized PnL: entry fee + ESTIMATED exit fee at current price.
+              const fee =
+                current == null || entry <= 0 || quantity <= 0
                   ? null
-                  : (t.side === "buy" ? current - entry : entry - current) * quantity;
-              const pnlPct =
-                pnl == null || entry <= 0 || quantity <= 0
-                  ? null
-                  : (pnl / (entry * quantity)) * 100;
+                  : computeFeeAwarePnl(t.side, entry, current, quantity);
+              const pnl = fee?.netPnl ?? null;
+              const pnlPct = fee?.netPnlPct ?? null;
               const positive = (pnl ?? 0) >= 0;
 
               return (
