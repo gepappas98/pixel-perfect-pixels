@@ -2,9 +2,8 @@ import { createHmac } from "crypto";
 import { canOpenTrade, RISK_CONFIG } from "./risk.engine";
 import { computeFeeAwarePnl, TRADING_FEE_RATE } from "./fees";
 
-/* ───────────── Concurrency helper ─────────────
- * Sequential HTTP loops (95+ requests) γίνονται > 5 λεπτά.
- * Το pMap τρέχει N tasks παράλληλα, αποφεύγοντας rate limits. */
+/* ───────────── Concurrency helper (pMap) ───────────── */
+
 async function pMap<T, R>(
   items: T[],
   fn: (item: T) => Promise<R>,
@@ -63,6 +62,10 @@ const WHALE_MIN_USD: Record<string, number> = {
 const DEFAULT_MIN_WHALE_USD = 25_000;
 const whaleFloor = (coin: string) => WHALE_MIN_USD[coin] ?? DEFAULT_MIN_WHALE_USD;
 
+/* Bug #8 fix: HL perps → 2x Binance spot floor (bigger clips on perps). */
+const HL_FLOOR_MULTIPLIER = 2;
+const hlWhaleFloor = (coin: string) => whaleFloor(coin) * HL_FLOOR_MULTIPLIER;
+
 const TIMEFRAME = "4h";
 const KLINE_LIMIT = 100;
 const MIN_CONFIDENCE = 0.6;
@@ -88,7 +91,6 @@ async function admin(): Promise<Admin> {
 /* ───────────── Hyperliquid universe (cached) ───────────── */
 
 const HL_INFO_URL = "https://api.hyperliquid.xyz/info";
-const HL_WHALE_MIN_USD = 100_000;
 const TOP_MOVERS_COUNT = 25;
 const HL_CACHE_TTL_MS = 60_000;
 
@@ -147,7 +149,7 @@ async function hyperliquidTopMovers(): Promise<string[]> {
   return top;
 }
 
-/* ───────────── Whale alerts — Hyperliquid (parallel) ───────────── */
+/* ───────────── Whale alerts — Hyperliquid ───────────── */
 
 export async function collectWhaleAlerts(): Promise<number> {
   const db = await admin();
@@ -159,16 +161,16 @@ export async function collectWhaleAlerts(): Promise<number> {
   if (skipped > 0) console.log(`[HL] ${supportedBase.length}/${WATCHLIST.length} watchlist coins supported (skipped ${skipped})`);
   const coins = [...new Set([...supportedBase, ...movers])];
 
-  // Parallel fetch — 10 coins ταυτόχρονα.
   const perCoinRows = await pMap(coins, async (coin) => {
     const out: Record<string, unknown>[] = [];
     try {
       const trades = await hlPost<HlTrade[]>({ type: "recentTrades", coin });
       if (!Array.isArray(trades)) return out;
       const source = base.has(coin) ? "hyperliquid-recent-trades" : "hyperliquid-top-mover";
+      const floor = hlWhaleFloor(coin);
       for (const t of trades) {
         const usd = parseFloat(t.px) * parseFloat(t.sz);
-        if (!Number.isFinite(usd) || usd < HL_WHALE_MIN_USD) continue;
+        if (!Number.isFinite(usd) || usd < floor) continue;
         out.push({
           symbol: coin, chain: "hyperliquid-perp",
           direction: t.side === "B" ? "accumulation" : "distribution",
@@ -188,7 +190,7 @@ export async function collectWhaleAlerts(): Promise<number> {
   return data?.length ?? 0;
 }
 
-/* ───────────── Whale alerts — Binance spot (parallel) ───────────── */
+/* ───────────── Whale alerts — Binance spot ───────────── */
 
 const BINANCE_SYMBOL_MAP: Record<string, string> = { MATIC: "POL", RNDR: "RENDER" };
 const binanceSymbol = (coin: string) => `${BINANCE_SYMBOL_MAP[coin] ?? coin}USDT`;
@@ -205,9 +207,10 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
       if (!res.ok) return out;
       const trades = (await res.json()) as BinanceAggTrade[];
       if (!Array.isArray(trades)) return out;
+      const floor = whaleFloor(coin);
       for (const t of trades) {
         const usd = parseFloat(t.p) * parseFloat(t.q);
-        if (!Number.isFinite(usd) || usd < whaleFloor(coin)) continue;
+        if (!Number.isFinite(usd) || usd < floor) continue;
         out.push({
           symbol: coin, chain: "binance-spot",
           direction: t.m ? "distribution" : "accumulation",
@@ -275,7 +278,6 @@ export async function collectIndicators(): Promise<number> {
   const movers = await hyperliquidTopMovers();
   const coins = [...new Set([...WATCHLIST, ...movers])];
 
-  // Parallel fetch — 10 coins ταυτόχρονα (Binance allows high parallelism).
   const perCoinRows = await pMap(coins, async (coin) => {
     const symbol = binanceSymbol(coin);
     try {
@@ -329,6 +331,20 @@ function eventMarkets(payload: (PolymarketEvent | PolymarketMarket)[]): Polymark
   return payload.flatMap((item) => "markets" in item ? ((item as PolymarketEvent).markets ?? []) : [item as PolymarketMarket]);
 }
 
+/* Bug #9 fix: prefer the symbol whose keyword appears FIRST in the question. */
+function matchSymbolFromQuestion(q: string): string | null {
+  const matches: { sym: string; pos: number }[] = [];
+  for (const [sym, keywords] of Object.entries(WATCH_KEYWORDS)) {
+    for (const kw of keywords) {
+      const pos = q.search(new RegExp(`\\b${kw}\\b`, "i"));
+      if (pos >= 0) { matches.push({ sym, pos }); break; }
+    }
+  }
+  if (matches.length === 0) return null;
+  matches.sort((a, b) => a.pos - b.pos);
+  return matches[0]!.sym;
+}
+
 export async function collectPredictions(): Promise<number> {
   const db = await admin();
   const res = await fetchWithTimeout("https://gamma-api.polymarket.com/events?tag_slug=crypto&active=true&closed=false&limit=200");
@@ -341,9 +357,7 @@ export async function collectPredictions(): Promise<number> {
     const question = m.question ?? "";
     const q = question.toLowerCase();
     if (!cryptoWord.test(q)) continue;
-    const symbol = Object.entries(WATCH_KEYWORDS).find(([, keywords]) =>
-      keywords.some((keyword) => new RegExp(`\\b${keyword}\\b`, "i").test(q))
-    )?.[0];
+    const symbol = matchSymbolFromQuestion(q);
     if (!symbol) continue;
     let yes: number | null = null, no: number | null = null;
     try {
@@ -358,6 +372,29 @@ export async function collectPredictions(): Promise<number> {
   const { data, error } = await db.from("prediction_snapshots").upsert(rows as never, { onConflict: "market_slug" }).select("id");
   if (error) throw error;
   return data?.length ?? 0;
+}
+
+/* ───────────── Prediction direction helper (Bug #1 fix) ───────────── */
+
+/* Το yes_price είναι η πιθανότητα να συμβεί η ΕΡΩΤΗΣΗ.
+ * Αν η ερώτηση είναι "Will dip to X?" → yes=0.19 σημαίνει BULLISH.
+ * Αν η ερώτηση είναι "Will reach X?" → yes=0.19 σημαίνει BEARISH. */
+const BULLISH_QUESTION = /\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\b/i;
+const BEARISH_QUESTION = /\b(dip|drop|fall|below|crash|down to|under|bottom)\b/i;
+
+function predictionDirection(prediction: Row): "bullish" | "bearish" | "neutral" {
+  const yes = Number(prediction?.["yes_price"]);
+  if (!Number.isFinite(yes)) return "neutral";
+  const q = String(prediction?.["question"] ?? "").toLowerCase();
+  const isBullishQ = BULLISH_QUESTION.test(q);
+  const isBearishQ = BEARISH_QUESTION.test(q);
+  if (!isBullishQ && !isBearishQ) return "neutral";
+  // "upward probability" = P(price moves up)
+  // bullish question: up = yes. bearish question: up = 1 - yes.
+  const up = isBullishQ ? yes : 1 - yes;
+  if (up > 0.6) return "bullish";
+  if (up < 0.4) return "bearish";
+  return "neutral";
 }
 
 /* ───────────── AI trading council (deterministic fallback) ───────────── */
@@ -376,17 +413,33 @@ function councilEvaluation(whale: Row, indicator: Row, prediction: Row) {
   if (flow === "accumulation") { votes.push("BUY"); reasons.push("whale tracker sees accumulation"); }
   else if (flow === "distribution") { votes.push("SELL"); reasons.push("whale tracker sees distribution"); }
   else { votes.push("HOLD"); reasons.push("whale tracker has no directional flow"); }
-  const yes = typeof prediction?.["yes_price"] === "number" ? (prediction["yes_price"] as number) : null;
-  if (yes != null && yes >= 0.6) { votes.push("BUY"); reasons.push(`sentiment leans yes (${Math.round(yes * 100)}%)`); }
-  else if (yes != null && yes <= 0.4) { votes.push("SELL"); reasons.push(`sentiment leans no (${Math.round((1 - yes) * 100)}%)`); }
-  else { votes.push("HOLD"); reasons.push("sentiment is inconclusive"); }
+  // Bug #1 fix: use predictionDirection αντί για raw yes_price
+  const dir = predictionDirection(prediction);
+  if (dir === "bullish") {
+    votes.push("BUY");
+    reasons.push("sentiment leans bullish");
+  } else if (dir === "bearish") {
+    votes.push("SELL");
+    reasons.push("sentiment leans bearish");
+  } else {
+    votes.push("HOLD");
+    reasons.push("sentiment is inconclusive");
+  }
   const counts = votes.reduce<Record<string, number>>((all, vote) => { all[vote] = (all[vote] ?? 0) + 1; return all; }, {});
   const ordered = (Object.entries(counts) as [CouncilVerdict, number][]).sort((a, b) => b[1] - a[1]);
   const [topVote, topCount] = ordered[0] ?? ["HOLD", 0];
   const rawConviction = Math.round((topCount / votes.length) * 100);
   const verdict: CouncilVerdict = topCount === 1 ? "AVOID" : topVote;
+  // HOLD = no directional edge → conviction 0
   const conviction = verdict === "HOLD" ? 0 : rawConviction;
-  return { final_verdict: verdict, conviction, reflection: `${verdict} with ${conviction}% consensus: ${reasons.join("; ")}.` };
+
+  /* Bug #4 fix: το "consensus" στο reflection πρέπει να δείχνει
+   * την πραγματική πλειοψηφία, όχι το directional conviction. */
+  const reflection = verdict === "HOLD"
+    ? `HOLD (no directional edge): ${reasons.join("; ")}.`
+    : `${verdict} with ${conviction}% conviction: ${reasons.join("; ")}.`;
+
+  return { final_verdict: verdict, conviction, reflection };
 }
 
 /* ───────────── Groq AI Council ───────────── */
@@ -432,7 +485,7 @@ async function groqBatchCouncil(
     rsi: typeof c.indicator?.["rsi"] === "number" ? Math.round(c.indicator["rsi"] as number) : null,
     technical_signal: c.indicator?.["signal"] ?? "unknown",
     price: c.indicator?.["price"] ?? null,
-    prediction_yes_price: c.prediction?.["yes_price"] ?? null,
+    prediction_direction: predictionDirection(c.prediction),
   }));
   const systemPrompt = [
     "You are a professional crypto trading council AI.",
@@ -588,11 +641,12 @@ function ruleBased(whale: Row, indicator: Row, prediction: Row, council: Row) {
   else if (whale?.["direction"] === "distribution") { score -= 1; reasons.push("whale distribution"); }
   if (indicator?.["signal"] === "bullish") { score += 1; reasons.push("bullish technicals (RSI/MACD)"); }
   else if (indicator?.["signal"] === "bearish") { score -= 1; reasons.push("bearish technicals (RSI/MACD)"); }
-  const yes = Number(prediction?.["yes_price"]);
-  if (Number.isFinite(yes)) {
-    if (yes > 0.6) { score += 0.5; reasons.push("prediction market leaning yes"); }
-    else if (yes < 0.4) { score -= 0.5; reasons.push("prediction market leaning no"); }
-  }
+
+  // Bug #1 fix: use predictionDirection αντί για raw yes_price
+  const predDir = predictionDirection(prediction);
+  if (predDir === "bullish") { score += 0.5; reasons.push("prediction market bullish"); }
+  else if (predDir === "bearish") { score -= 0.5; reasons.push("prediction market bearish"); }
+
   if (council?.["final_verdict"]) {
     const convictionRaw = Number(council["conviction"]);
     const conviction = Number.isFinite(convictionRaw) ? Math.max(0, Math.min(100, convictionRaw)) : 50;
@@ -601,7 +655,7 @@ function ruleBased(whale: Row, indicator: Row, prediction: Row, council: Row) {
     if (verdict === "BUY") { score += weight; reasons.push(`council: BUY (${Math.round(conviction)}% conviction)`); }
     else if (verdict === "SELL") { score -= weight; reasons.push(`council: SELL (${Math.round(conviction)}% conviction)`); }
     else if (verdict === "AVOID") { aiAvoid = conviction >= 60; reasons.push(`council: AVOID (${Math.round(conviction)}% conviction)`); }
-    else { reasons.push(`council: HOLD (${Math.round(conviction)}% conviction)`); }
+    else { reasons.push(`council: HOLD`); }
   }
   let recommendation: "buy" | "sell" | "hold" | "watch" = "watch";
   if (score >= 1.5) recommendation = "buy";
@@ -616,6 +670,7 @@ function ruleBased(whale: Row, indicator: Row, prediction: Row, council: Row) {
   };
 }
 
+/* Bug #2 fix: fingerprint σταθερό — χωρίς volatile timestamps. */
 function signalFingerprint(
   symbol: string, whale: Row, indicator: Row, prediction: Row, council: Row,
   result: ReturnType<typeof ruleBased>,
@@ -625,17 +680,30 @@ function signalFingerprint(
     if (typeof value === "number") return Number.isFinite(value) ? value.toFixed(8) : "";
     return String(value);
   };
+  const round2 = (v: unknown): string => {
+    const n = Number(v);
+    return Number.isFinite(n) ? (Math.round(n * 100) / 100).toFixed(2) : "";
+  };
   return [
     symbol,
-    normalize(whale?.["direction"]), normalize(whale?.["buy_usd"]),
-    normalize(whale?.["sell_usd"]), normalize(whale?.["usd_value"]),
-    normalize(indicator?.["created_at"]), normalize(indicator?.["rsi"]),
-    normalize(indicator?.["macd"]), normalize(indicator?.["macd_signal"]),
-    normalize(indicator?.["price"]), normalize(indicator?.["signal"]),
-    normalize(prediction?.["market_slug"]), normalize(prediction?.["yes_price"]),
-    normalize(prediction?.["no_price"]), normalize(council?.["source_created_at"]),
-    normalize(council?.["final_verdict"]), normalize(council?.["conviction"]),
-    result.recommendation, result.confidence.toFixed(4),
+    normalize(whale?.["direction"]),
+    normalize(whale?.["buy_usd"]),
+    normalize(whale?.["sell_usd"]),
+    normalize(whale?.["usd_value"]),
+    // ⚠️ ΔΕΝ βάζουμε created_at — είναι volatile
+    round2(indicator?.["rsi"]),
+    round2(indicator?.["macd"]),
+    round2(indicator?.["macd_signal"]),
+    round2(indicator?.["price"]),
+    normalize(indicator?.["signal"]),
+    normalize(prediction?.["market_slug"]),
+    normalize(prediction?.["yes_price"]),
+    normalize(prediction?.["no_price"]),
+    // ⚠️ ΔΕΝ βάζουμε source_created_at — είναι volatile
+    normalize(council?.["final_verdict"]),
+    normalize(council?.["conviction"]),
+    result.recommendation,
+    result.confidence.toFixed(4),
   ].join("|");
 }
 
@@ -675,6 +743,7 @@ export async function combineSignals(): Promise<number> {
     if (!latestCouncil.has(s)) latestCouncil.set(s, c);
   }
   let created = 0;
+  const nowIso = new Date().toISOString();
   for (const symbol of symbols) {
     const whaleRows = whaleBySymbol.get(symbol) ?? [];
     let whale: Row = null;
@@ -697,20 +766,16 @@ export async function combineSignals(): Promise<number> {
     const council = (latestCouncil.get(symbol) ?? null) as Row;
     if (!whale && !indicator && !prediction && !council) continue;
     const result = ruleBased(whale, indicator, prediction, council);
-
-    // ── Filter noise ───────────────────────────────────────────
-    // Skip "hold 0%" — no directional info.
     if (result.recommendation === "hold" && result.confidence === 0) continue;
-    // Skip weak "watch" signals που έχουν μόνο ΕΝΑ input (score ±1.0).
-    // Θέλουμε τουλάχιστον 2 indicators ή 1 indicator + whale/prediction.
     if (result.recommendation === "watch") {
       const hasWhale = whale?.["direction"] != null;
-      const hasPrediction = Number.isFinite(Number(prediction?.["yes_price"])) &&
-        (Number(prediction["yes_price"]) > 0.6 || Number(prediction["yes_price"]) < 0.4);
+      const hasPrediction = predictionDirection(prediction) !== "neutral";
       if (!hasWhale && !hasPrediction) continue;
     }
 
     const fingerprint = signalFingerprint(symbol, whale, indicator, prediction, council, result);
+    // Bug #2 fix: ignoreDuplicates: false → UPDATE των υπαρχόντων (refresh created_at).
+    // Έτσι αποφεύγουμε τα duplicates ΕΝΩ κρατάμε το signal "φρέσκο" στο UI.
     const { data, error } = await db
       .from("composite_signals")
       .upsert({
@@ -723,7 +788,8 @@ export async function combineSignals(): Promise<number> {
         recommendation: result.recommendation,
         reasoning: result.reasoning,
         fingerprint,
-      } as never, { onConflict: "fingerprint", ignoreDuplicates: true })
+        created_at: nowIso,
+      } as never, { onConflict: "fingerprint", ignoreDuplicates: false })
       .select("id");
     if (error) throw error;
     if (data?.length) created += 1;
@@ -738,16 +804,6 @@ export function tradingMode(): "paper" | "live" {
   const liveEnabled = process.env["ENABLE_LIVE_TRADING"] === "true";
   const hasKeys = !!process.env["BINANCE_API_KEY"] && !!process.env["BINANCE_API_SECRET"];
   return mode === "live" && liveEnabled && hasKeys ? "live" : "paper";
-}
-
-async function currentPrice(coin: string): Promise<number> {
-  const symbol = binanceSymbol(coin);
-  const res = await fetchWithTimeout(`https://api.binance.com/api/v3/ticker/price?symbol=${encodeURIComponent(symbol)}`);
-  if (!res.ok) throw new Error(`price fetch failed for ${coin} (${symbol})`);
-  const data = (await res.json()) as { price: string };
-  const price = Number(data.price);
-  if (!Number.isFinite(price)) throw new Error(`invalid price received for ${coin} (${symbol})`);
-  return price;
 }
 
 async function allBinancePrices(): Promise<Map<string, number>> {
@@ -774,16 +830,17 @@ async function placeLiveOrder(coin: string, side: "buy" | "sell", quantity: numb
 
 async function closeTriggeredTrades(): Promise<number> {
   const db = await admin();
+  // Bug #3 fix: περιλαμβάνουμε και live trades (πριν ήταν μόνο paper).
   const { data: openTrades, error } = await db
     .from("trades")
-    .select("id, symbol, side, quantity, entry_price, stop_loss, take_profit")
-    .eq("mode", "paper")
+    .select("id, symbol, side, quantity, entry_price, stop_loss, take_profit, mode")
     .eq("status", "open");
   if (error) throw error;
   const trades = (openTrades ?? []) as {
     id: string; symbol: string; side: "buy" | "sell";
     quantity: number; entry_price: number;
     stop_loss: number | null; take_profit: number | null;
+    mode: "paper" | "live";
   }[];
   if (trades.length === 0) return 0;
   let prices: Map<string, number>;
@@ -797,6 +854,18 @@ async function closeTriggeredTrades(): Promise<number> {
     const hitStopLoss = trade.stop_loss != null && (trade.side === "buy" ? price <= trade.stop_loss : price >= trade.stop_loss);
     const hitTakeProfit = trade.take_profit != null && (trade.side === "buy" ? price >= trade.take_profit : price <= trade.take_profit);
     if (!hitStopLoss && !hitTakeProfit) continue;
+
+    // Live: place an opposite market order on Binance to actually close.
+    if (trade.mode === "live") {
+      const opposite: "buy" | "sell" = trade.side === "buy" ? "sell" : "buy";
+      try {
+        await placeLiveOrder(trade.symbol, opposite, Number(trade.quantity));
+      } catch (e) {
+        console.error(`[LIVE] failed to close ${trade.symbol} ${opposite}:`, e);
+        continue; // don't mark closed if exchange order failed
+      }
+    }
+
     const closeReason = hitStopLoss ? "stop_loss" : "take_profit";
     const closedAt = new Date().toISOString();
     const entryPrice = Number(trade.entry_price);
@@ -843,6 +912,12 @@ export async function executeTrades(): Promise<number> {
   const openSymbols = new Set(((openTradesRes.data ?? []) as { symbol: string }[]).map((t) => t.symbol));
   const cooldownSymbols = new Set(((recentlyClosedRes.data ?? []) as { symbol: string }[]).map((t) => t.symbol));
   if (openSymbols.size >= MAX_OPEN_TRADES) return 0;
+
+  // Bug #5 fix: batch fetch ΟΛΩΝ των prices upfront (1 request αντί N).
+  let prices: Map<string, number>;
+  try { prices = await allBinancePrices(); }
+  catch (e) { console.error("batch price fetch failed in executeTrades", e); return 0; }
+
   let opened = 0;
   for (const signal of (signalsRes.data ?? []) as {
     id: string; symbol: string; recommendation: string;
@@ -853,8 +928,10 @@ export async function executeTrades(): Promise<number> {
     if (cooldownSymbols.has(signal.symbol)) continue;
     const { data: existing } = await db.from("trades").select("id").eq("composite_signal_id", signal.id).limit(1);
     if (existing && existing.length > 0) continue;
-    let price: number;
-    try { price = await currentPrice(signal.symbol); } catch { continue; }
+
+    const price = prices.get(binanceSymbol(signal.symbol));
+    if (price == null) { console.error(`no price for ${signal.symbol}`); continue; }
+
     const signalPrice = Number(signal.price_at);
     if (Number.isFinite(signalPrice) && signalPrice > 0 && Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT) {
       console.log(`[ENTRY_REJECTED] ${signal.symbol}: price drift ${(Math.abs(price - signalPrice) / signalPrice * 100).toFixed(2)}% > ${(MAX_ENTRY_DRIFT_PCT * 100).toFixed(2)}%`);
@@ -866,6 +943,11 @@ export async function executeTrades(): Promise<number> {
     const risk = await canOpenTrade(db as any, { symbol: signal.symbol, side, entryPrice: price, stopLoss });
     if (!risk.allowed) {
       console.log(`[RISK_REJECTED] ${signal.symbol} ${side}: ${risk.reason}`);
+      continue;
+    }
+    // Bug #6 fix: validate quantity πριν το insert.
+    if (!Number.isFinite(risk.quantity) || risk.quantity <= 0) {
+      console.log(`[RISK_INVALID] ${signal.symbol}: quantity=${risk.quantity}`);
       continue;
     }
     console.log(`[RISK_APPROVED] ${signal.symbol} ${side} | qty=${risk.quantity.toFixed(6)} notional=${risk.notional.toFixed(2)}`);
