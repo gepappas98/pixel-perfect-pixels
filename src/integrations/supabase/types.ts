@@ -366,11 +366,15 @@ export type Database = {
           closed_at: string | null
           composite_signal_id: string | null
           created_at: string
+          entry_fee: number | null
           entry_price: number
           exchange_order_id: string | null
+          exit_fee: number | null
           exit_price: number | null
+          gross_pnl: number | null
           id: string
           mode: string
+          net_pnl: number | null
           pnl: number | null
           quantity: number
           side: string
@@ -378,17 +382,22 @@ export type Database = {
           stop_loss: number | null
           symbol: string
           take_profit: number | null
+          total_fees: number | null
         }
         Insert: {
           close_reason?: string | null
           closed_at?: string | null
           composite_signal_id?: string | null
           created_at?: string
+          entry_fee?: number | null
           entry_price: number
           exchange_order_id?: string | null
+          exit_fee?: number | null
           exit_price?: number | null
+          gross_pnl?: number | null
           id?: string
           mode?: string
+          net_pnl?: number | null
           pnl?: number | null
           quantity: number
           side: string
@@ -396,17 +405,22 @@ export type Database = {
           stop_loss?: number | null
           symbol: string
           take_profit?: number | null
+          total_fees?: number | null
         }
         Update: {
           close_reason?: string | null
           closed_at?: string | null
           composite_signal_id?: string | null
           created_at?: string
+          entry_fee?: number | null
           entry_price?: number
           exchange_order_id?: string | null
+          exit_fee?: number | null
           exit_price?: number | null
+          gross_pnl?: number | null
           id?: string
           mode?: string
+          net_pnl?: number | null
           pnl?: number | null
           quantity?: number
           side?: string
@@ -414,6 +428,7 @@ export type Database = {
           stop_loss?: number | null
           symbol?: string
           take_profit?: number | null
+          total_fees?: number | null
         }
         Relationships: [
           {
@@ -492,6 +507,7 @@ export type Database = {
       reconcile_stuck_pipeline_runs: { Args: never; Returns: number }
       refresh_pattern_stats: { Args: never; Returns: number }
       set_pipeline_schedule: { Args: { _minutes: number }; Returns: number }
+      trading_fee_rate: { Args: never; Returns: number }
       verify_cron_secret: { Args: { _secret: string }; Returns: boolean }
     }
     Enums: {
