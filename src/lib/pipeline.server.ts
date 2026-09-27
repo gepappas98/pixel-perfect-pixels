@@ -42,7 +42,8 @@ const MIN_CONFIDENCE = 0.6;
 const STOP_LOSS_PCT = 0.03;
 const TAKE_PROFIT_PCT = 0.06;
 const FETCH_TIMEOUT_MS = 12_000;
-const MAX_OPEN_TRADES = 8;
+const MAX_OPEN_TRADES = RISK_CONFIG.MAX_OPEN_POSITIONS;
+const MAX_ENTRY_DRIFT_PCT = 0.01; // 1% maximum price drift from the signal price before entry
 const SYMBOL_COOLDOWN_MINUTES = 60;
 const WHALE_LOOKBACK_HOURS = 6;
 
@@ -471,13 +472,27 @@ export async function collectCouncilSignals(): Promise<number> {
   const aiCandidates: AiCandidate[] = [];
   for (const symbol of symbols) {
     const whaleRows = whalesBySymbol.get(symbol) ?? [];
-    const accumulation = whaleRows.filter((r) => r["direction"] === "accumulation").length;
-    const distribution = whaleRows.filter((r) => r["direction"] === "distribution").length;
-    const whaleUsdTotal = whaleRows.reduce((sum, r) => sum + Number(r["usd_value"] ?? 0), 0);
+    const buyUsd = whaleRows
+      .filter((r) => r["direction"] === "accumulation")
+      .reduce((sum, r) => sum + Number(r["usd_value"] ?? 0), 0);
+    const sellUsd = whaleRows
+      .filter((r) => r["direction"] === "distribution")
+      .reduce((sum, r) => sum + Number(r["usd_value"] ?? 0), 0);
+    const whaleUsdTotal = buyUsd + sellUsd;
+
+    let whaleDirection: "accumulation" | "distribution" | undefined;
+    if (buyUsd > sellUsd * 1.15) whaleDirection = "accumulation";
+    else if (sellUsd > buyUsd * 1.15) whaleDirection = "distribution";
+
     const whale = whaleRows.length
       ? ({
-          direction: accumulation === distribution ? undefined : accumulation > distribution ? "accumulation" : "distribution",
-          id: whaleRows[0]?.["id"], usd_value: whaleUsdTotal,
+          direction: whaleDirection,
+          id: whaleRows[0]?.["id"],
+          usd_value: whaleUsdTotal,
+          buy_usd: buyUsd,
+          sell_usd: sellUsd,
+          buy_count: whaleRows.filter((r) => r["direction"] === "accumulation").length,
+          sell_count: whaleRows.filter((r) => r["direction"] === "distribution").length,
         } as Row)
       : null;
     const indicator = (latestIndicator.get(binanceSymbol(symbol)) ?? null) as Row;
@@ -531,6 +546,7 @@ const COMPOSITE_AI_MAX_WEIGHT = 0.75;
 function ruleBased(whale: Row, indicator: Row, prediction: Row, council: Row) {
   let score = 0;
   const reasons: string[] = [];
+  let aiAvoid = false;
 
   /* 1. Whale flow */
   if (whale?.["direction"] === "accumulation") { score += 1; reasons.push("whale accumulation"); }
@@ -560,7 +576,9 @@ function ruleBased(whale: Row, indicator: Row, prediction: Row, council: Row) {
       score -= weight;
       reasons.push(`council: SELL (${Math.round(conviction)}% conviction)`);
     } else if (verdict === "AVOID") {
-      // AVOID = uncertainty only, zero directional pressure
+      // AVOID is uncertainty, never SELL. At >=60% conviction it is a
+      // trade veto so the AI cannot be accidentally converted into a trade.
+      aiAvoid = conviction >= 60;
       reasons.push(`council: AVOID (${Math.round(conviction)}% conviction)`);
     } else {
       // HOLD
@@ -573,6 +591,10 @@ function ruleBased(whale: Row, indicator: Row, prediction: Row, council: Row) {
   if (score >= 1.5) recommendation = "buy";
   else if (score <= -1.5) recommendation = "sell";
   else if (Math.abs(score) < 0.5) recommendation = "hold";
+
+  // High-conviction AVOID blocks execution while preserving the
+  // underlying directional score for diagnostics in the UI.
+  if (aiAvoid) recommendation = "watch";
 
   const confidence = Math.min(1, Math.abs(score) / 3.25);
 
@@ -730,8 +752,14 @@ export async function combineSignals(): Promise<number> {
 
 export function tradingMode(): "paper" | "live" {
   const mode = process.env["TRADING_MODE"];
-  const hasKeys = !!process.env["BINANCE_API_KEY"] && !!process.env["BINANCE_API_SECRET"];
-  return mode === "live" && hasKeys ? "live" : "paper";
+  const liveEnabled = process.env["ENABLE_LIVE_TRADING"] === "true";
+  const hasKeys =
+    !!process.env["BINANCE_API_KEY"] &&
+    !!process.env["BINANCE_API_SECRET"];
+
+  // Live trading stays hard-disabled unless explicitly enabled.
+  // This prevents a Binance Spot SELL from being mistaken for a futures short.
+  return mode === "live" && liveEnabled && hasKeys ? "live" : "paper";
 }
 
 async function currentPrice(coin: string): Promise<number> {
@@ -768,7 +796,7 @@ async function placeLiveOrder(coin: string, side: "buy" | "sell", quantity: numb
 
 async function closeTriggeredTrades(): Promise<number> {
   const db = await admin();
-  const { data: openTrades, error } = await db.from("trades").select("id, symbol, side, quantity, entry_price, stop_loss, take_profit").eq("status", "open");
+  const { data: openTrades, error } = await db.from("trades").select("id, symbol, side, quantity, entry_price, stop_loss, take_profit").eq("mode", "paper").eq("status", "open");
   if (error) throw error;
   const trades = (openTrades ?? []) as { id: string; symbol: string; side: "buy" | "sell"; quantity: number; entry_price: number; stop_loss: number | null; take_profit: number | null }[];
   if (trades.length === 0) return 0;
@@ -789,7 +817,19 @@ async function closeTriggeredTrades(): Promise<number> {
     const pnl = (trade.side === "buy" ? price - entryPrice : entryPrice - price) * Number(trade.quantity);
     const pnlPct = entryPrice > 0 ? ((trade.side === "buy" ? price - entryPrice : entryPrice - price) / entryPrice) * 100 : 0;
     // NOTE: close_reason NOT written to trades table (column does not exist in production schema)
-    const { data: closedTrade, error: closeError } = await db.from("trades").update({ status: "closed", pnl, exit_price: price, closed_at: closedAt }).eq("id", trade.id).eq("status", "open").select("id").maybeSingle();
+    const { data: closedTrade, error: closeError } = await db
+      .from("trades")
+      .update({
+        status: "closed",
+        pnl,
+        exit_price: price,
+        close_reason: closeReason,
+        closed_at: closedAt,
+      })
+      .eq("id", trade.id)
+      .eq("status", "open")
+      .select("id")
+      .maybeSingle();
     if (closeError) throw closeError;
     if (!closedTrade) continue;
     // close reason stored in trade_alerts.event_type only
@@ -818,7 +858,13 @@ export async function executeTrades(): Promise<number> {
   const cooldownSymbols = new Set(((recentlyClosedRes.data ?? []) as { symbol: string }[]).map((t) => t.symbol));
   if (openSymbols.size >= MAX_OPEN_TRADES) return 0;
   let opened = 0;
-  for (const signal of (signalsRes.data ?? []) as { id: string; symbol: string; recommendation: string }[]) {
+  for (const signal of (signalsRes.data ?? []) as {
+    id: string;
+    symbol: string;
+    recommendation: string;
+    price_at?: number | null;
+    created_at?: string | null;
+  }[]) {
     if (openSymbols.size >= MAX_OPEN_TRADES) break;
     if (openSymbols.has(signal.symbol)) continue;
     if (cooldownSymbols.has(signal.symbol)) continue;
@@ -826,6 +872,21 @@ export async function executeTrades(): Promise<number> {
     if (existing && existing.length > 0) continue;
     let price: number;
     try { price = await currentPrice(signal.symbol); } catch { continue; }
+
+    // Do not enter a 4h signal after the market has moved too far
+    // from the price at which the signal was generated.
+    const signalPrice = Number(signal.price_at);
+    if (
+      Number.isFinite(signalPrice) &&
+      signalPrice > 0 &&
+      Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT
+    ) {
+      console.log(
+        `[ENTRY_REJECTED] ${signal.symbol}: price drift ${(Math.abs(price - signalPrice) / signalPrice * 100).toFixed(2)}% > ${(MAX_ENTRY_DRIFT_PCT * 100).toFixed(2)}%`
+      );
+      continue;
+    }
+
     const side = signal.recommendation as "buy" | "sell";
     const stopLoss = side === "buy" ? price * (1 - STOP_LOSS_PCT) : price * (1 + STOP_LOSS_PCT);
     const takeProfit = side === "buy" ? price * (1 + TAKE_PROFIT_PCT) : price * (1 - TAKE_PROFIT_PCT);
@@ -854,8 +915,24 @@ export async function executeTrades(): Promise<number> {
 export async function runFullPipeline() {
   const db = await admin();
   const startedAt = new Date();
-  const { data: runRow, error: insertError } = await db.from("pipeline_runs").insert({ job_name: "runFullPipeline", started_at: startedAt.toISOString(), status: "running" } as never).select("id").single();
-  if (insertError) console.error("failed to record pipeline run start", insertError);
+  const { data: runRow, error: insertError } = await db
+    .from("pipeline_runs")
+    .insert({
+      job_name: "runFullPipeline",
+      started_at: startedAt.toISOString(),
+      status: "running",
+    } as never)
+    .select("id")
+    .single();
+
+  // A partial unique index prevents overlapping cron/manual pipeline runs.
+  // Do not continue if another run already owns the pipeline lock.
+  if (insertError) {
+    if ((insertError as { code?: string }).code === "23505") {
+      throw new Error("Pipeline already running; overlapping execution skipped");
+    }
+    console.error("failed to record pipeline run start", insertError);
+  }
   const runId = (runRow as { id: string } | null)?.id ?? null;
   try {
     const [hlWhales, exWhales] = await Promise.all([collectWhaleAlerts(), collectExchangeWhaleAlerts()]);
