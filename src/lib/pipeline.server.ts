@@ -814,14 +814,19 @@ async function closeTriggeredTrades(): Promise<number> {
     const closeReason = hitStopLoss ? "stop_loss" : "take_profit";
     const closedAt = new Date().toISOString();
     const entryPrice = Number(trade.entry_price);
-    const pnl = (trade.side === "buy" ? price - entryPrice : entryPrice - price) * Number(trade.quantity);
-    const pnlPct = entryPrice > 0 ? ((trade.side === "buy" ? price - entryPrice : entryPrice - price) / entryPrice) * 100 : 0;
-    // NOTE: close_reason NOT written to trades table (column does not exist in production schema)
+    const fee = computeFeeAwarePnl(trade.side, entryPrice, price, Number(trade.quantity));
+    const pnl = fee.netPnl; // trades.pnl stores NET realized PnL
+    const pnlPct = fee.netPnlPct;
     const { data: closedTrade, error: closeError } = await db
       .from("trades")
       .update({
         status: "closed",
         pnl,
+        gross_pnl: fee.grossPnl,
+        net_pnl: fee.netPnl,
+        entry_fee: fee.entryFee,
+        exit_fee: fee.exitFee,
+        total_fees: fee.totalFees,
         exit_price: price,
         close_reason: closeReason,
         closed_at: closedAt,
@@ -902,7 +907,8 @@ export async function executeTrades(): Promise<number> {
       try { exchangeOrderId = await placeLiveOrder(signal.symbol, side, quantity); }
       catch (e) { console.error("live order failed", e); continue; }
     }
-    const { error: tradeErr } = await db.from("trades").insert({ composite_signal_id: signal.id, symbol: signal.symbol, side, quantity, entry_price: price, stop_loss: stopLoss, take_profit: takeProfit, mode, status: "open", exchange_order_id: exchangeOrderId } as never);
+    const entryFee = price * quantity * TRADING_FEE_RATE;
+    const { error: tradeErr } = await db.from("trades").insert({ composite_signal_id: signal.id, symbol: signal.symbol, side, quantity, entry_price: price, stop_loss: stopLoss, take_profit: takeProfit, mode, status: "open", exchange_order_id: exchangeOrderId, entry_fee: entryFee } as never);
     if (tradeErr) throw tradeErr;
     openSymbols.add(signal.symbol);
     opened += 1;
