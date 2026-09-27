@@ -349,10 +349,12 @@ function councilEvaluation(whale: Row, indicator: Row, prediction: Row) {
 
 /* ───────────── Groq AI Council ───────────── */
 
-const AI_VERDICT_TTL_MS = 40 * 60 * 1000;
-const AI_BATCH_MAX = 10;
+const AI_VERDICT_TTL_MS = 25 * 60 * 1000;
+const AI_BATCH_MAX = 15;
+const AI_MIN_MINUTES_BETWEEN_BATCHES = 25;
 const AI_RSI_OVERSOLD = 30;
 const AI_RSI_OVERBOUGHT = 70;
+const AI_WHALE_MIN_USD = 25_000;
 const GROQ_TIMEOUT_MS = 15_000;
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_MODEL = process.env["GROQ_MODEL"] ?? "openai/gpt-oss-20b";
@@ -365,9 +367,11 @@ interface AiCandidate {
   whaleUsd: number;
 }
 
-function qualifiesForAi(whale: Row, indicator: Row): boolean {
+function qualifiesForAi(whale: Row, indicator: Row, symbol?: string): boolean {
   const whaleUsd = typeof whale?.["usd_value"] === "number" ? (whale["usd_value"] as number) : 0;
-  if (whaleUsd >= HL_WHALE_MIN_USD) return true;
+  // Per-market floor: BTC/ETH χρησιμοποιούν $50k, alts $5k-25k.
+  const floor = symbol ? whaleFloor(symbol) : AI_WHALE_MIN_USD;
+  if (whaleUsd >= floor) return true;
   const r = typeof indicator?.["rsi"] === "number" ? (indicator["rsi"] as number) : null;
   if (r != null && (r < AI_RSI_OVERSOLD || r > AI_RSI_OVERBOUGHT)) return true;
   return false;
@@ -445,11 +449,13 @@ export async function collectCouncilSignals(): Promise<number> {
   const binSymbols = symbols.map(binanceSymbol);
   const sixHoursAgo = new Date(Date.now() - WHALE_LOOKBACK_HOURS * 60 * 60 * 1000).toISOString();
   const aiCacheSince = new Date(Date.now() - AI_VERDICT_TTL_MS).toISOString();
-  const [whalesRes, indicatorsRes, predictionsRes, freshAiRes] = await Promise.all([
+  const [whalesRes, indicatorsRes, predictionsRes, freshAiRes, lastAiRes] = await Promise.all([
     db.from("whale_alerts").select("*").in("symbol", symbols).gte("created_at", sixHoursAgo).order("usd_value", { ascending: false }).limit(2000),
     db.from("indicator_snapshots").select("*").in("symbol", binSymbols).order("created_at", { ascending: false }).limit(2000),
     db.from("prediction_snapshots").select("*").in("related_symbol", symbols).order("created_at", { ascending: false }).limit(1000),
     db.from("council_signals").select("symbol, source_created_at").eq("depth", "ai-batch").in("symbol", symbols).gte("source_created_at", aiCacheSince),
+    // Πιο πρόσφατο AI batch (οποιοδήποτε symbol) — για rate limiting
+    db.from("council_signals").select("source_created_at").eq("depth", "ai-batch").order("source_created_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
   const whalesBySymbol = new Map<string, Record<string, unknown>[]>();
   for (const w of (whalesRes.data ?? []) as Record<string, unknown>[]) {
@@ -469,6 +475,14 @@ export async function collectCouncilSignals(): Promise<number> {
     if (s && !latestPrediction.has(s)) latestPrediction.set(s, p);
   }
   const freshAiSymbols = new Set(((freshAiRes.data ?? []) as { symbol: string }[]).map((r) => r.symbol));
+
+  // ── Rate limit guard: έχει περάσει αρκετός χρόνος από το τελευταίο AI batch; ──
+  const lastAiAt = lastAiRes.data?.source_created_at
+    ? new Date(lastAiRes.data.source_created_at).getTime()
+    : 0;
+  const minutesSinceLastAi = lastAiAt > 0 ? (Date.now() - lastAiAt) / 60_000 : Infinity;
+  const aiAllowed = minutesSinceLastAi >= AI_MIN_MINUTES_BETWEEN_BATCHES;
+
   const perSymbol = new Map<string, { whale: Row; indicator: Row; prediction: Row }>();
   const aiCandidates: AiCandidate[] = [];
   for (const symbol of symbols) {
@@ -494,13 +508,21 @@ export async function collectCouncilSignals(): Promise<number> {
     const prediction = (latestPrediction.get(symbol) ?? null) as Row;
     if (!whale && !indicator && !prediction) continue;
     perSymbol.set(symbol, { whale, indicator, prediction });
-    if (!freshAiSymbols.has(symbol) && qualifiesForAi(whale, indicator)) {
+    if (!freshAiSymbols.has(symbol) && qualifiesForAi(whale, indicator, symbol)) {
       aiCandidates.push({ symbol, whale, indicator, prediction, whaleUsd: whaleUsdTotal });
     }
   }
-  aiCandidates.sort((a, b) => b.whaleUsd - a.whaleUsd);
-  const aiBatch = aiCandidates.slice(0, AI_BATCH_MAX);
-  const aiResults = await groqBatchCouncil(aiBatch);
+
+  // ── AI batch (μόνο αν πέρασε το rate limit window) ──
+  let aiResults = new Map<string, { final_verdict: CouncilVerdict; conviction: number; reflection: string }>();
+  if (aiAllowed) {
+    aiCandidates.sort((a, b) => b.whaleUsd - a.whaleUsd);
+    const aiBatch = aiCandidates.slice(0, AI_BATCH_MAX);
+    aiResults = await groqBatchCouncil(aiBatch);
+  } else {
+    console.log(`[GROQ] Rate guard: skipping AI batch — only ${minutesSinceLastAi.toFixed(1)}min since last run (min ${AI_MIN_MINUTES_BETWEEN_BATCHES}min)`);
+  }
+
   for (const [symbol, ctx] of perSymbol) {
     if (freshAiSymbols.has(symbol)) continue;
     const aiResult = aiResults.get(symbol);
