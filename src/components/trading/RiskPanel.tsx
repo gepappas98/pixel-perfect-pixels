@@ -3,16 +3,28 @@
 import { useQuery } from "@tanstack/react-query";
 import { createServerFn } from "@tanstack/react-start";
 import { Shield, ShieldAlert, ShieldOff } from "lucide-react";
-import { RISK_CONFIG, PAPER_STARTING_EQUITY, getPaperEquity, getOpenPortfolioRisk, getDailyRealizedPnL } from "@/lib/risk.engine";
+import { RISK_CONFIG, getPaperEquity, getOpenPortfolioRisk, getDailyEconomicPnL } from "@/lib/risk.engine";
 
 const getRiskStatus = createServerFn({ method: "GET" }).handler(async () => {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   const db = supabaseAdmin;
   try {
+    const priceRes = await fetch("https://api.binance.com/api/v3/ticker/price", {
+      signal: AbortSignal.timeout(10_000),
+      cache: "no-store",
+    });
+    if (!priceRes.ok) throw new Error(`Binance price feed HTTP ${priceRes.status}`);
+    const priceRows = (await priceRes.json()) as { symbol: string; price: string }[];
+    const prices = new Map<string, number>();
+    for (const row of priceRows) {
+      const price = Number(row.price);
+      if (Number.isFinite(price)) prices.set(row.symbol, price);
+    }
+
     const [equity, portfolioRisk, dailyPnL] = await Promise.all([
       getPaperEquity(db as any),
       getOpenPortfolioRisk(db as any),
-      getDailyRealizedPnL(db as any),
+      getDailyEconomicPnL(db as any, prices),
     ]);
     const { count } = await (db.from as any)("trades")
       .select("id", { count: "exact", head: true })
