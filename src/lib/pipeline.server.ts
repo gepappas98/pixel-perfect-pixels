@@ -1589,12 +1589,11 @@ async function resolveVariantOutcomes(): Promise<number> {
   const db = await admin();
 
   /*
-   * IMPORTANT: Do NOT filter by created_at here.
+   * IMPORTANT:
+   * Do not filter open variants by created_at here.
    *
-   * Older open variants must still be loaded so that they can be
-   * resolved as "expired". We bound the workload with a fixed
-   * limit and rely on the ascending order so the oldest rows
-   * (closest to expiry) are resolved first.
+   * Older open variants must remain eligible so they can be resolved
+   * as expired after the 168h maximum lifetime.
    */
   const { data: openVariants, error } = await db
     .from("strategy_variant_signals")
@@ -1614,9 +1613,6 @@ async function resolveVariantOutcomes(): Promise<number> {
     return 0;
   }
 
-  /*
-   * Group by symbol to make exactly ONE klines call per symbol.
-   */
   const bySymbol = new Map<
     string,
     {
@@ -1652,24 +1648,36 @@ async function resolveVariantOutcomes(): Promise<number> {
     bySymbol.set(raw.symbol, list);
   }
 
+  /*
+   * Fetch one 4h candle series per symbol, concurrently but bounded.
+   *
+   * The old implementation fetched symbols serially, which could make
+   * this resolver take many minutes with a ~100-symbol watchlist.
+   */
+  const symbolResults = await pMap(
+    [...bySymbol.entries()],
+    async ([symbol, variants]) => ({
+      symbol,
+      variants,
+      candles: await fetch4hCandles(symbol, 50),
+    }),
+    10,
+  );
+
   const nowMs = Date.now();
   let resolved = 0;
 
-  for (const [symbol, variants] of bySymbol) {
-    const candles = await fetch4hCandles(symbol, 50);
+  for (const result of symbolResults) {
+    if (!result || result.candles.length === 0) continue;
 
-    if (candles.length === 0) {
-      continue;
-    }
+    const { variants, candles } = result;
 
     for (const variant of variants) {
       const entry = variant.entry_price;
       const rec = variant.recommendation;
       const entryMs = new Date(variant.created_at).getTime();
 
-      if (!Number.isFinite(entryMs)) {
-        continue;
-      }
+      if (!Number.isFinite(entryMs)) continue;
 
       const tpPrice =
         rec === "buy"
@@ -1682,18 +1690,19 @@ async function resolveVariantOutcomes(): Promise<number> {
           : entry * (1 + VARIANT_SL_PCT);
 
       /*
-       * Only candles that CLOSED after the signal existed.
+       * Use only fully closed 4h candles whose close happened after
+       * the signal creation time.
        */
-      const relevantCandles = candles.filter((c) => c.closeTimeMs > entryMs);
+      const relevantCandles = candles.filter(
+        (c) => c.closeTimeMs > entryMs && c.closeTimeMs <= nowMs,
+      );
 
       let outcome: "win" | "loss" | "expired" | null = null;
       let exitPrice: number | null = null;
 
       /*
-       * Evaluate candles chronologically.
-       *
-       * If TP and SL are both hit in the same 4h candle, use SL-first
-       * because intrabar order is unknown (conservative convention).
+       * If TP and SL are both touched inside the same 4h candle,
+       * resolve as SL first because intrabar ordering is unknown.
        */
       for (const candle of relevantCandles) {
         const hitTP =
@@ -1716,11 +1725,9 @@ async function resolveVariantOutcomes(): Promise<number> {
       }
 
       /*
-       * Expiry is evaluated AFTER TP/SL.
-       *
-       * This means a trade that hit TP/SL within its 7-day lifetime
-       * is resolved normally. If nothing happened for 168h, resolve
-       * at the latest available 4h close.
+       * Expiry is evaluated only after TP/SL.
+       * At 168h, resolve using the latest fully closed 4h candle
+       * available to the resolver.
        */
       if (!outcome) {
         const ageHours = (nowMs - entryMs) / 3_600_000;
@@ -1736,24 +1743,19 @@ async function resolveVariantOutcomes(): Promise<number> {
         }
       }
 
-      if (!outcome || exitPrice == null) {
-        continue;
-      }
+      if (!outcome || exitPrice == null) continue;
 
-      /*
-       * Directional PnL:
-       *   BUY:  +price movement = profit
-       *   SELL: -price movement = profit
-       */
       const rawPnlPct = ((exitPrice - entry) / entry) * 100;
-
       const pnlPct = rec === "buy" ? rawPnlPct : -rawPnlPct;
 
       /*
-       * Atomic update: idempotent + race-safe.
-       * Only rows still in 'open' state get updated.
+       * Atomic/idempotent update:
+       * only an untouched "open" row is allowed to transition.
+       *
+       * Selecting the updated id prevents counting a concurrent resolver
+       * as successfully resolved when the row was already closed.
        */
-      const { error: updateErr } = await db
+      const { data: updatedRows, error: updateErr } = await db
         .from("strategy_variant_signals")
         .update({
           outcome,
@@ -1762,7 +1764,8 @@ async function resolveVariantOutcomes(): Promise<number> {
           resolved_at: new Date().toISOString(),
         })
         .eq("id", variant.id)
-        .eq("outcome", "open");
+        .eq("outcome", "open")
+        .select("id");
 
       if (updateErr) {
         console.error(
@@ -1772,12 +1775,16 @@ async function resolveVariantOutcomes(): Promise<number> {
         continue;
       }
 
-      resolved += 1;
+      if (updatedRows && updatedRows.length > 0) {
+        resolved += 1;
+      }
     }
   }
 
   if (resolved > 0) {
-    console.log(`[VARIANTS] Resolved ${resolved} outcomes (4h candle-based)`);
+    console.log(
+      `[VARIANTS] Resolved ${resolved} outcomes (4h candle-based)`,
+    );
   }
 
   return resolved;
