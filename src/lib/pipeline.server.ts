@@ -515,7 +515,6 @@ async function groqBatchCouncil(
     "AVOID = conflicting signals or high uncertainty.",
     "HOLD = no clear directional edge.",
     "BUY or SELL only when evidence is reasonably aligned.",
-    // ── Learning layer ──
     "If past_lessons are provided for a symbol, weigh them as real experience: a lesson learned from a [loss] should reduce confidence in repeating the same mistake; a [win] lesson can increase confidence in the same pattern.",
   ].join("\n");
 
@@ -802,10 +801,20 @@ export async function combineSignals(): Promise<number> {
     if (!whale && !indicator && !prediction && !council) continue;
     const result = ruleBased(whale, indicator, prediction, council);
     if (result.recommendation === "hold" && result.confidence === 0) continue;
+
+    // ── Watch filter (FIX): απαιτούμε ΤΟΥΛΑΧΙΣΤΟΝ 2 ανεξάρτητα directional
+    // signals, ή 1 signal + ισχυρό council AVOID (60%+).
+    // Πριν περνούσαν όλα τα watch που είχαν μόνο 1 signal (whale ή prediction),
+    // που γέμιζε το feed με 20+ "watch 31%" rows χωρίς αξία.
     if (result.recommendation === "watch") {
       const hasWhale = whale?.["direction"] != null;
+      const hasTechnical = indicator?.["signal"] === "bullish" || indicator?.["signal"] === "bearish";
       const hasPrediction = predictionDirection(prediction) !== "neutral";
-      if (!hasWhale && !hasPrediction) continue;
+      const councilVerdict = String(council?.["final_verdict"] ?? "").toUpperCase();
+      const councilConviction = Number(council?.["conviction"] ?? 0);
+      const strongAvoid = councilVerdict === "AVOID" && councilConviction >= 60;
+      const signalCount = [hasWhale, hasTechnical, hasPrediction].filter(Boolean).length;
+      if (signalCount < 2 && !strongAvoid) continue;
     }
 
     const fingerprint = signalFingerprint(symbol, whale, indicator, prediction, council, result);
@@ -1002,9 +1011,6 @@ export async function executeTrades(): Promise<number> {
       entry_fee: entryFee,
     } as never);
     if (tradeErr) {
-      // The unique open-per-symbol index is the final atomic race guard.
-      // With the pipeline lock active, this normally means another writer
-      // (e.g. a manual/API invocation) won the race.
       if ((tradeErr as { code?: string }).code === "23505") {
         console.log(`[ENTRY_SKIPPED] ${signal.symbol}: open trade already exists (atomic DB guard)`);
         continue;
@@ -1028,9 +1034,6 @@ export async function runFullPipeline() {
     .select("id")
     .single();
 
-  // The partial unique index on (job_name) WHERE status='running' is the
-  // atomic mutex. A conflict means another pipeline is already executing.
-  // NEVER continue without a run row: doing so would defeat the lock.
   if (insertError) {
     const code = (insertError as { code?: string }).code;
     if (code === "23505") {
@@ -1063,7 +1066,6 @@ export async function runFullPipeline() {
     const trades = await executeTrades();
     const mode = tradingMode();
 
-    // ── Post-mortem: learning από κλειστά trades ──
     step = "post-mortem";
     const lessons = await generatePostMortems();
     if (lessons > 0) console.log(`[LESSON] Generated ${lessons} new lessons`);
