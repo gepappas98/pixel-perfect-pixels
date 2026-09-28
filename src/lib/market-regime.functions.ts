@@ -2,27 +2,32 @@ import { createServerFn } from "@tanstack/react-start";
 
 /* ───────────── Types ───────────── */
 
-export type RegimeLabel = "strong_bull" | "bull" | "sideways" | "bear" | "strong_bear";
+export type RegimeLabel =
+  | "strong_bull"
+  | "bull"
+  | "sideways"
+  | "bear"
+  | "strong_bear";
 
 export interface MarketRegime {
   whale: {
     buy_usd: number;
     sell_usd: number;
-    net_pct: number;      // -1 to +1
+    net_pct: number;
     sample_size: number;
   };
   technicals: {
     bullish: number;
     bearish: number;
     neutral: number;
-    breadth: number;      // -1 to +1
+    breadth: number;
     sample_size: number;
   };
   predictions: {
     bullish: number;
     bearish: number;
     neutral: number;
-    consensus: number;    // -1 to +1
+    consensus: number;
     sample_size: number;
   };
   council: {
@@ -30,11 +35,11 @@ export interface MarketRegime {
     sell: number;
     hold: number;
     avoid: number;
-    consensus: number;    // -1 to +1
+    consensus: number;
     sample_size: number;
   };
-  score: number;          // -1 to +1
-  confidence: number;     // 0 to 1
+  score: number;
+  confidence: number;
   regime: RegimeLabel;
   recommended_preset: string;
   reasoning: string;
@@ -43,8 +48,10 @@ export interface MarketRegime {
 
 /* ───────────── Prediction direction helper ───────────── */
 
-const BULLISH_QUESTION = /\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\b/i;
-const BEARISH_QUESTION = /\b(dip|drop|fall|below|crash|down to|under|bottom)\b/i;
+const BULLISH_QUESTION =
+  /\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\b/i;
+const BEARISH_QUESTION =
+  /\b(dip|drop|fall|below|crash|down to|under|bottom)\b/i;
 
 function predictionDirectionFromSnapshot(
   question: string | null,
@@ -146,7 +153,8 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
       else techNeu++;
     }
     const totalTech = techBull + techBear + techNeu;
-    const techBreadth = totalTech > 0 ? (techBull - techBear) / totalTech : 0;
+    const techBreadth =
+      totalTech > 0 ? (techBull - techBear) / totalTech : 0;
 
     // ── Predictions (latest per market) ──
     const seenPred = new Set<string>();
@@ -166,7 +174,8 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
       else predNeu++;
     }
     const totalPred = predBull + predBear + predNeu;
-    const predConsensus = totalPred > 0 ? (predBull - predBear) / totalPred : 0;
+    const predConsensus =
+      totalPred > 0 ? (predBull - predBear) / totalPred : 0;
 
     // ── Council (latest per symbol) ──
     const seenCouncil = new Set<string>();
@@ -218,18 +227,25 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
       );
     }
     if (Math.abs(techBreadth) > 0.15) {
+      // ✅ FIXED: use the right counter for the direction
       reasons.push(
-        `${techBull}/${totalTech} coins technically ${techBreadth > 0 ? "bullish" : "bearish"}`,
+        techBreadth > 0
+          ? `${techBull}/${totalTech} coins technically bullish`
+          : `${techBear}/${totalTech} coins technically bearish`,
       );
     }
     if (Math.abs(predConsensus) > 0.15) {
       reasons.push(
-        `prediction markets lean ${predConsensus > 0 ? "bullish" : "bearish"}`,
+        predConsensus > 0
+          ? `${predBull}/${totalPred} prediction markets lean bullish`
+          : `${predBear}/${totalPred} prediction markets lean bearish`,
       );
     }
     if (Math.abs(councilConsensus) > 0.15) {
       reasons.push(
-        `AI council leans ${councilConsensus > 0 ? "BUY" : "SELL"}`,
+        councilConsensus > 0
+          ? `${cBuy}/${totalCouncil} council verdicts are BUY`
+          : `${cSell}/${totalCouncil} council verdicts are SELL`,
       );
     }
     if (reasons.length === 0) reasons.push("signals mixed or unclear");
