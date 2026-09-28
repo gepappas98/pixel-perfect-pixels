@@ -26,16 +26,17 @@ const DEFAULT_FULL: StrategyConfigFull = {
 
 function rowToConfig(row: Record<string, unknown>): StrategyConfigFull {
   return {
-    whale_weight: Number(row.whale_weight),
-    technicals_weight: Number(row.technicals_weight),
-    prediction_weight: Number(row.prediction_weight),
-    council_weight: Number(row.council_weight),
-    preset_name: (row.preset_name as string | null) ?? null,
-    updated_at: String(row.updated_at),
-    auto_switch_enabled: Boolean(row.auto_switch_enabled),
-    auto_switch_interval_hours: Number(row.auto_switch_interval_hours ?? 4),
-    last_auto_switch_at: (row.last_auto_switch_at as string | null) ?? null,
-    last_auto_reasoning: (row.last_auto_reasoning as string | null) ?? null,
+    whale_weight: Number(row["whale_weight"]),
+    technicals_weight: Number(row["technicals_weight"]),
+    prediction_weight: Number(row["prediction_weight"]),
+    council_weight: Number(row["council_weight"]),
+    preset_name: (row["preset_name"] as string | null) ?? null,
+    updated_at: String(row["updated_at"]),
+    auto_switch_enabled: Boolean(row["auto_switch_enabled"]),
+    auto_switch_interval_hours: Number(row["auto_switch_interval_hours"] ?? 4),
+    last_auto_switch_at: (row["last_auto_switch_at"] as string | null) ?? null,
+    last_auto_reasoning:
+      (row["last_auto_reasoning"] as string | null) ?? null,
   };
 }
 
@@ -123,14 +124,14 @@ export const updateStrategyConfig = createServerFn({ method: "POST" })
       updated_at: new Date().toISOString(),
     };
     if (data.auto_switch_enabled !== undefined) {
-      update.auto_switch_enabled = data.auto_switch_enabled;
+      update["auto_switch_enabled"] = data.auto_switch_enabled;
     }
     if (data.auto_switch_interval_hours !== undefined) {
-      update.auto_switch_interval_hours = data.auto_switch_interval_hours;
+      update["auto_switch_interval_hours"] = data.auto_switch_interval_hours;
     }
     const { data: row, error } = await supabaseAdmin
       .from("strategy_config")
-      .update(update)
+      .update(update as never)
       .eq("id", 1)
       .select("*")
       .single();
@@ -140,7 +141,7 @@ export const updateStrategyConfig = createServerFn({ method: "POST" })
 
 /* ───────────── Auto-switch (called by pipeline) ───────────── */
 
-const AUTO_SWITCH_MIN_COOLDOWN_MIN = 30; // safety floor
+const AUTO_SWITCH_MIN_COOLDOWN_MIN = 30;
 
 interface MarketSnapshot {
   whale: { buy_usd: number; sell_usd: number; net_pct: number; sample: number };
@@ -278,7 +279,12 @@ async function gatherSnapshot(): Promise<MarketSnapshot> {
       sample: (whalesRes.data ?? []).length,
     },
     technicals: { bull: tBull, bear: tBear, neu: tNeu, breadth: techBreadth },
-    predictions: { bull: pBull, bear: pBear, neu: pNeu, consensus: predConsensus },
+    predictions: {
+      bull: pBull,
+      bear: pBear,
+      neu: pNeu,
+      consensus: predConsensus,
+    },
     council: { buy: cBuy, sell: cSell, hold: cHold, avoid: cAvoid },
     regime_score,
   };
@@ -397,28 +403,26 @@ export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
       const row = config as Record<string, unknown>;
 
       // 2. Check enabled
-      if (!row.auto_switch_enabled) {
+      if (!row["auto_switch_enabled"]) {
         return { switched: false, reason: "disabled" };
       }
 
       // 3. Check cooldown
       const intervalHours = Math.max(
         1,
-        Number(row.auto_switch_interval_hours ?? 4),
+        Number(row["auto_switch_interval_hours"] ?? 4),
       );
       const minCooldownMs = Math.max(
         AUTO_SWITCH_MIN_COOLDOWN_MIN * 60 * 1000,
         intervalHours * 60 * 60 * 1000,
       );
-      const lastAt = row.last_auto_switch_at
-        ? new Date(String(row.last_auto_switch_at)).getTime()
-        : 0;
+      const lastAtRaw = row["last_auto_switch_at"];
+      const lastAt = lastAtRaw ? new Date(String(lastAtRaw)).getTime() : 0;
       const elapsedMs = Date.now() - lastAt;
       if (lastAt > 0 && elapsedMs < minCooldownMs) {
-        const hoursRemaining = (
-          (minCooldownMs - elapsedMs) /
-          3_600_000
-        ).toFixed(1);
+        const hoursRemaining = ((minCooldownMs - elapsedMs) / 3_600_000).toFixed(
+          1,
+        );
         return { switched: false, reason: `cooldown_${hoursRemaining}h` };
       }
 
@@ -426,15 +430,14 @@ export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
       const snapshot = await gatherSnapshot();
 
       // 5. Ask Groq
-      const currentPreset = (row.preset_name as string | null) ?? null;
+      const currentPreset = (row["preset_name"] as string | null) ?? null;
       const decision = await askGroqForPreset(snapshot, currentPreset);
       if (!decision) {
         await db
           .from("strategy_config")
           .update({
             last_auto_switch_at: new Date().toISOString(),
-            last_auto_reasoning:
-              "Groq call failed — retry next interval.",
+            last_auto_reasoning: "Groq call failed — retry next interval.",
           })
           .eq("id", 1);
         return { switched: false, reason: "groq_failed" };
@@ -470,7 +473,7 @@ export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
           technicals_weight: preset.technicals_weight,
           prediction_weight: preset.prediction_weight,
           council_weight: preset.council_weight,
-          preset_name: preset.preset_name,
+          preset_name: preset.preset_name ?? "custom",
           last_auto_switch_at: new Date().toISOString(),
           last_auto_reasoning: decision.reasoning,
           updated_at: new Date().toISOString(),
