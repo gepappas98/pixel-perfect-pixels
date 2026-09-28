@@ -77,6 +77,22 @@ const MAX_ENTRY_DRIFT_PCT = 0.02;
 const SYMBOL_COOLDOWN_MINUTES = 60;
 const WHALE_LOOKBACK_HOURS = 6;
 
+// Freshness policy: a component older than these limits cannot influence a new
+// Composite signal or a new trade. The 4h technical snapshot gets one extra
+// candle of tolerance; predictions/council are expected to refresh each cycle.
+const INDICATOR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const PREDICTION_MAX_AGE_MS = 30 * 60 * 1000;
+const COUNCIL_MAX_AGE_MS = 30 * 60 * 1000;
+
+function isFresh(value: unknown, maxAgeMs: number, now = Date.now()): boolean {
+  const ts = new Date(String(value ?? "")).getTime();
+  return Number.isFinite(ts) && now - ts >= 0 && now - ts <= maxAgeMs;
+}
+
+function isFreshRow(row: Row, field: string, maxAgeMs: number, now = Date.now()): boolean {
+  return !!row && isFresh(row[field], maxAgeMs, now);
+}
+
 async function fetchWithTimeout(input: string, init?: RequestInit) {
   return fetch(input, { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
 }
@@ -366,7 +382,7 @@ export async function collectPredictions(): Promise<number> {
       no = prices[1] ? parseFloat(prices[1]) : null;
     } catch { /* unparsable */ }
     if (yes == null || !Number.isFinite(yes) || yes < 0 || yes > 1) continue;
-    rows.push({ market_slug: m.slug, question, related_symbol: symbol, yes_price: yes, no_price: no, volume_24h: m.volume24hr ?? null, raw: m as unknown as Record<string, unknown> });
+    rows.push({ market_slug: m.slug, question, related_symbol: symbol, yes_price: yes, no_price: no, volume_24h: m.volume24hr ?? null, created_at: new Date().toISOString(), raw: m as unknown as Record<string, unknown> });
   }
   if (rows.length === 0) return 0;
   const { data, error } = await db.from("prediction_snapshots").upsert(rows as never, { onConflict: "market_slug" }).select("id");
@@ -567,6 +583,13 @@ export async function collectCouncilSignals(): Promise<number> {
     const s = p["related_symbol"] as string | undefined;
     if (s && !latestPrediction.has(s)) latestPrediction.set(s, p);
   }
+  const freshnessNow = Date.now();
+  for (const [s, row] of latestIndicator) {
+    if (!isFreshRow(row, "created_at", INDICATOR_MAX_AGE_MS, freshnessNow)) latestIndicator.delete(s);
+  }
+  for (const [s, row] of latestPrediction) {
+    if (!isFreshRow(row, "created_at", PREDICTION_MAX_AGE_MS, freshnessNow)) latestPrediction.delete(s);
+  }
   const freshAiSymbols = new Set(((freshAiRes.data ?? []) as { symbol: string }[]).map((r) => r.symbol));
   const lastAiAt = lastAiRes.data?.source_created_at ? new Date(lastAiRes.data.source_created_at).getTime() : 0;
   const minutesSinceLastAi = lastAiAt > 0 ? (Date.now() - lastAiAt) / 60_000 : Infinity;
@@ -741,6 +764,16 @@ export async function combineSignals(): Promise<number> {
   for (const c of (councilsRes.data ?? []) as Record<string, unknown>[]) {
     const s = c["symbol"] as string;
     if (!latestCouncil.has(s)) latestCouncil.set(s, c);
+  }
+  const freshnessNow = Date.now();
+  for (const [s, row] of latestIndicator) {
+    if (!isFreshRow(row, "created_at", INDICATOR_MAX_AGE_MS, freshnessNow)) latestIndicator.delete(s);
+  }
+  for (const [s, row] of latestPrediction) {
+    if (!isFreshRow(row, "created_at", PREDICTION_MAX_AGE_MS, freshnessNow)) latestPrediction.delete(s);
+  }
+  for (const [s, row] of latestCouncil) {
+    if (!isFreshRow(row, "source_created_at", COUNCIL_MAX_AGE_MS, freshnessNow)) latestCouncil.delete(s);
   }
   let created = 0;
   const nowIso = new Date().toISOString();
@@ -940,7 +973,11 @@ export async function executeTrades(): Promise<number> {
     const side = signal.recommendation as "buy" | "sell";
     const stopLoss = side === "buy" ? price * (1 - STOP_LOSS_PCT) : price * (1 + STOP_LOSS_PCT);
     const takeProfit = side === "buy" ? price * (1 + TAKE_PROFIT_PCT) : price * (1 - TAKE_PROFIT_PCT);
-    const risk = await canOpenTrade(db as any, { symbol: signal.symbol, side, entryPrice: price, stopLoss });
+    if (signal.created_at && !isFresh(signal.created_at, 15 * 60 * 1000)) {
+      console.log(`[ENTRY_REJECTED] ${signal.symbol}: composite signal is stale`);
+      continue;
+    }
+    const risk = await canOpenTrade(db as any, { symbol: signal.symbol, side, entryPrice: price, stopLoss, currentPrices: prices });
     if (!risk.allowed) {
       console.log(`[RISK_REJECTED] ${signal.symbol} ${side}: ${risk.reason}`);
       continue;
@@ -966,7 +1003,16 @@ export async function executeTrades(): Promise<number> {
       exchange_order_id: exchangeOrderId,
       entry_fee: entryFee,
     } as never);
-    if (tradeErr) throw tradeErr;
+    if (tradeErr) {
+      // The unique open-per-symbol index is the final atomic race guard.
+      // With the pipeline lock active, this normally means another writer
+      // (e.g. a manual/API invocation) won the race.
+      if ((tradeErr as { code?: string }).code === "23505") {
+        console.log(`[ENTRY_SKIPPED] ${signal.symbol}: open trade already exists (atomic DB guard)`);
+        continue;
+      }
+      throw tradeErr;
+    }
     openSymbols.add(signal.symbol);
     opened += 1;
   }
@@ -983,10 +1029,19 @@ export async function runFullPipeline() {
     .insert({ job_name: "runFullPipeline", started_at: startedAt.toISOString(), status: "running" } as never)
     .select("id")
     .single();
+
+  // The partial unique index on (job_name) WHERE status='running' is the
+  // atomic mutex. A conflict means another pipeline is already executing.
+  // NEVER continue without a run row: doing so would defeat the lock.
   if (insertError) {
-    console.error("failed to record pipeline run start", insertError);
+    const code = (insertError as { code?: string }).code;
+    if (code === "23505") {
+      console.log("[PIPELINE_LOCK] another run is already active; skipping this invocation");
+      return { skipped: true, reason: "pipeline_locked" };
+    }
+    throw new Error(`pipeline start/lock failed: ${insertError.message}`);
   }
-  const runId = (runRow as { id: string } | null)?.id ?? null;
+  const runId = (runRow as { id: string }).id;
 
   let step = "init";
   try {
