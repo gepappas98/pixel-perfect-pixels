@@ -3,6 +3,7 @@ import { canOpenTrade, RISK_CONFIG } from "./risk.engine";
 import { computeFeeAwarePnl, TRADING_FEE_RATE } from "./fees";
 import { fetchRelevantLessons, generatePostMortems } from "./council-learning";
 import { DEFAULT_STRATEGY, type StrategyConfig } from "./strategy.presets";
+import { maybeAutoSwitchStrategy } from "./strategy.functions";
 
 /* ───────────── Shared types (declared first) ───────────── */
 
@@ -159,6 +160,11 @@ async function fetchStrategy(): Promise<StrategyConfig> {
     console.error("[STRATEGY] load failed, using defaults", e);
     return DEFAULT_STRATEGY;
   }
+}
+
+/** Clear the cache after auto-switch so the new weights apply immediately. */
+export function invalidateStrategyCache() {
+  strategyCache = null;
 }
 
 /* ───────────── Hyperliquid universe ───────────── */
@@ -1035,9 +1041,6 @@ export async function combineSignals(): Promise<number> {
 
     const result = ruleBased(whale, mtf, prediction, council, weights);
 
-    // ── Signal filter ────────────────────────────────────────────
-    // Skip ALL "hold" signals — they have no directional edge.
-    // Only actionable (buy/sell) or notable (watch) signals reach the feed.
     if (result.recommendation === "hold") continue;
 
     if (result.recommendation === "watch") {
@@ -1443,6 +1446,22 @@ export async function runFullPipeline() {
 
     step = "council";
     const council = await collectCouncilSignals();
+
+    // ── Auto-adaptive strategy ──
+    // AI re-evaluates the strategy preset on a schedule (1-24h).
+    // Runs BEFORE combineSignals so new weights apply to this cycle.
+    step = "auto-strategy";
+    try {
+      const autoSwitch = await maybeAutoSwitchStrategy();
+      if (autoSwitch.switched) {
+        console.log(`[AUTO_SWITCH] Applied ${autoSwitch.preset}: ${autoSwitch.reasoning}`);
+        invalidateStrategyCache();
+      } else {
+        console.log(`[AUTO_SWITCH] Skipped: ${autoSwitch.reason}`);
+      }
+    } catch (e) {
+      console.error("[AUTO_SWITCH] non-fatal error:", e);
+    }
 
     step = "signals";
     const signals = await combineSignals();
