@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
@@ -248,6 +248,27 @@ function CommandCenter() {
           <TradeAlertsPanel />
         </div>
       </main>
+
+      {/* ── Footer ── */}
+      <footer className="border-t border-border px-5 py-6 sm:px-8">
+        <div className="flex flex-col items-center justify-center gap-3 text-center sm:flex-row sm:gap-6">
+          <Link
+            to="/about"
+            className="inline-flex items-center gap-2 rounded-md border border-accent/40 bg-accent/10 px-4 py-2 text-xs font-semibold text-accent transition hover:bg-accent/20"
+          >
+            📖 What is this? How does it work?
+          </Link>
+          <p className="text-[11px] text-muted-foreground">
+            Interested in this tool?{" "}
+            <a
+              href="mailto:gepappas98@gmail.com?subject=Interested%20in%20the%20Trading%20Command%20Center"
+              className="font-semibold text-bull underline-offset-2 hover:underline"
+            >
+              Contact gepappas98@gmail.com
+            </a>
+          </p>
+        </div>
+      </footer>
     </div>
   );
 }
