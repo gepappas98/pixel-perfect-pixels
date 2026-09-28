@@ -7,12 +7,12 @@ const tone: Record<string, string> = {
   neutral: "text-muted-foreground",
 };
 
-/** Αφαιρεί το "USDT" suffix για καθαρή εμφάνιση (BTCUSDT → BTC). */
+/** Strip "USDT" suffix for clean display (BTCUSDT → BTC). */
 function displaySymbol(symbol: string): string {
   return symbol.replace(/USDT$/i, "");
 }
 
-/** Σειρά εμφάνισης: bullish πρώτα, μετά neutral, μετά bearish. */
+/** Display order: bullish first, then neutral, then bearish. */
 const SIGNAL_ORDER: Record<string, number> = {
   bullish: 0,
   neutral: 1,
@@ -20,24 +20,26 @@ const SIGNAL_ORDER: Record<string, number> = {
 };
 
 export function IndicatorPanel() {
-  // Αυξημένο limit: 12 → 120. Χρειαζόμαστε αρκετά rows ώστε μετά το dedup
-  // να έχουμε ευρύ φάσμα νομισμάτων (όχι μόνο BTC/ETH/SOL).
-  const { rows, loading } = useLiveTable<IndicatorSnapshot>("indicator_snapshots", 120);
+  // Fetch plenty of rows — with 3 timeframes (4h/1h/1d) there are ~285 rows
+  // per cycle for 95 coins. 500 covers current scale with room to spare.
+  const { rows, loading } = useLiveTable<IndicatorSnapshot>("indicator_snapshots", 500);
 
-  // ── Dedup ανά (symbol, timeframe) ──────────────────────────────
-  // Κρατάει ΜΟΝΟ το πιο πρόσφατο snapshot ανά νόμισμα.
-  // Το useLiveTable κάνει order by created_at desc, οπότε το πρώτο row
-  // που συναντάμε για κάθε symbol είναι και το πιο πρόσφατο.
-  // Ίδιο pattern με το SignalFeed / CouncilPanel.
+  // ── Filter to the primary (4h) timeframe only ─────────────────
+  // Multi-timeframe analysis writes 3 rows per coin (4h + 1h + 1d).
+  // This panel shows only the 4h row for a clean one-row-per-coin view.
+  const primaryRows = rows.filter((r) => r.timeframe === "4h");
+
+  // ── Dedup per symbol ─────────────────────────────────────────
+  // Keeps ONLY the most recent 4h snapshot per symbol.
+  // useLiveTable orders by created_at desc, so first-seen = most recent.
   const latestBySymbol = new Map<string, IndicatorSnapshot>();
-  for (const row of rows) {
-    const key = `${row.symbol}|${row.timeframe ?? ""}`;
-    if (!latestBySymbol.has(key)) {
-      latestBySymbol.set(key, row);
+  for (const row of primaryRows) {
+    if (!latestBySymbol.has(row.symbol)) {
+      latestBySymbol.set(row.symbol, row);
     }
   }
 
-  // Ταξινόμηση: bullish → neutral → bearish, μετά αλφαβητικά.
+  // Sort: bullish → neutral → bearish, then alphabetically.
   const indicators = [...latestBySymbol.values()].sort((a, b) => {
     const oa = SIGNAL_ORDER[String(a.signal ?? "neutral").toLowerCase()] ?? 1;
     const ob = SIGNAL_ORDER[String(b.signal ?? "neutral").toLowerCase()] ?? 1;
@@ -100,3 +102,5 @@ export function IndicatorPanel() {
     </section>
   );
 }
+
+export default IndicatorPanel;
