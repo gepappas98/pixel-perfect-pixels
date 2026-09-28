@@ -63,7 +63,6 @@ const WHALE_MIN_USD: Record<string, number> = {
 const DEFAULT_MIN_WHALE_USD = 25_000;
 const whaleFloor = (coin: string) => WHALE_MIN_USD[coin] ?? DEFAULT_MIN_WHALE_USD;
 
-/* Bug #8 fix: HL perps → 2x Binance spot floor (bigger clips on perps). */
 const HL_FLOOR_MULTIPLIER = 2;
 const hlWhaleFloor = (coin: string) => whaleFloor(coin) * HL_FLOOR_MULTIPLIER;
 
@@ -71,16 +70,19 @@ const TIMEFRAME = "4h";
 const KLINE_LIMIT = 100;
 const MIN_CONFIDENCE = 0.6;
 const STOP_LOSS_PCT = 0.03;
-const TAKE_PROFIT_PCT = 0.06;
+const TAKE_PROFIT_PCT = 0.04;           // was 0.06 → 4% for faster turnover
 const FETCH_TIMEOUT_MS = 12_000;
 const MAX_OPEN_TRADES = RISK_CONFIG.MAX_OPEN_POSITIONS;
 const MAX_ENTRY_DRIFT_PCT = 0.02;
-const SYMBOL_COOLDOWN_MINUTES = 60;
+const SYMBOL_COOLDOWN_MINUTES = 15;     // was 60 → 15 min
 const WHALE_LOOKBACK_HOURS = 6;
 
-// Freshness policy: a component older than these limits cannot influence a new
-// Composite signal or a new trade. The 4h technical snapshot gets one extra
-// candle of tolerance; predictions/council are expected to refresh each cycle.
+// Time-based exit parameters
+const STALE_EXIT_HOURS = 48;            // close trades older than 48h if sideways
+const STALE_EXIT_MIN_PNL_PCT = 1.0;     // only if |PnL| < 1%
+const MAX_HOLD_HOURS = 168;             // hard cap: 7 days
+
+// Freshness policy
 const INDICATOR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const PREDICTION_MAX_AGE_MS = 30 * 60 * 1000;
 const COUNCIL_MAX_AGE_MS = 30 * 60 * 1000;
@@ -105,7 +107,7 @@ async function admin(): Promise<Admin> {
   return supabaseAdmin;
 }
 
-/* ───────────── Hyperliquid universe (cached) ───────────── */
+/* ───────────── Hyperliquid universe ───────────── */
 
 const HL_INFO_URL = "https://api.hyperliquid.xyz/info";
 const TOP_MOVERS_COUNT = 25;
@@ -326,7 +328,7 @@ export async function collectIndicators(): Promise<number> {
   return data?.length ?? 0;
 }
 
-/* ───────────── Prediction markets — Polymarket Gamma ───────────── */
+/* ───────────── Prediction markets ───────────── */
 
 const WATCH_KEYWORDS: Record<string, string[]> = {
   BTC: ["bitcoin", "btc"], ETH: ["ethereum", "eth"], SOL: ["solana", "sol"],
@@ -348,7 +350,6 @@ function eventMarkets(payload: (PolymarketEvent | PolymarketMarket)[]): Polymark
   return payload.flatMap((item) => "markets" in item ? ((item as PolymarketEvent).markets ?? []) : [item as PolymarketMarket]);
 }
 
-/* Bug #9 fix: prefer the symbol whose keyword appears FIRST in the question. */
 function matchSymbolFromQuestion(q: string): string | null {
   const matches: { sym: string; pos: number }[] = [];
   for (const [sym, keywords] of Object.entries(WATCH_KEYWORDS)) {
@@ -396,11 +397,8 @@ export async function collectPredictions(): Promise<number> {
   return data?.length ?? 0;
 }
 
-/* ───────────── Prediction direction helper (Bug #1 fix) ───────────── */
+/* ───────────── Prediction direction helper ───────────── */
 
-/* Το yes_price είναι η πιθανότητα να συμβεί η ΕΡΩΤΗΣΗ.
- * Αν η ερώτηση είναι "Will dip to X?" → yes=0.19 σημαίνει BULLISH.
- * Αν η ερώτηση είναι "Will reach X?" → yes=0.19 σημαίνει BEARISH. */
 const BULLISH_QUESTION = /\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\b/i;
 const BEARISH_QUESTION = /\b(dip|drop|fall|below|crash|down to|under|bottom)\b/i;
 
@@ -417,7 +415,7 @@ function predictionDirection(prediction: Row): "bullish" | "bearish" | "neutral"
   return "neutral";
 }
 
-/* ───────────── AI trading council (deterministic fallback) ───────────── */
+/* ───────────── Deterministic council fallback ───────────── */
 
 type Row = Record<string, unknown> | null;
 type CouncilVerdict = "BUY" | "SELL" | "HOLD" | "AVOID";
@@ -443,11 +441,9 @@ function councilEvaluation(whale: Row, indicator: Row, prediction: Row) {
   const rawConviction = Math.round((topCount / votes.length) * 100);
   const verdict: CouncilVerdict = topCount === 1 ? "AVOID" : topVote;
   const conviction = verdict === "HOLD" ? 0 : rawConviction;
-
   const reflection = verdict === "HOLD"
     ? `HOLD (no directional edge): ${reasons.join("; ")}.`
     : `${verdict} with ${conviction}% conviction: ${reasons.join("; ")}.`;
-
   return { final_verdict: verdict, conviction, reflection };
 }
 
@@ -488,7 +484,6 @@ async function groqBatchCouncil(
   const apiKey = process.env["GROQ_API_KEY"];
   if (!apiKey) { console.error("[GROQ] GROQ_API_KEY not set — falling back to deterministic council"); return result; }
 
-  // ── RAG: ανάκτηση προηγούμενων μαθημάτων ανά symbol ──
   const lessonsMap = await fetchRelevantLessons(candidates.map((c) => c.symbol), 5);
 
   const payload = candidates.map((c) => {
@@ -696,7 +691,6 @@ function ruleBased(whale: Row, indicator: Row, prediction: Row, council: Row) {
   };
 }
 
-/* Bug #2 fix: fingerprint σταθερό — χωρίς volatile timestamps. */
 function signalFingerprint(
   symbol: string, whale: Row, indicator: Row, prediction: Row, council: Row,
   result: ReturnType<typeof ruleBased>,
@@ -801,11 +795,6 @@ export async function combineSignals(): Promise<number> {
     if (!whale && !indicator && !prediction && !council) continue;
     const result = ruleBased(whale, indicator, prediction, council);
     if (result.recommendation === "hold" && result.confidence === 0) continue;
-
-    // ── Watch filter (FIX): απαιτούμε ΤΟΥΛΑΧΙΣΤΟΝ 2 ανεξάρτητα directional
-    // signals, ή 1 signal + ισχυρό council AVOID (60%+).
-    // Πριν περνούσαν όλα τα watch που είχαν μόνο 1 signal (whale ή prediction),
-    // που γέμιζε το feed με 20+ "watch 31%" rows χωρίς αξία.
     if (result.recommendation === "watch") {
       const hasWhale = whale?.["direction"] != null;
       const hasTechnical = indicator?.["signal"] === "bullish" || indicator?.["signal"] === "bearish";
@@ -874,7 +863,7 @@ async function closeTriggeredTrades(): Promise<number> {
   const db = await admin();
   const { data: openTrades, error } = await db
     .from("trades")
-    .select("id, symbol, side, quantity, entry_price, stop_loss, take_profit, mode")
+    .select("id, symbol, side, quantity, entry_price, stop_loss, take_profit, mode, created_at")
     .eq("status", "open");
   if (error) throw error;
   const trades = (openTrades ?? []) as {
@@ -882,19 +871,33 @@ async function closeTriggeredTrades(): Promise<number> {
     quantity: number; entry_price: number;
     stop_loss: number | null; take_profit: number | null;
     mode: "paper" | "live";
+    created_at: string;
   }[];
   if (trades.length === 0) return 0;
   let prices: Map<string, number>;
   try { prices = await allBinancePrices(); }
   catch (e) { console.error("batch price fetch failed, skipping close checks", e); return 0; }
   let closed = 0;
+  const nowMs = Date.now();
   for (const trade of trades) {
     const binSym = binanceSymbol(trade.symbol);
     const price = prices.get(binSym);
     if (price == null) { console.error(`no price for ${trade.symbol} (${binSym})`); continue; }
+    const entryPrice = Number(trade.entry_price);
+
     const hitStopLoss = trade.stop_loss != null && (trade.side === "buy" ? price <= trade.stop_loss : price >= trade.stop_loss);
     const hitTakeProfit = trade.take_profit != null && (trade.side === "buy" ? price >= trade.take_profit : price <= trade.take_profit);
-    if (!hitStopLoss && !hitTakeProfit) continue;
+
+    // ── Time-based exits ──
+    const ageMs = nowMs - new Date(trade.created_at).getTime();
+    const ageHours = ageMs / 3_600_000;
+    const pnlPctNow = entryPrice > 0
+      ? ((trade.side === "buy" ? price - entryPrice : entryPrice - price) / entryPrice) * 100
+      : 0;
+    const stale = ageHours >= STALE_EXIT_HOURS && Math.abs(pnlPctNow) < STALE_EXIT_MIN_PNL_PCT;
+    const expired = ageHours >= MAX_HOLD_HOURS;
+
+    if (!hitStopLoss && !hitTakeProfit && !stale && !expired) continue;
 
     if (trade.mode === "live") {
       const opposite: "buy" | "sell" = trade.side === "buy" ? "sell" : "buy";
@@ -906,9 +909,15 @@ async function closeTriggeredTrades(): Promise<number> {
       }
     }
 
-    const closeReason = hitStopLoss ? "stop_loss" : "take_profit";
+    const closeReason = hitStopLoss
+      ? "stop_loss"
+      : hitTakeProfit
+        ? "take_profit"
+        : expired
+          ? "expired"
+          : "stale_exit";
+
     const closedAt = new Date().toISOString();
-    const entryPrice = Number(trade.entry_price);
     const fee = computeFeeAwarePnl(trade.side, entryPrice, price, Number(trade.quantity));
     const { data: closedTrade, error: closeError } = await db
       .from("trades")
@@ -931,6 +940,9 @@ async function closeTriggeredTrades(): Promise<number> {
     } as never);
     if (alertError) throw alertError;
     closed += 1;
+    if (closeReason === "stale_exit" || closeReason === "expired") {
+      console.log(`[TIME_EXIT] ${trade.symbol} ${trade.side} after ${ageHours.toFixed(1)}h (${closeReason}) pnl=${fee.netPnl.toFixed(2)}`);
+    }
   }
   return closed;
 }
@@ -1023,7 +1035,7 @@ export async function executeTrades(): Promise<number> {
   return opened;
 }
 
-/* ───────────── Full pipeline with step tracking + learning ───────────── */
+/* ───────────── Full pipeline ───────────── */
 
 export async function runFullPipeline() {
   const db = await admin();
