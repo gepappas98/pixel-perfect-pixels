@@ -373,7 +373,7 @@ export type Database = {
           last_auto_reasoning: string | null
           last_auto_switch_at: string | null
           prediction_weight: number
-          preset_name: string
+          preset_name: string | null
           technicals_weight: number
           updated_at: string
           whale_weight: number
@@ -386,7 +386,7 @@ export type Database = {
           last_auto_reasoning?: string | null
           last_auto_switch_at?: string | null
           prediction_weight?: number
-          preset_name?: string
+          preset_name?: string | null
           technicals_weight?: number
           updated_at?: string
           whale_weight?: number
@@ -399,10 +399,43 @@ export type Database = {
           last_auto_reasoning?: string | null
           last_auto_switch_at?: string | null
           prediction_weight?: number
-          preset_name?: string
+          preset_name?: string | null
           technicals_weight?: number
           updated_at?: string
           whale_weight?: number
+        }
+        Relationships: []
+      }
+      strategy_variant_signals: {
+        Row: {
+          confidence: number | null
+          created_at: string
+          id: string
+          reasoning: string | null
+          recommendation: string | null
+          score: number | null
+          strategy_name: string
+          symbol: string
+        }
+        Insert: {
+          confidence?: number | null
+          created_at?: string
+          id?: string
+          reasoning?: string | null
+          recommendation?: string | null
+          score?: number | null
+          strategy_name: string
+          symbol: string
+        }
+        Update: {
+          confidence?: number | null
+          created_at?: string
+          id?: string
+          reasoning?: string | null
+          recommendation?: string | null
+          score?: number | null
+          strategy_name?: string
+          symbol?: string
         }
         Relationships: []
       }
