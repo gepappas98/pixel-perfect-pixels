@@ -50,6 +50,13 @@
       "when": 1790578531270,
       "tag": "0006_trade_safety_hardening",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1790578536683,
+      "tag": "0007_unschedule_legacy_trade_monitor",
+      "breakpoints": true
     }
   ]
 }

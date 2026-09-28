@@ -484,7 +484,6 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      check_and_close_trades: { Args: never; Returns: number }
       get_portfolio_summary: {
         Args: never
         Returns: {
