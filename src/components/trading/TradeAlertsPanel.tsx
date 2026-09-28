@@ -33,6 +33,7 @@ function reasonLabel(reason: string | null): string {
     case "stop_loss": return "stop hit";
     case "stale_exit": return "stale exit";
     case "expired": return "expired";
+    case "rotated_out": return "rotated out";
     default: return reason ?? "—";
   }
 }
@@ -41,6 +42,7 @@ function reasonTone(reason: string | null): string {
   switch (reason) {
     case "take_profit": return "text-bull";
     case "stop_loss": return "text-bear";
+    case "rotated_out": return "text-warn";
     case "stale_exit":
     case "expired": return "text-muted-foreground";
     default: return "text-muted-foreground";
