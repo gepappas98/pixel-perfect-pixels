@@ -8,7 +8,7 @@ import { fetchRelevantLessons, generatePostMortems } from "./council-learning";
 async function pMap<T, R>(
   items: T[],
   fn: (item: T) => Promise<R>,
-  concurrency = 10,
+  concurrency = 15,
 ): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let cursor = 0;
@@ -66,8 +66,13 @@ const whaleFloor = (coin: string) => WHALE_MIN_USD[coin] ?? DEFAULT_MIN_WHALE_US
 const HL_FLOOR_MULTIPLIER = 2;
 const hlWhaleFloor = (coin: string) => whaleFloor(coin) * HL_FLOOR_MULTIPLIER;
 
-const TIMEFRAME = "4h";
+/* ── Multi-timeframe config ── */
+const PRIMARY_TIMEFRAME = "4h";
+const FAST_TIMEFRAME = "1h";
+const TREND_TIMEFRAME = "1d";
+const TIMEFRAMES = [PRIMARY_TIMEFRAME, FAST_TIMEFRAME, TREND_TIMEFRAME] as const;
 const KLINE_LIMIT = 100;
+
 const MIN_CONFIDENCE = 0.6;
 const STOP_LOSS_PCT = 0.03;
 const TAKE_PROFIT_PCT = 0.04;
@@ -77,20 +82,15 @@ const MAX_ENTRY_DRIFT_PCT = 0.02;
 const SYMBOL_COOLDOWN_MINUTES = 15;
 const WHALE_LOOKBACK_HOURS = 6;
 
-// Time-based exits
 const STALE_EXIT_HOURS = 48;
 const STALE_EXIT_MIN_PNL_PCT = 1.0;
 const MAX_HOLD_HOURS = 168;
 
-// ── Signal rotation ──
-// When the portfolio is full but a much stronger signal appears,
-// close the weakest open trade to make room.
-const ROTATION_MIN_NEW_CONFIDENCE = 0.75;      // new signal must be ≥ 75%
-const ROTATION_CONFIDENCE_IMPROVEMENT = 0.10;  // and ≥ 10pts better than weakest
-const ROTATION_MIN_OPEN_AGE_MINUTES = 30;      // don't rotate trades < 30 min old
-const ROTATION_MAX_WEAKEST_PNL_PCT = 0.5;      // only rotate out trades with ≤ +0.5% PnL
+const ROTATION_MIN_NEW_CONFIDENCE = 0.75;
+const ROTATION_CONFIDENCE_IMPROVEMENT = 0.10;
+const ROTATION_MIN_OPEN_AGE_MINUTES = 30;
+const ROTATION_MAX_WEAKEST_PNL_PCT = 0.5;
 
-// Freshness policy
 const INDICATOR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const PREDICTION_MAX_AGE_MS = 30 * 60 * 1000;
 const COUNCIL_MAX_AGE_MS = 30 * 60 * 1000;
@@ -300,38 +300,66 @@ function classify(r: number, m: number, s: number): "bullish" | "bearish" | "neu
   return "neutral";
 }
 
+/** Fetch klines and compute indicators for ONE coin at ONE timeframe. */
+async function fetchIndicatorForTimeframe(
+  coin: string,
+  timeframe: string,
+): Promise<Record<string, unknown> | null> {
+  const symbol = binanceSymbol(coin);
+  try {
+    const res = await fetchWithTimeout(
+      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${timeframe}&limit=${KLINE_LIMIT}`,
+    );
+    if (!res.ok) return null;
+    const raw = (await res.json()) as unknown[][];
+    const closes = raw.map((r) => parseFloat(String(r[4])));
+    if (closes.length < 30 || closes.some((c) => !Number.isFinite(c))) return null;
+    const r = rsi(closes);
+    const { macd: m, signal: s } = macd(closes);
+    const bb = bollinger(closes);
+    const candleCloseTime = new Date(Number(raw[raw.length - 1]?.[6])).toISOString();
+    return {
+      symbol,
+      timeframe,
+      rsi: Number.isFinite(r) ? r : null,
+      macd: m,
+      macd_signal: s,
+      bb_upper: bb.upper,
+      bb_lower: bb.lower,
+      price: closes[closes.length - 1]!,
+      signal: classify(r, m, s),
+      created_at: new Date().toISOString(),
+      raw: { closes_tail: closes.slice(-5), candle_close_time: candleCloseTime },
+    };
+  } catch (e) {
+    console.error(`[BINANCE] indicator fetch failed for ${symbol} ${timeframe}`, e);
+    return null;
+  }
+}
+
 export async function collectIndicators(): Promise<number> {
   const db = await admin();
   const movers = await hyperliquidTopMovers();
   const coins = [...new Set([...WATCHLIST, ...movers])];
 
-  const perCoinRows = await pMap(coins, async (coin) => {
-    const symbol = binanceSymbol(coin);
-    try {
-      const res = await fetchWithTimeout(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${TIMEFRAME}&limit=${KLINE_LIMIT}`);
-      if (!res.ok) return null;
-      const raw = (await res.json()) as unknown[][];
-      const closes = raw.map((r) => parseFloat(String(r[4])));
-      if (closes.length < 30 || closes.some((c) => !Number.isFinite(c))) return null;
-      const r = rsi(closes);
-      const { macd: m, signal: s } = macd(closes);
-      const bb = bollinger(closes);
-      const candleCloseTime = new Date(Number(raw[raw.length - 1]?.[6])).toISOString();
-      return {
-        symbol, timeframe: TIMEFRAME,
-        rsi: Number.isFinite(r) ? r : null,
-        macd: m, macd_signal: s, bb_upper: bb.upper, bb_lower: bb.lower,
-        price: closes[closes.length - 1]!,
-        signal: classify(r, m, s),
-        created_at: new Date().toISOString(),
-        raw: { closes_tail: closes.slice(-5), candle_close_time: candleCloseTime },
-      } as Record<string, unknown>;
-    } catch (e) { console.error(`[BINANCE] indicator fetch failed for ${symbol}`, e); return null; }
-  }, 10);
+  // Cross product: (coin × timeframe). 95 coins × 3 TFs = 285 fetches.
+  const tasks: { coin: string; timeframe: string }[] = [];
+  for (const coin of coins) {
+    for (const tf of TIMEFRAMES) {
+      tasks.push({ coin, timeframe: tf });
+    }
+  }
 
-  const rows = perCoinRows.filter((r): r is Record<string, unknown> => r != null);
+  const results = await pMap(tasks, async ({ coin, timeframe }) => {
+    return fetchIndicatorForTimeframe(coin, timeframe);
+  }, 15);
+
+  const rows = results.filter((r): r is Record<string, unknown> => r != null);
   if (rows.length === 0) return 0;
-  const { data, error } = await db.from("indicator_snapshots").upsert(rows as never, { onConflict: "symbol,timeframe", ignoreDuplicates: false }).select("id");
+  const { data, error } = await db
+    .from("indicator_snapshots")
+    .upsert(rows as never, { onConflict: "symbol,timeframe", ignoreDuplicates: false })
+    .select("id");
   if (error) throw error;
   return data?.length ?? 0;
 }
@@ -423,26 +451,95 @@ function predictionDirection(prediction: Row): "bullish" | "bearish" | "neutral"
   return "neutral";
 }
 
-/* ───────────── Deterministic council fallback ───────────── */
+/* ───────────── Multi-timeframe evaluator ───────────── */
 
 type Row = Record<string, unknown> | null;
 type CouncilVerdict = "BUY" | "SELL" | "HOLD" | "AVOID";
+type SignalDir = "bullish" | "bearish" | "neutral";
 
-function councilEvaluation(whale: Row, indicator: Row, prediction: Row) {
+interface MultiTfInput {
+  primary: Row;  // 4h
+  fast: Row;     // 1h
+  trend: Row;    // 1d
+}
+
+interface MultiTfResult {
+  direction: SignalDir;
+  score: number;         // signed, roughly -1.69 to +1.69
+  aligned: boolean;      // true if all 3 agree
+  conflict: boolean;     // true if 4h conflicts with 1d
+  detail: string;        // "4h bull · 1h bull · 1d bull" etc.
+}
+
+function evaluateMultiTimeframe(tf: MultiTfInput): MultiTfResult {
+  const p = (tf.primary?.["signal"] as SignalDir | undefined) ?? "neutral";
+  const f = (tf.fast?.["signal"] as SignalDir | undefined) ?? "neutral";
+  const t = (tf.trend?.["signal"] as SignalDir | undefined) ?? "neutral";
+
+  const label = (s: SignalDir) => s === "bullish" ? "bull" : s === "bearish" ? "bear" : "neu";
+  const detail = `4h ${label(p)} · 1h ${label(f)} · 1d ${label(t)}`;
+
+  if (p === "neutral") {
+    return { direction: "neutral", score: 0, aligned: false, conflict: false, detail };
+  }
+
+  const base = p === "bullish" ? 1.0 : -1.0;
+  let multiplier = 1.0;
+
+  // 1h confluence
+  if (f === p) multiplier *= 1.3;
+  else if (f !== "neutral") multiplier *= 0.7;
+
+  // 1d confluence
+  if (t === p) multiplier *= 1.3;
+  else if (t !== "neutral") multiplier *= 0.7;
+
+  const aligned = f === p && t === p;
+  const conflict = t !== "neutral" && t !== p;
+
+  return {
+    direction: p,
+    score: base * multiplier,
+    aligned,
+    conflict,
+    detail,
+  };
+}
+
+/* ───────────── Deterministic council fallback ───────────── */
+
+function councilEvaluation(
+  whale: Row,
+  mtf: MultiTfResult,
+  prediction: Row,
+) {
   const votes: CouncilVerdict[] = [];
   const reasons: string[] = [];
-  const technical = indicator?.["signal"];
-  if (technical === "bullish") { votes.push("BUY"); reasons.push("quant sees bullish RSI/MACD alignment"); }
-  else if (technical === "bearish") { votes.push("SELL"); reasons.push("quant sees bearish RSI/MACD alignment"); }
-  else { votes.push("HOLD"); reasons.push("quant sees mixed technicals"); }
+
+  if (mtf.direction === "bullish" && mtf.score >= 0.7) {
+    votes.push("BUY");
+    reasons.push(`quant sees bullish alignment (${mtf.detail})`);
+  } else if (mtf.direction === "bearish" && mtf.score <= -0.7) {
+    votes.push("SELL");
+    reasons.push(`quant sees bearish alignment (${mtf.detail})`);
+  } else if (mtf.aligned) {
+    votes.push(mtf.direction === "bullish" ? "BUY" : "SELL");
+    reasons.push(`quant sees aligned trend (${mtf.detail})`);
+  } else {
+    votes.push("HOLD");
+    reasons.push(`quant sees mixed technicals (${mtf.detail})`);
+  }
+
   const flow = whale?.["direction"];
   if (flow === "accumulation") { votes.push("BUY"); reasons.push("whale tracker sees accumulation"); }
   else if (flow === "distribution") { votes.push("SELL"); reasons.push("whale tracker sees distribution"); }
   else { votes.push("HOLD"); reasons.push("whale tracker has no directional flow"); }
+
   const dir = predictionDirection(prediction);
   if (dir === "bullish") { votes.push("BUY"); reasons.push("sentiment leans bullish"); }
   else if (dir === "bearish") { votes.push("SELL"); reasons.push("sentiment leans bearish"); }
   else { votes.push("HOLD"); reasons.push("sentiment is inconclusive"); }
+
   const counts = votes.reduce<Record<string, number>>((all, vote) => { all[vote] = (all[vote] ?? 0) + 1; return all; }, {});
   const ordered = (Object.entries(counts) as [CouncilVerdict, number][]).sort((a, b) => b[1] - a[1]);
   const [topVote, topCount] = ordered[0] ?? ["HOLD", 0];
@@ -470,17 +567,24 @@ const GROQ_MODEL = process.env["GROQ_MODEL"] ?? "openai/gpt-oss-20b";
 interface AiCandidate {
   symbol: string;
   whale: Row;
-  indicator: Row;
+  mtf: MultiTfResult;
+  mtfRaw: MultiTfInput;
   prediction: Row;
   whaleUsd: number;
 }
 
-function qualifiesForAi(whale: Row, indicator: Row, symbol?: string): boolean {
+function qualifiesForAi(whale: Row, mtf: MultiTfResult, symbol?: string): boolean {
   const whaleUsd = typeof whale?.["usd_value"] === "number" ? (whale["usd_value"] as number) : 0;
   const floor = symbol ? whaleFloor(symbol) : AI_WHALE_MIN_USD;
   if (whaleUsd >= floor) return true;
-  const r = typeof indicator?.["rsi"] === "number" ? (indicator["rsi"] as number) : null;
-  if (r != null && (r < AI_RSI_OVERSOLD || r > AI_RSI_OVERBOUGHT)) return true;
+
+  // Extreme RSI on 4h
+  const rsi4h = Number((mtf as unknown as { rsi4h?: number }).rsi4h);
+  if (Number.isFinite(rsi4h) && (rsi4h < AI_RSI_OVERSOLD || rsi4h > AI_RSI_OVERBOUGHT)) return true;
+
+  // Timeframe conflict is a sign of uncertainty → worth AI review
+  if (mtf.conflict) return true;
+
   return false;
 }
 
@@ -496,13 +600,21 @@ async function groqBatchCouncil(
 
   const payload = candidates.map((c) => {
     const lessons = lessonsMap.get(c.symbol) ?? [];
+    const p4 = c.mtfRaw.primary;
+    const p1 = c.mtfRaw.fast;
+    const pd = c.mtfRaw.trend;
     return {
       symbol: c.symbol,
       whale_direction: c.whale?.["direction"] ?? "none",
       whale_usd: Math.round(c.whaleUsd),
-      rsi: typeof c.indicator?.["rsi"] === "number" ? Math.round(c.indicator["rsi"] as number) : null,
-      technical_signal: c.indicator?.["signal"] ?? "unknown",
-      price: c.indicator?.["price"] ?? null,
+      rsi_4h: typeof p4?.["rsi"] === "number" ? Math.round(p4["rsi"] as number) : null,
+      rsi_1h: typeof p1?.["rsi"] === "number" ? Math.round(p1["rsi"] as number) : null,
+      rsi_1d: typeof pd?.["rsi"] === "number" ? Math.round(pd["rsi"] as number) : null,
+      signal_4h: p4?.["signal"] ?? "neutral",
+      signal_1h: p1?.["signal"] ?? "neutral",
+      signal_1d: pd?.["signal"] ?? "neutral",
+      timeframe_alignment: c.mtf.aligned ? "all-aligned" : c.mtf.conflict ? "conflict" : "partial",
+      price: p4?.["price"] ?? null,
       prediction_direction: predictionDirection(c.prediction),
       past_lessons: lessons.map((l) => `[${l.outcome}] ${l.lesson}`),
     };
@@ -510,7 +622,8 @@ async function groqBatchCouncil(
 
   const systemPrompt = [
     "You are a professional crypto trading council AI.",
-    "You are a confirmation layer, not the sole decision maker.",
+    "You receive signals across 3 timeframes: 4h (primary), 1h (fast), 1d (trend).",
+    "Timeframe alignment increases confidence; conflicts reduce it.",
     "Do not invent missing data. When signals conflict, prefer HOLD or AVOID.",
     "Respond with ONLY a minified JSON array. No markdown. No code fences.",
     'Shape: [{"symbol":"BTC","verdict":"BUY|SELL|HOLD|AVOID","conviction":0-100,"reflection":"one concise sentence"}]',
@@ -518,7 +631,7 @@ async function groqBatchCouncil(
     "AVOID = conflicting signals or high uncertainty.",
     "HOLD = no clear directional edge.",
     "BUY or SELL only when evidence is reasonably aligned.",
-    "If past_lessons are provided for a symbol, weigh them as real experience: a lesson learned from a [loss] should reduce confidence in repeating the same mistake; a [win] lesson can increase confidence in the same pattern.",
+    "If past_lessons are provided, weigh them as real experience: [loss] reduces confidence, [win] increases it.",
   ].join("\n");
 
   try {
@@ -566,13 +679,16 @@ export async function collectCouncilSignals(): Promise<number> {
   const binSymbols = symbols.map(binanceSymbol);
   const sixHoursAgo = new Date(Date.now() - WHALE_LOOKBACK_HOURS * 60 * 60 * 1000).toISOString();
   const aiCacheSince = new Date(Date.now() - AI_VERDICT_TTL_MS).toISOString();
+
   const [whalesRes, indicatorsRes, predictionsRes, freshAiRes, lastAiRes] = await Promise.all([
     db.from("whale_alerts").select("*").in("symbol", symbols).gte("created_at", sixHoursAgo).order("usd_value", { ascending: false }).limit(2000),
-    db.from("indicator_snapshots").select("*").in("symbol", binSymbols).order("created_at", { ascending: false }).limit(2000),
+    // Pull ALL timeframes for these symbols
+    db.from("indicator_snapshots").select("*").in("symbol", binSymbols).order("created_at", { ascending: false }).limit(5000),
     db.from("prediction_snapshots").select("*").in("related_symbol", symbols).order("created_at", { ascending: false }).limit(1000),
     db.from("council_signals").select("symbol, source_created_at").eq("depth", "ai-batch").in("symbol", symbols).gte("source_created_at", aiCacheSince),
     db.from("council_signals").select("source_created_at").eq("depth", "ai-batch").order("source_created_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
+
   const whalesBySymbol = new Map<string, Record<string, unknown>[]>();
   for (const w of (whalesRes.data ?? []) as Record<string, unknown>[]) {
     const s = w["symbol"] as string;
@@ -580,29 +696,38 @@ export async function collectCouncilSignals(): Promise<number> {
     if (!bucket) whalesBySymbol.set(s, [w]);
     else if (bucket.length < 20) bucket.push(w);
   }
-  const latestIndicator = new Map<string, Record<string, unknown>>();
+
+  // Group latest indicator per (symbol, timeframe)
+  const indicatorByTf = new Map<string, Record<string, unknown>>();
   for (const i of (indicatorsRes.data ?? []) as Record<string, unknown>[]) {
     const s = i["symbol"] as string;
-    if (!latestIndicator.has(s)) latestIndicator.set(s, i);
+    const tf = i["timeframe"] as string;
+    const key = `${s}:${tf}`;
+    if (!indicatorByTf.has(key)) indicatorByTf.set(key, i);
   }
+
   const latestPrediction = new Map<string, Record<string, unknown>>();
   for (const p of (predictionsRes.data ?? []) as Record<string, unknown>[]) {
     const s = p["related_symbol"] as string | undefined;
     if (s && !latestPrediction.has(s)) latestPrediction.set(s, p);
   }
+
   const freshnessNow = Date.now();
-  for (const [s, row] of latestIndicator) {
-    if (!isFreshRow(row, "created_at", INDICATOR_MAX_AGE_MS, freshnessNow)) latestIndicator.delete(s);
+  for (const [k, row] of indicatorByTf) {
+    if (!isFreshRow(row, "created_at", INDICATOR_MAX_AGE_MS, freshnessNow)) indicatorByTf.delete(k);
   }
   for (const [s, row] of latestPrediction) {
     if (!isFreshRow(row, "created_at", PREDICTION_MAX_AGE_MS, freshnessNow)) latestPrediction.delete(s);
   }
+
   const freshAiSymbols = new Set(((freshAiRes.data ?? []) as { symbol: string }[]).map((r) => r.symbol));
   const lastAiAt = lastAiRes.data?.source_created_at ? new Date(lastAiRes.data.source_created_at).getTime() : 0;
   const minutesSinceLastAi = lastAiAt > 0 ? (Date.now() - lastAiAt) / 60_000 : Infinity;
   const aiAllowed = minutesSinceLastAi >= AI_MIN_MINUTES_BETWEEN_BATCHES;
-  const perSymbol = new Map<string, { whale: Row; indicator: Row; prediction: Row }>();
+
+  const perSymbol = new Map<string, { whale: Row; mtf: MultiTfResult; mtfRaw: MultiTfInput; prediction: Row }>();
   const aiCandidates: AiCandidate[] = [];
+
   for (const symbol of symbols) {
     const whaleRows = whalesBySymbol.get(symbol) ?? [];
     const buyUsd = whaleRows.filter((r) => r["direction"] === "accumulation").reduce((sum, r) => sum + Number(r["usd_value"] ?? 0), 0);
@@ -622,14 +747,28 @@ export async function collectCouncilSignals(): Promise<number> {
           sell_count: whaleRows.filter((r) => r["direction"] === "distribution").length,
         } as Row)
       : null;
-    const indicator = (latestIndicator.get(binanceSymbol(symbol)) ?? null) as Row;
+
+    const binSym = binanceSymbol(symbol);
+    const mtfRaw: MultiTfInput = {
+      primary: (indicatorByTf.get(`${binSym}:${PRIMARY_TIMEFRAME}`) ?? null) as Row,
+      fast: (indicatorByTf.get(`${binSym}:${FAST_TIMEFRAME}`) ?? null) as Row,
+      trend: (indicatorByTf.get(`${binSym}:${TREND_TIMEFRAME}`) ?? null) as Row,
+    };
+    const mtf = evaluateMultiTimeframe(mtfRaw);
     const prediction = (latestPrediction.get(symbol) ?? null) as Row;
-    if (!whale && !indicator && !prediction) continue;
-    perSymbol.set(symbol, { whale, indicator, prediction });
-    if (!freshAiSymbols.has(symbol) && qualifiesForAi(whale, indicator, symbol)) {
-      aiCandidates.push({ symbol, whale, indicator, prediction, whaleUsd: whaleUsdTotal });
+
+    if (!whale && !mtfRaw.primary && !prediction) continue;
+    perSymbol.set(symbol, { whale, mtf, mtfRaw, prediction });
+
+    // Attach rsi4h to the mtf result for the AI qualifier
+    (mtf as unknown as { rsi4h?: number }).rsi4h =
+      typeof mtfRaw.primary?.["rsi"] === "number" ? (mtfRaw.primary["rsi"] as number) : undefined;
+
+    if (!freshAiSymbols.has(symbol) && qualifiesForAi(whale, mtf, symbol)) {
+      aiCandidates.push({ symbol, whale, mtf, mtfRaw, prediction, whaleUsd: whaleUsdTotal });
     }
   }
+
   let aiResults = new Map<string, { final_verdict: CouncilVerdict; conviction: number; reflection: string }>();
   if (aiAllowed) {
     aiCandidates.sort((a, b) => b.whaleUsd - a.whaleUsd);
@@ -638,16 +777,17 @@ export async function collectCouncilSignals(): Promise<number> {
   } else {
     console.log(`[GROQ] Rate guard: skipping AI batch — only ${minutesSinceLastAi.toFixed(1)}min since last run (min ${AI_MIN_MINUTES_BETWEEN_BATCHES}min)`);
   }
+
   for (const [symbol, ctx] of perSymbol) {
     if (freshAiSymbols.has(symbol)) continue;
     const aiResult = aiResults.get(symbol);
     const usedAi = !!aiResult;
-    const result = aiResult ?? councilEvaluation(ctx.whale, ctx.indicator, ctx.prediction);
-    const sourceId = [symbol, ctx.whale?.["id"], ctx.indicator?.["id"], ctx.prediction?.["id"], usedAi ? "ai" : "rule"].join(":");
+    const result = aiResult ?? councilEvaluation(ctx.whale, ctx.mtf, ctx.prediction);
+    const sourceId = [symbol, ctx.whale?.["id"], ctx.mtfRaw.primary?.["id"], ctx.prediction?.["id"], usedAi ? "ai" : "rule"].join(":");
     rows.push({
       symbol, source_id: sourceId,
       final_verdict: result.final_verdict, conviction: result.conviction,
-      price_at: typeof ctx.indicator?.["price"] === "number" ? ctx.indicator["price"] : null,
+      price_at: typeof ctx.mtfRaw.primary?.["price"] === "number" ? ctx.mtfRaw.primary["price"] : null,
       reflection: result.reflection,
       depth: usedAi ? "ai-batch" : "ai-synthesis",
       source_created_at: new Date().toISOString(),
@@ -662,15 +802,27 @@ export async function collectCouncilSignals(): Promise<number> {
 /* ───────────── Signal combiner ───────────── */
 
 const COMPOSITE_AI_MAX_WEIGHT = 0.75;
+const COMPOSITE_MAX_SCORE = 1.69 + 1.0 + 0.5 + 0.75; // 3.94 — technicals can now reach ±1.69
 
-function ruleBased(whale: Row, indicator: Row, prediction: Row, council: Row) {
+function ruleBased(
+  whale: Row,
+  mtf: MultiTfResult,
+  prediction: Row,
+  council: Row,
+) {
   let score = 0;
   const reasons: string[] = [];
   let aiAvoid = false;
+
   if (whale?.["direction"] === "accumulation") { score += 1; reasons.push("whale accumulation"); }
   else if (whale?.["direction"] === "distribution") { score -= 1; reasons.push("whale distribution"); }
-  if (indicator?.["signal"] === "bullish") { score += 1; reasons.push("bullish technicals (RSI/MACD)"); }
-  else if (indicator?.["signal"] === "bearish") { score -= 1; reasons.push("bearish technicals (RSI/MACD)"); }
+
+  // Multi-timeframe technical contribution
+  if (mtf.score !== 0) {
+    score += mtf.score;
+    const dir = mtf.score > 0 ? "bullish" : "bearish";
+    reasons.push(`${dir} technicals (${mtf.detail}${mtf.aligned ? " · aligned" : mtf.conflict ? " · conflict" : ""})`);
+  }
 
   const predDir = predictionDirection(prediction);
   if (predDir === "bullish") { score += 0.5; reasons.push("prediction market bullish"); }
@@ -686,12 +838,13 @@ function ruleBased(whale: Row, indicator: Row, prediction: Row, council: Row) {
     else if (verdict === "AVOID") { aiAvoid = conviction >= 60; reasons.push(`council: AVOID (${Math.round(conviction)}% conviction)`); }
     else { reasons.push(`council: HOLD`); }
   }
+
   let recommendation: "buy" | "sell" | "hold" | "watch" = "watch";
   if (score >= 1.5) recommendation = "buy";
   else if (score <= -1.5) recommendation = "sell";
   else if (Math.abs(score) < 0.5) recommendation = "hold";
   if (aiAvoid) recommendation = "watch";
-  const confidence = Math.min(1, Math.abs(score) / 3.25);
+  const confidence = Math.min(1, Math.abs(score) / COMPOSITE_MAX_SCORE);
   return {
     recommendation,
     confidence,
@@ -700,7 +853,12 @@ function ruleBased(whale: Row, indicator: Row, prediction: Row, council: Row) {
 }
 
 function signalFingerprint(
-  symbol: string, whale: Row, indicator: Row, prediction: Row, council: Row,
+  symbol: string,
+  whale: Row,
+  mtf: MultiTfResult,
+  mtfRaw: MultiTfInput,
+  prediction: Row,
+  council: Row,
   result: ReturnType<typeof ruleBased>,
 ) {
   const normalize = (value: unknown): string => {
@@ -718,11 +876,13 @@ function signalFingerprint(
     normalize(whale?.["buy_usd"]),
     normalize(whale?.["sell_usd"]),
     normalize(whale?.["usd_value"]),
-    round2(indicator?.["rsi"]),
-    round2(indicator?.["macd"]),
-    round2(indicator?.["macd_signal"]),
-    round2(indicator?.["price"]),
-    normalize(indicator?.["signal"]),
+    round2(mtfRaw.primary?.["rsi"]),
+    round2(mtfRaw.fast?.["rsi"]),
+    round2(mtfRaw.trend?.["rsi"]),
+    normalize(mtfRaw.primary?.["signal"]),
+    normalize(mtfRaw.fast?.["signal"]),
+    normalize(mtfRaw.trend?.["signal"]),
+    round2(mtf.score),
     normalize(prediction?.["market_slug"]),
     normalize(prediction?.["yes_price"]),
     normalize(prediction?.["no_price"]),
@@ -740,12 +900,14 @@ export async function combineSignals(): Promise<number> {
   if (symbols.length === 0) return 0;
   const binSymbols = symbols.map(binanceSymbol);
   const whaleSince = new Date(Date.now() - WHALE_LOOKBACK_HOURS * 60 * 60 * 1000).toISOString();
+
   const [whalesRes, indicatorsRes, predictionsRes, councilsRes] = await Promise.all([
     db.from("whale_alerts").select("*").in("symbol", symbols).gte("created_at", whaleSince).order("created_at", { ascending: false }).limit(3000),
-    db.from("indicator_snapshots").select("*").in("symbol", binSymbols).order("created_at", { ascending: false }).limit(2000),
+    db.from("indicator_snapshots").select("*").in("symbol", binSymbols).order("created_at", { ascending: false }).limit(5000),
     db.from("prediction_snapshots").select("*").in("related_symbol", symbols).order("created_at", { ascending: false }).limit(1000),
     db.from("council_signals").select("*").in("symbol", symbols).order("source_created_at", { ascending: false }).limit(1000),
   ]);
+
   const whaleBySymbol = new Map<string, Record<string, unknown>[]>();
   for (const w of (whalesRes.data ?? []) as Record<string, unknown>[]) {
     const s = w["symbol"] as string;
@@ -753,24 +915,30 @@ export async function combineSignals(): Promise<number> {
     if (!bucket) whaleBySymbol.set(s, [w]);
     else if (bucket.length < 20) bucket.push(w);
   }
-  const latestIndicator = new Map<string, Record<string, unknown>>();
+
+  const indicatorByTf = new Map<string, Record<string, unknown>>();
   for (const i of (indicatorsRes.data ?? []) as Record<string, unknown>[]) {
     const s = i["symbol"] as string;
-    if (!latestIndicator.has(s)) latestIndicator.set(s, i);
+    const tf = i["timeframe"] as string;
+    const key = `${s}:${tf}`;
+    if (!indicatorByTf.has(key)) indicatorByTf.set(key, i);
   }
+
   const latestPrediction = new Map<string, Record<string, unknown>>();
   for (const p of (predictionsRes.data ?? []) as Record<string, unknown>[]) {
     const s = p["related_symbol"] as string | undefined;
     if (s && !latestPrediction.has(s)) latestPrediction.set(s, p);
   }
+
   const latestCouncil = new Map<string, Record<string, unknown>>();
   for (const c of (councilsRes.data ?? []) as Record<string, unknown>[]) {
     const s = c["symbol"] as string;
     if (!latestCouncil.has(s)) latestCouncil.set(s, c);
   }
+
   const freshnessNow = Date.now();
-  for (const [s, row] of latestIndicator) {
-    if (!isFreshRow(row, "created_at", INDICATOR_MAX_AGE_MS, freshnessNow)) latestIndicator.delete(s);
+  for (const [k, row] of indicatorByTf) {
+    if (!isFreshRow(row, "created_at", INDICATOR_MAX_AGE_MS, freshnessNow)) indicatorByTf.delete(k);
   }
   for (const [s, row] of latestPrediction) {
     if (!isFreshRow(row, "created_at", PREDICTION_MAX_AGE_MS, freshnessNow)) latestPrediction.delete(s);
@@ -778,8 +946,10 @@ export async function combineSignals(): Promise<number> {
   for (const [s, row] of latestCouncil) {
     if (!isFreshRow(row, "source_created_at", COUNCIL_MAX_AGE_MS, freshnessNow)) latestCouncil.delete(s);
   }
+
   let created = 0;
   const nowIso = new Date().toISOString();
+
   for (const symbol of symbols) {
     const whaleRows = whaleBySymbol.get(symbol) ?? [];
     let whale: Row = null;
@@ -797,15 +967,24 @@ export async function combineSignals(): Promise<number> {
         sell_count: whaleRows.filter((r) => r["direction"] === "distribution").length,
       };
     }
-    const indicator = (latestIndicator.get(binanceSymbol(symbol)) ?? null) as Row;
+
+    const binSym = binanceSymbol(symbol);
+    const mtfRaw: MultiTfInput = {
+      primary: (indicatorByTf.get(`${binSym}:${PRIMARY_TIMEFRAME}`) ?? null) as Row,
+      fast: (indicatorByTf.get(`${binSym}:${FAST_TIMEFRAME}`) ?? null) as Row,
+      trend: (indicatorByTf.get(`${binSym}:${TREND_TIMEFRAME}`) ?? null) as Row,
+    };
+    const mtf = evaluateMultiTimeframe(mtfRaw);
     const prediction = (latestPrediction.get(symbol) ?? null) as Row;
     const council = (latestCouncil.get(symbol) ?? null) as Row;
-    if (!whale && !indicator && !prediction && !council) continue;
-    const result = ruleBased(whale, indicator, prediction, council);
+    if (!whale && !mtfRaw.primary && !prediction && !council) continue;
+
+    const result = ruleBased(whale, mtf, prediction, council);
     if (result.recommendation === "hold" && result.confidence === 0) continue;
+
     if (result.recommendation === "watch") {
       const hasWhale = whale?.["direction"] != null;
-      const hasTechnical = indicator?.["signal"] === "bullish" || indicator?.["signal"] === "bearish";
+      const hasTechnical = mtf.direction !== "neutral";
       const hasPrediction = predictionDirection(prediction) !== "neutral";
       const councilVerdict = String(council?.["final_verdict"] ?? "").toUpperCase();
       const councilConviction = Number(council?.["conviction"] ?? 0);
@@ -814,13 +993,13 @@ export async function combineSignals(): Promise<number> {
       if (signalCount < 2 && !strongAvoid) continue;
     }
 
-    const fingerprint = signalFingerprint(symbol, whale, indicator, prediction, council, result);
+    const fingerprint = signalFingerprint(symbol, whale, mtf, mtfRaw, prediction, council, result);
     const { data, error } = await db
       .from("composite_signals")
       .upsert({
         symbol,
         whale_alert_id: (whaleRows[0]?.["id"] as string) ?? null,
-        indicator_snapshot_id: (indicator?.["id"] as string) ?? null,
+        indicator_snapshot_id: (mtfRaw.primary?.["id"] as string) ?? null,
         prediction_snapshot_id: (prediction?.["id"] as string) ?? null,
         council_signal_id: (council?.["id"] as string) ?? null,
         confidence: result.confidence,
@@ -947,14 +1126,11 @@ async function closeTriggeredTrades(): Promise<number> {
     } as never);
     if (alertError) throw alertError;
     closed += 1;
-    if (closeReason === "stale_exit" || closeReason === "expired") {
-      console.log(`[TIME_EXIT] ${trade.symbol} ${trade.side} after ${ageHours.toFixed(1)}h (${closeReason}) pnl=${fee.netPnl.toFixed(2)}`);
-    }
   }
   return closed;
 }
 
-/* ───────────── Signal rotation helper ───────────── */
+/* ───────────── Signal rotation ───────────── */
 
 interface OpenTradeForRotation {
   id: string;
@@ -997,10 +1173,7 @@ async function attemptRotation(
       t.currentPrice != null,
   );
 
-  if (eligible.length === 0) {
-    console.log(`[ROTATION] no eligible trades to rotate (all too young or in profit)`);
-    return null;
-  }
+  if (eligible.length === 0) return null;
 
   eligible.sort((a, b) => {
     if (a.pnlPct !== b.pnlPct) return a.pnlPct - b.pnlPct;
@@ -1010,12 +1183,7 @@ async function attemptRotation(
   const weakest = eligible[0]!;
   const improvement = newSignal.confidence - weakest.originalConfidence;
 
-  if (improvement < ROTATION_CONFIDENCE_IMPROVEMENT) {
-    console.log(
-      `[ROTATION] skipped: new=${(newSignal.confidence * 100).toFixed(0)}% vs weakest=${(weakest.originalConfidence * 100).toFixed(0)}% (Δ${(improvement * 100).toFixed(1)}pts < ${(ROTATION_CONFIDENCE_IMPROVEMENT * 100).toFixed(0)}pts)`,
-    );
-    return null;
-  }
+  if (improvement < ROTATION_CONFIDENCE_IMPROVEMENT) return null;
 
   const price = weakest.currentPrice!;
   const entryPrice = Number(weakest.entry_price);
@@ -1033,10 +1201,7 @@ async function attemptRotation(
     .eq("id", weakest.id)
     .eq("status", "open");
 
-  if (closeErr) {
-    console.error(`[ROTATION] failed to close ${weakest.symbol}:`, closeErr);
-    return null;
-  }
+  if (closeErr) return null;
 
   await db.from("trade_alerts").insert({
     trade_id: weakest.id, symbol: weakest.symbol, side: weakest.side,
@@ -1045,13 +1210,12 @@ async function attemptRotation(
   } as never);
 
   console.log(
-    `[ROTATION] closed ${weakest.symbol} ${weakest.side} (PnL ${weakest.pnlPct.toFixed(2)}%, orig ${(weakest.originalConfidence * 100).toFixed(0)}%, age ${weakest.ageMin.toFixed(0)}m) → room for ${newSignal.symbol} (${(newSignal.confidence * 100).toFixed(0)}%)`,
+    `[ROTATION] closed ${weakest.symbol} (PnL ${weakest.pnlPct.toFixed(2)}%, orig ${(weakest.originalConfidence * 100).toFixed(0)}%) → room for ${newSignal.symbol} (${(newSignal.confidence * 100).toFixed(0)}%)`,
   );
-
   return weakest.symbol;
 }
 
-/* ───────────── Execute trades (with rotation) ───────────── */
+/* ───────────── Execute trades ───────────── */
 
 export async function executeTrades(): Promise<number> {
   const db = await admin();
@@ -1075,7 +1239,6 @@ export async function executeTrades(): Promise<number> {
     ((recentlyClosedRes.data ?? []) as { symbol: string }[]).map((t) => t.symbol),
   );
 
-  // Pre-fetch original confidence for each open trade's signal (for rotation decisions)
   const openSignalIds = openTrades
     .map((t) => t.composite_signal_id)
     .filter((id): id is string => id != null);
@@ -1121,26 +1284,19 @@ export async function executeTrades(): Promise<number> {
       signalPrice > 0 &&
       Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT
     ) {
-      console.log(
-        `[ENTRY_REJECTED] ${signal.symbol}: price drift ${(Math.abs(price - signalPrice) / signalPrice * 100).toFixed(2)}% > ${(MAX_ENTRY_DRIFT_PCT * 100).toFixed(2)}%`,
-      );
+      console.log(`[ENTRY_REJECTED] ${signal.symbol}: price drift too high`);
       continue;
     }
     const side = signal.recommendation as "buy" | "sell";
     const stopLoss = side === "buy" ? price * (1 - STOP_LOSS_PCT) : price * (1 + STOP_LOSS_PCT);
     const takeProfit = side === "buy" ? price * (1 + TAKE_PROFIT_PCT) : price * (1 - TAKE_PROFIT_PCT);
 
-    if (signal.created_at && !isFresh(signal.created_at, 15 * 60 * 1000)) {
-      console.log(`[ENTRY_REJECTED] ${signal.symbol}: composite signal is stale`);
-      continue;
-    }
+    if (signal.created_at && !isFresh(signal.created_at, 15 * 60 * 1000)) continue;
 
-    // Try normal entry first
     let risk = await canOpenTrade(db as any, {
       symbol: signal.symbol, side, entryPrice: price, stopLoss, currentPrices: prices,
     });
 
-    // If we're at cap AND the signal is strong enough, attempt one rotation
     if (
       !risk.allowed &&
       (risk.reason === "max_positions" || risk.reason === "portfolio_risk_limit") &&
@@ -1159,7 +1315,6 @@ export async function executeTrades(): Promise<number> {
       if (rotatedSymbol) {
         openSymbols.delete(rotatedSymbol);
         cooldownSymbols.add(rotatedSymbol);
-        // Retry the risk check now that a slot freed up
         risk = await canOpenTrade(db as any, {
           symbol: signal.symbol, side, entryPrice: price, stopLoss, currentPrices: prices,
         });
@@ -1170,13 +1325,8 @@ export async function executeTrades(): Promise<number> {
       console.log(`[RISK_REJECTED] ${signal.symbol} ${side}: ${risk.reason}`);
       continue;
     }
-    if (!Number.isFinite(risk.quantity) || risk.quantity <= 0) {
-      console.log(`[RISK_INVALID] ${signal.symbol}: quantity=${risk.quantity}`);
-      continue;
-    }
-    console.log(
-      `[RISK_APPROVED] ${signal.symbol} ${side} | qty=${risk.quantity.toFixed(6)} notional=${risk.notional.toFixed(2)}`,
-    );
+    if (!Number.isFinite(risk.quantity) || risk.quantity <= 0) continue;
+    console.log(`[RISK_APPROVED] ${signal.symbol} ${side} | qty=${risk.quantity.toFixed(6)} notional=${risk.notional.toFixed(2)}`);
     const quantity = risk.quantity;
     let exchangeOrderId: string | null = null;
     if (mode === "live") {
@@ -1193,10 +1343,7 @@ export async function executeTrades(): Promise<number> {
       entry_fee: entryFee,
     } as never);
     if (tradeErr) {
-      if ((tradeErr as { code?: string }).code === "23505") {
-        console.log(`[ENTRY_SKIPPED] ${signal.symbol}: open trade already exists (atomic DB guard)`);
-        continue;
-      }
+      if ((tradeErr as { code?: string }).code === "23505") continue;
       throw tradeErr;
     }
     openSymbols.add(signal.symbol);
@@ -1219,7 +1366,7 @@ export async function runFullPipeline() {
   if (insertError) {
     const code = (insertError as { code?: string }).code;
     if (code === "23505") {
-      console.log("[PIPELINE_LOCK] another run is already active; skipping this invocation");
+      console.log("[PIPELINE_LOCK] another run is already active");
       return { skipped: true, reason: "pipeline_locked" };
     }
     throw new Error(`pipeline start/lock failed: ${insertError.message}`);
