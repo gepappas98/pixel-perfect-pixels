@@ -761,7 +761,7 @@ export async function collectCouncilSignals(): Promise<number> {
     perSymbol.set(symbol, { whale, mtf, mtfRaw, prediction });
 
     // Attach rsi4h to the mtf result for the AI qualifier
-    (mtf as unknown as { rsi4h?: number }).rsi4h =
+    (mtf as unknown as { rsi4h?: number | undefined }).rsi4h =
       typeof mtfRaw.primary?.["rsi"] === "number" ? (mtfRaw.primary["rsi"] as number) : undefined;
 
     if (!freshAiSymbols.has(symbol) && qualifiesForAi(whale, mtf, symbol)) {

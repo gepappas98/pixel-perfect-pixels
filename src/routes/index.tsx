@@ -10,7 +10,6 @@ import { IndicatorPanel } from "@/components/trading/IndicatorPanel";
 import { PredictionPanel } from "@/components/trading/PredictionPanel";
 import { CouncilPanel } from "@/components/trading/CouncilPanel";
 import { RegimePanel } from "@/components/trading/RegimePanel";
-import { StrategyPanel } from "@/components/trading/StrategyPanel";
 import { LessonsPanel } from "@/components/trading/LessonsPanel";
 import { TradesPanel } from "@/components/trading/TradesPanel";
 import { TradeAlertsPanel } from "@/components/trading/TradeAlertsPanel";
@@ -328,8 +327,6 @@ function CommandCenter() {
         {/* ── Regime: what's happening right now ── */}
         <RegimePanel />
 
-        {/* ── Strategy: user-tunable weights ── */}
-        <StrategyPanel />
 
         {/* ── Learning: post-mortems ── */}
         <LessonsPanel />
