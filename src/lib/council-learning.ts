@@ -1,12 +1,17 @@
 /* ───────────── AI Council Learning ─────────────
  * Post-mortem analysis κλειστών trades + retrieval προηγούμενων μαθημάτων.
- * Δεν απαιτεί embeddings — χρησιμοποιεί symbol-based retrieval. */
+ * Δεν απαιτεί embeddings — χρησιμοποιεί symbol-based retrieval.
+ *
+ * NOTE: Το μοντέλο openai/gpt-oss-20b είναι reasoning model — ξοδεύει
+ * tokens σε internal reasoning πριν γράψει το content. Γι' αυτό το
+ * max_tokens πρέπει να είναι ≥ 500 (80 ήταν πολύ λίγο → empty content). */
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const LESSON_MODEL = process.env["GROQ_MODEL"] ?? "openai/gpt-oss-20b";
-const GROQ_TIMEOUT_MS = 15_000;
-const POST_MORTEM_BATCH_MAX = 5;   // max trades ανά run (token budget)
-const LESSONS_PER_SYMBOL = 5;      // πόσα lessons ανακτούμε ανά symbol
+const GROQ_TIMEOUT_MS = 20_000;
+const POST_MORTEM_BATCH_MAX = 5;
+const LESSONS_PER_SYMBOL = 5;
+const LESSON_MAX_TOKENS = 500;
 
 interface TradeForPostMortem {
   id: string;
@@ -59,7 +64,7 @@ async function groqGenerateLesson(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         model: LESSON_MODEL,
@@ -68,7 +73,7 @@ async function groqGenerateLesson(
           { role: "user", content: userPrompt },
         ],
         temperature: 0.3,
-        max_tokens: 80,
+        max_tokens: LESSON_MAX_TOKENS,
       }),
       signal: AbortSignal.timeout(GROQ_TIMEOUT_MS),
     });
@@ -78,12 +83,21 @@ async function groqGenerateLesson(
       throw new Error(`Groq HTTP ${res.status}: ${body.slice(0, 200)}`);
     }
 
-    const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+    const data = (await res.json()) as {
+      choices?: { message?: { content?: string } }[];
+    };
     const content = data.choices?.[0]?.message?.content?.trim();
-    if (!content) return null;
+    if (!content) {
+      console.warn(
+        `[LESSON] Groq returned empty content for ${trade.symbol} — likely max_tokens too low`,
+      );
+      return null;
+    }
 
-    // Καθάρισε quotes/markdown artifacts
-    const clean = content.replace(/^["'`]|["'`]$/g, "").replace(/\*\*/g, "").trim();
+    const clean = content
+      .replace(/^["'`]|["'`]$/g, "")
+      .replace(/\*\*/g, "")
+      .trim();
     return { lesson: clean, outcome };
   } catch (e) {
     console.error(`[LESSON] Groq failed for ${trade.symbol}:`, e);
@@ -94,12 +108,15 @@ async function groqGenerateLesson(
 /* ───────────── Post-mortem generator ───────────── */
 
 export async function generatePostMortems(): Promise<number> {
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const db = supabaseAdmin as any;
+  const { supabaseAdmin: db } = await import(
+    "@/integrations/supabase/client.server"
+  );
 
   const { data: trades, error } = await db
     .from("trades")
-    .select("id, symbol, side, entry_price, exit_price, pnl, pnl_pct, close_reason, closed_at, composite_signal_id")
+    .select(
+      "id, symbol, side, entry_price, exit_price, pnl, pnl_pct, close_reason, closed_at, composite_signal_id",
+    )
     .eq("status", "closed")
     .eq("post_mortem_generated", false)
     .order("closed_at", { ascending: false })
@@ -114,7 +131,6 @@ export async function generatePostMortems(): Promise<number> {
   let generated = 0;
 
   for (const trade of trades as TradeForPostMortem[]) {
-    // Πάρε το original composite signal για context
     let originalReasoning: string | null = null;
     let originalVerdict: string | null = null;
 
@@ -126,16 +142,21 @@ export async function generatePostMortems(): Promise<number> {
         .maybeSingle();
 
       if (sig) {
-        originalReasoning = (sig as { reasoning: string | null }).reasoning;
-        originalVerdict = (sig as { recommendation: string | null }).recommendation;
+        const row = sig as Record<string, unknown>;
+        originalReasoning = (row["reasoning"] as string | null) ?? null;
+        originalVerdict = (row["recommendation"] as string | null) ?? null;
       }
     }
 
-    const result = await groqGenerateLesson(trade, originalReasoning, originalVerdict);
+    const result = await groqGenerateLesson(
+      trade,
+      originalReasoning,
+      originalVerdict,
+    );
     if (!result) {
-      // Αν το Groq αποτύχει, μαρκάρουμε το trade ως "generated" για να μην
-      // το ξαναπροσπαθούμε σε κάθε run. Αν θέλεις retry, άλλαξέ το.
-      console.warn(`[LESSON] Groq failed for trade ${trade.id.slice(0, 8)} — skipping`);
+      console.warn(
+        `[LESSON] Groq failed for trade ${trade.id.slice(0, 8)} — will retry next cycle`,
+      );
       continue;
     }
 
@@ -162,7 +183,11 @@ export async function generatePostMortems(): Promise<number> {
       continue;
     }
 
-    await db.from("trades").update({ post_mortem_generated: true } as never).eq("id", trade.id);
+    await db
+      .from("trades")
+      .update({ post_mortem_generated: true } as never)
+      .eq("id", trade.id);
+
     generated += 1;
     console.log(`[LESSON] ${trade.symbol} [${result.outcome}]: ${result.lesson}`);
   }
@@ -185,11 +210,10 @@ export async function fetchRelevantLessons(
   const grouped = new Map<string, SymbolLesson[]>();
   if (symbols.length === 0) return grouped;
 
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const db = supabaseAdmin as any;
+  const { supabaseAdmin: db } = await import(
+    "@/integrations/supabase/client.server"
+  );
 
-  // Φέρνουμε πρόσφατα lessons για τα συγκεκριμένα symbols.
-  // Overfetch (2x) για να μπορούμε να κρατήσουμε ισορροπημένη ποσότητα ανά symbol.
   const { data, error } = await db
     .from("council_lessons")
     .select("symbol, lesson, outcome, created_at")
@@ -199,10 +223,19 @@ export async function fetchRelevantLessons(
 
   if (error || !data) return grouped;
 
-  for (const row of data as { symbol: string; lesson: string; outcome: string; created_at: string }[]) {
+  for (const row of data as {
+    symbol: string;
+    lesson: string;
+    outcome: string;
+    created_at: string;
+  }[]) {
     const bucket = grouped.get(row.symbol) ?? [];
     if (bucket.length < perSymbol) {
-      bucket.push({ lesson: row.lesson, outcome: row.outcome, created_at: row.created_at });
+      bucket.push({
+        lesson: row.lesson,
+        outcome: row.outcome,
+        created_at: row.created_at,
+      });
       grouped.set(row.symbol, bucket);
     }
   }
