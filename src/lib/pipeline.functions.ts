@@ -1,9 +1,24 @@
 import { createServerFn } from "@tanstack/react-start";
 
-export const runPipeline = createServerFn({ method: "POST" }).handler(async () => {
-  const { runFullPipeline } = await import("./pipeline.server");
-  return await runFullPipeline();
-});
+const PIPELINE_PIN = "5155";
+
+export const runPipeline = createServerFn({ method: "POST" })
+  .validator((data: { pin?: string } | undefined) => {
+    const pin = data?.pin;
+    if (typeof pin !== "string") {
+      throw new Error("PIN is required to run the pipeline");
+    }
+    return { pin };
+  })
+  .handler(async ({ data }) => {
+    // Server-side PIN validation — prevents API-level spam.
+    if (data.pin !== PIPELINE_PIN) {
+      throw new Error("Invalid PIN");
+    }
+
+    const { runFullPipeline } = await import("./pipeline.server");
+    return await runFullPipeline();
+  });
 
 export const getTradingStatus = createServerFn({ method: "GET" }).handler(async () => {
   const { tradingMode } = await import("./pipeline.server");
@@ -28,19 +43,30 @@ export const getCronHealth = createServerFn({ method: "GET" }).handler(async () 
     if (error) throw error;
 
     const intervalMinutes = Number(schedule?.interval_minutes ?? 0);
-    const lastSuccess = (runs ?? []).find((run: { status: string }) => run.status === "success") ?? null;
-    const consecutiveFailures = (runs ?? []).findIndex((run: { status: string }) => run.status === "success");
-    const failureCount = consecutiveFailures === -1 ? (runs ?? []).length : consecutiveFailures;
+    const lastSuccess =
+      (runs ?? []).find((run: { status: string }) => run.status === "success") ?? null;
+    const consecutiveFailures = (runs ?? []).findIndex(
+      (run: { status: string }) => run.status === "success",
+    );
+    const failureCount =
+      consecutiveFailures === -1 ? (runs ?? []).length : consecutiveFailures;
     const lastCompletedAt = lastSuccess?.completed_at ?? null;
-    const nextRunAt = lastCompletedAt && intervalMinutes > 0
-      ? new Date(new Date(lastCompletedAt).getTime() + intervalMinutes * 60_000).toISOString()
-      : null;
+    const nextRunAt =
+      lastCompletedAt && intervalMinutes > 0
+        ? new Date(
+            new Date(lastCompletedAt).getTime() + intervalMinutes * 60_000,
+          ).toISOString()
+        : null;
     const staleAfterMinutes = Math.max(intervalMinutes * 2, 15);
-    const stale = !lastCompletedAt || Date.now() - new Date(lastCompletedAt).getTime() > staleAfterMinutes * 60_000;
+    const stale =
+      !lastCompletedAt ||
+      Date.now() - new Date(lastCompletedAt).getTime() > staleAfterMinutes * 60_000;
 
-    // Πρόσφατα errors — για εμφάνιση στο UI
     const recentErrors = (runs ?? [])
-      .filter((run: { status: string; error_message?: string | null }) => run.status === "error" && run.error_message)
+      .filter(
+        (run: { status: string; error_message?: string | null }) =>
+          run.status === "error" && run.error_message,
+      )
       .slice(0, 5)
       .map((run: { id: string; started_at: string; error_message: string }) => ({
         id: run.id,
@@ -61,7 +87,10 @@ export const getCronHealth = createServerFn({ method: "GET" }).handler(async () 
   } catch (error) {
     return {
       available: false,
-      reason: error instanceof Error ? error.message : "Supabase health storage is unavailable",
+      reason:
+        error instanceof Error
+          ? error.message
+          : "Supabase health storage is unavailable",
     };
   }
 });
