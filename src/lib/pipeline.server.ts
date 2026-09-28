@@ -120,6 +120,7 @@ const STRATEGY_CACHE_TTL_MS = 60_000;
 const VARIANT_TP_PCT = 0.04;
 const VARIANT_SL_PCT = 0.03;
 const VARIANT_MAX_HOURS = 168;
+const VARIANT_RESOLVE_BATCH = 500;
 
 function isFresh(value: unknown, maxAgeMs: number, now = Date.now()): boolean {
   const ts = new Date(String(value ?? "")).getTime();
@@ -1542,26 +1543,42 @@ interface VariantCandle {
   closeTimeMs: number;
 }
 
-/** Fetch last N 4h candles for a symbol. Returns [] on error. */
 async function fetch4hCandles(
   coin: string,
   limit = 50,
 ): Promise<VariantCandle[]> {
   const symbol = binanceSymbol(coin);
+
   try {
     const res = await fetchWithTimeout(
       `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=4h&limit=${limit}`,
     );
-    if (!res.ok) return [];
+
+    if (!res.ok) {
+      console.error(`[VARIANTS] klines HTTP ${res.status} for ${symbol}`);
+      return [];
+    }
+
     const raw = (await res.json()) as unknown[][];
+
     if (!Array.isArray(raw)) return [];
-    return raw.map((r) => ({
-      open: parseFloat(String(r[1])),
-      high: parseFloat(String(r[2])),
-      low: parseFloat(String(r[3])),
-      close: parseFloat(String(r[4])),
-      closeTimeMs: Number(r[6]),
-    }));
+
+    return raw
+      .map((r) => ({
+        open: Number(r[1]),
+        high: Number(r[2]),
+        low: Number(r[3]),
+        close: Number(r[4]),
+        closeTimeMs: Number(r[6]),
+      }))
+      .filter(
+        (c) =>
+          Number.isFinite(c.open) &&
+          Number.isFinite(c.high) &&
+          Number.isFinite(c.low) &&
+          Number.isFinite(c.close) &&
+          Number.isFinite(c.closeTimeMs),
+      );
   } catch (e) {
     console.error(`[VARIANTS] klines fetch failed for ${symbol}:`, e);
     return [];
@@ -1570,49 +1587,69 @@ async function fetch4hCandles(
 
 async function resolveVariantOutcomes(): Promise<number> {
   const db = await admin();
-  const cutoff = new Date(
-    Date.now() - VARIANT_MAX_HOURS * 60 * 60 * 1000,
-  ).toISOString();
 
+  /*
+   * IMPORTANT: Do NOT filter by created_at here.
+   *
+   * Older open variants must still be loaded so that they can be
+   * resolved as "expired". We bound the workload with a fixed
+   * limit and rely on the ascending order so the oldest rows
+   * (closest to expiry) are resolved first.
+   */
   const { data: openVariants, error } = await db
     .from("strategy_variant_signals")
     .select("id, symbol, recommendation, entry_price, created_at")
     .eq("outcome", "open")
     .not("entry_price", "is", null)
-    .gte("created_at", cutoff)
-    .order("created_at", { ascending: true });
+    .in("recommendation", ["buy", "sell"])
+    .order("created_at", { ascending: true })
+    .limit(VARIANT_RESOLVE_BATCH);
 
   if (error) {
     console.error("[VARIANTS] resolve fetch failed:", error);
     return 0;
   }
-  if (!openVariants || openVariants.length === 0) return 0;
 
-  // Group by symbol to minimize klines API calls
+  if (!openVariants || openVariants.length === 0) {
+    return 0;
+  }
+
+  /*
+   * Group by symbol to make exactly ONE klines call per symbol.
+   */
   const bySymbol = new Map<
     string,
     {
       id: string;
-      recommendation: string | null;
-      entry_price: number | null;
+      recommendation: "buy" | "sell";
+      entry_price: number;
       created_at: string;
     }[]
   >();
-  for (const v of openVariants as {
+
+  for (const raw of openVariants as {
     id: string;
     symbol: string;
     recommendation: string | null;
     entry_price: number | null;
     created_at: string;
   }[]) {
-    const list = bySymbol.get(v.symbol) ?? [];
+    const entry = Number(raw.entry_price);
+    const rec = String(raw.recommendation ?? "").toLowerCase();
+
+    if (!Number.isFinite(entry) || entry <= 0) continue;
+    if (rec !== "buy" && rec !== "sell") continue;
+
+    const list = bySymbol.get(raw.symbol) ?? [];
+
     list.push({
-      id: v.id,
-      recommendation: v.recommendation,
-      entry_price: v.entry_price,
-      created_at: v.created_at,
+      id: raw.id,
+      recommendation: rec,
+      entry_price: entry,
+      created_at: raw.created_at,
     });
-    bySymbol.set(v.symbol, list);
+
+    bySymbol.set(raw.symbol, list);
   }
 
   const nowMs = Date.now();
@@ -1620,54 +1657,57 @@ async function resolveVariantOutcomes(): Promise<number> {
 
   for (const [symbol, variants] of bySymbol) {
     const candles = await fetch4hCandles(symbol, 50);
-    if (candles.length === 0) continue;
 
-    for (const v of variants) {
-      const entry = Number(v.entry_price);
-      if (!Number.isFinite(entry) || entry <= 0) continue;
+    if (candles.length === 0) {
+      continue;
+    }
 
-      const rec = String(v.recommendation ?? "").toLowerCase();
-      if (rec !== "buy" && rec !== "sell") continue;
+    for (const variant of variants) {
+      const entry = variant.entry_price;
+      const rec = variant.recommendation;
+      const entryMs = new Date(variant.created_at).getTime();
 
-      const entryMs = new Date(v.created_at).getTime();
+      if (!Number.isFinite(entryMs)) {
+        continue;
+      }
 
-      // TP/SL prices based on direction
       const tpPrice =
         rec === "buy"
           ? entry * (1 + VARIANT_TP_PCT)
           : entry * (1 - VARIANT_TP_PCT);
+
       const slPrice =
         rec === "buy"
           ? entry * (1 - VARIANT_SL_PCT)
           : entry * (1 + VARIANT_SL_PCT);
 
-      // Only consider candles that CLOSED after our entry time.
-      // This avoids intrabar contamination from candles that started
-      // before the signal existed.
+      /*
+       * Only candles that CLOSED after the signal existed.
+       */
       const relevantCandles = candles.filter((c) => c.closeTimeMs > entryMs);
 
       let outcome: "win" | "loss" | "expired" | null = null;
       let exitPrice: number | null = null;
 
-      for (const c of relevantCandles) {
-        let hitSL = false;
-        let hitTP = false;
+      /*
+       * Evaluate candles chronologically.
+       *
+       * If TP and SL are both hit in the same 4h candle, use SL-first
+       * because intrabar order is unknown (conservative convention).
+       */
+      for (const candle of relevantCandles) {
+        const hitTP =
+          rec === "buy" ? candle.high >= tpPrice : candle.low <= tpPrice;
 
-        if (rec === "buy") {
-          hitSL = c.low <= slPrice;
-          hitTP = c.high >= tpPrice;
-        } else {
-          hitSL = c.high >= slPrice;
-          hitTP = c.low <= tpPrice;
-        }
+        const hitSL =
+          rec === "buy" ? candle.low <= slPrice : candle.high >= slPrice;
 
-        // If both TP and SL were within the same candle, assume SL first
-        // (conservative backtesting convention).
         if (hitSL) {
           outcome = "loss";
           exitPrice = slPrice;
           break;
         }
+
         if (hitTP) {
           outcome = "win";
           exitPrice = tpPrice;
@@ -1675,23 +1715,44 @@ async function resolveVariantOutcomes(): Promise<number> {
         }
       }
 
-      // Expiry: if no TP/SL hit and age >= 7 days
+      /*
+       * Expiry is evaluated AFTER TP/SL.
+       *
+       * This means a trade that hit TP/SL within its 7-day lifetime
+       * is resolved normally. If nothing happened for 168h, resolve
+       * at the latest available 4h close.
+       */
       if (!outcome) {
         const ageHours = (nowMs - entryMs) / 3_600_000;
+
         if (ageHours >= VARIANT_MAX_HOURS) {
-          const lastCandle = relevantCandles[relevantCandles.length - 1];
-          if (lastCandle) {
+          const expiryCandle =
+            relevantCandles[relevantCandles.length - 1];
+
+          if (expiryCandle) {
             outcome = "expired";
-            exitPrice = lastCandle.close;
+            exitPrice = expiryCandle.close;
           }
         }
       }
 
-      if (!outcome || exitPrice == null) continue;
+      if (!outcome || exitPrice == null) {
+        continue;
+      }
 
+      /*
+       * Directional PnL:
+       *   BUY:  +price movement = profit
+       *   SELL: -price movement = profit
+       */
       const rawPnlPct = ((exitPrice - entry) / entry) * 100;
+
       const pnlPct = rec === "buy" ? rawPnlPct : -rawPnlPct;
 
+      /*
+       * Atomic update: idempotent + race-safe.
+       * Only rows still in 'open' state get updated.
+       */
       const { error: updateErr } = await db
         .from("strategy_variant_signals")
         .update({
@@ -1700,19 +1761,25 @@ async function resolveVariantOutcomes(): Promise<number> {
           pnl_pct: pnlPct,
           resolved_at: new Date().toISOString(),
         })
-        .eq("id", v.id);
+        .eq("id", variant.id)
+        .eq("outcome", "open");
 
       if (updateErr) {
-        console.error(`[VARIANTS] update failed for ${v.id}:`, updateErr);
+        console.error(
+          `[VARIANTS] update failed for ${variant.id}:`,
+          updateErr,
+        );
         continue;
       }
+
       resolved += 1;
     }
   }
 
   if (resolved > 0) {
-    console.log(`[VARIANTS] Resolved ${resolved} outcomes (candle-based)`);
+    console.log(`[VARIANTS] Resolved ${resolved} outcomes (4h candle-based)`);
   }
+
   return resolved;
 }
 
