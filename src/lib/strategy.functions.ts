@@ -295,7 +295,10 @@ async function askGroqForPreset(
   currentPreset: string | null,
 ): Promise<{ preset: string; reasoning: string } | null> {
   const apiKey = process.env["GROQ_API_KEY"];
-  if (!apiKey) return null;
+  if (!apiKey) {
+    console.error("[AUTO_SWITCH] GROQ_API_KEY not set");
+    return null;
+  }
 
   const presetList = Object.keys(STRATEGY_PRESETS).join(", ");
   const systemPrompt = [
@@ -345,30 +348,65 @@ async function askGroqForPreset(
           { role: "user", content: userPrompt },
         ],
         temperature: 0.15,
-        max_tokens: 200,
+        // ⚠️ gpt-oss-20b is a reasoning model: needs headroom for internal
+        // reasoning tokens before producing the final JSON content.
+        // 200 was too low → empty content → parse failure.
+        max_tokens: 600,
       }),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(20_000),
     });
 
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`Groq HTTP ${res.status}: ${body.slice(0, 200)}`);
+      console.error(
+        `[AUTO_SWITCH] Groq HTTP ${res.status}: ${body.slice(0, 300)}`,
+      );
+      return null;
     }
 
     const data = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
-    };
-    const content = data.choices?.[0]?.message?.content ?? "";
-    const clean = content.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(clean) as {
-      preset?: string;
-      reasoning?: string;
+      choices?: {
+        message?: { content?: string };
+        finish_reason?: string;
+      }[];
+      usage?: {
+        completion_tokens?: number;
+        completion_tokens_details?: { reasoning_tokens?: number };
+      };
     };
 
-    if (!parsed.preset || !STRATEGY_PRESETS[parsed.preset]) {
-      console.error(`[AUTO_SWITCH] Invalid preset from Groq: ${parsed.preset}`);
+    const finishReason = data.choices?.[0]?.finish_reason;
+    const content = data.choices?.[0]?.message?.content ?? "";
+    const reasoningTokens =
+      data.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
+
+    if (!content) {
+      console.error(
+        `[AUTO_SWITCH] Groq returned empty content (finish_reason=${finishReason}, reasoning_tokens=${reasoningTokens})`,
+      );
       return null;
     }
+
+    const clean = content.replace(/```json|```/g, "").trim();
+
+    let parsed: { preset?: string; reasoning?: string };
+    try {
+      parsed = JSON.parse(clean) as { preset?: string; reasoning?: string };
+    } catch (parseErr) {
+      console.error(
+        `[AUTO_SWITCH] Groq JSON parse failed. Raw content: ${clean.slice(0, 300)}`,
+        parseErr,
+      );
+      return null;
+    }
+
+    if (!parsed.preset || !STRATEGY_PRESETS[parsed.preset]) {
+      console.error(
+        `[AUTO_SWITCH] Invalid preset from Groq: ${parsed.preset} (raw=${clean.slice(0, 200)})`,
+      );
+      return null;
+    }
+
     return {
       preset: parsed.preset,
       reasoning:
