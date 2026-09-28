@@ -355,6 +355,48 @@ export type Database = {
         }
         Relationships: []
       }
+      strategy_config: {
+        Row: {
+          auto_switch_enabled: boolean
+          auto_switch_interval_hours: number
+          council_weight: number
+          id: number
+          last_auto_reasoning: string | null
+          last_auto_switch_at: string | null
+          prediction_weight: number
+          preset_name: string | null
+          technicals_weight: number
+          updated_at: string
+          whale_weight: number
+        }
+        Insert: {
+          auto_switch_enabled?: boolean
+          auto_switch_interval_hours?: number
+          council_weight?: number
+          id?: number
+          last_auto_reasoning?: string | null
+          last_auto_switch_at?: string | null
+          prediction_weight?: number
+          preset_name?: string | null
+          technicals_weight?: number
+          updated_at?: string
+          whale_weight?: number
+        }
+        Update: {
+          auto_switch_enabled?: boolean
+          auto_switch_interval_hours?: number
+          council_weight?: number
+          id?: number
+          last_auto_reasoning?: string | null
+          last_auto_switch_at?: string | null
+          prediction_weight?: number
+          preset_name?: string | null
+          technicals_weight?: number
+          updated_at?: string
+          whale_weight?: number
+        }
+        Relationships: []
+      }
       trade_alerts: {
         Row: {
           created_at: string
