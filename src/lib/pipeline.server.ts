@@ -70,17 +70,25 @@ const TIMEFRAME = "4h";
 const KLINE_LIMIT = 100;
 const MIN_CONFIDENCE = 0.6;
 const STOP_LOSS_PCT = 0.03;
-const TAKE_PROFIT_PCT = 0.04;           // was 0.06 → 4% for faster turnover
+const TAKE_PROFIT_PCT = 0.04;
 const FETCH_TIMEOUT_MS = 12_000;
 const MAX_OPEN_TRADES = RISK_CONFIG.MAX_OPEN_POSITIONS;
 const MAX_ENTRY_DRIFT_PCT = 0.02;
-const SYMBOL_COOLDOWN_MINUTES = 15;     // was 60 → 15 min
+const SYMBOL_COOLDOWN_MINUTES = 15;
 const WHALE_LOOKBACK_HOURS = 6;
 
-// Time-based exit parameters
-const STALE_EXIT_HOURS = 48;            // close trades older than 48h if sideways
-const STALE_EXIT_MIN_PNL_PCT = 1.0;     // only if |PnL| < 1%
-const MAX_HOLD_HOURS = 168;             // hard cap: 7 days
+// Time-based exits
+const STALE_EXIT_HOURS = 48;
+const STALE_EXIT_MIN_PNL_PCT = 1.0;
+const MAX_HOLD_HOURS = 168;
+
+// ── Signal rotation ──
+// When the portfolio is full but a much stronger signal appears,
+// close the weakest open trade to make room.
+const ROTATION_MIN_NEW_CONFIDENCE = 0.75;      // new signal must be ≥ 75%
+const ROTATION_CONFIDENCE_IMPROVEMENT = 0.10;  // and ≥ 10pts better than weakest
+const ROTATION_MIN_OPEN_AGE_MINUTES = 30;      // don't rotate trades < 30 min old
+const ROTATION_MAX_WEAKEST_PNL_PCT = 0.5;      // only rotate out trades with ≤ +0.5% PnL
 
 // Freshness policy
 const INDICATOR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
@@ -888,7 +896,6 @@ async function closeTriggeredTrades(): Promise<number> {
     const hitStopLoss = trade.stop_loss != null && (trade.side === "buy" ? price <= trade.stop_loss : price >= trade.stop_loss);
     const hitTakeProfit = trade.take_profit != null && (trade.side === "buy" ? price >= trade.take_profit : price <= trade.take_profit);
 
-    // ── Time-based exits ──
     const ageMs = nowMs - new Date(trade.created_at).getTime();
     const ageHours = ageMs / 3_600_000;
     const pnlPctNow = entryPrice > 0
@@ -947,45 +954,176 @@ async function closeTriggeredTrades(): Promise<number> {
   return closed;
 }
 
+/* ───────────── Signal rotation helper ───────────── */
+
+interface OpenTradeForRotation {
+  id: string;
+  symbol: string;
+  side: "buy" | "sell";
+  quantity: number;
+  entry_price: number;
+  mode: "paper" | "live";
+  composite_signal_id: string | null;
+  created_at: string;
+}
+
+async function attemptRotation(
+  db: Admin,
+  newSignal: { symbol: string; confidence: number },
+  prices: Map<string, number>,
+  openTrades: OpenTradeForRotation[],
+  openConfidenceMap: Map<string, number>,
+): Promise<string | null> {
+  const nowMs = Date.now();
+
+  const scored = openTrades.map((t) => {
+    const price = prices.get(binanceSymbol(t.symbol));
+    const entry = Number(t.entry_price);
+    const qty = Number(t.quantity);
+    const pnlPct = price != null && entry > 0 && qty > 0
+      ? ((t.side === "buy" ? price - entry : entry - price) / entry) * 100
+      : 0;
+    const ageMin = (nowMs - new Date(t.created_at).getTime()) / 60_000;
+    const originalConfidence = t.composite_signal_id
+      ? openConfidenceMap.get(t.composite_signal_id) ?? 0
+      : 0;
+    return { ...t, pnlPct, ageMin, originalConfidence, currentPrice: price ?? null };
+  });
+
+  const eligible = scored.filter(
+    (t) =>
+      t.ageMin >= ROTATION_MIN_OPEN_AGE_MINUTES &&
+      t.pnlPct <= ROTATION_MAX_WEAKEST_PNL_PCT &&
+      t.currentPrice != null,
+  );
+
+  if (eligible.length === 0) {
+    console.log(`[ROTATION] no eligible trades to rotate (all too young or in profit)`);
+    return null;
+  }
+
+  eligible.sort((a, b) => {
+    if (a.pnlPct !== b.pnlPct) return a.pnlPct - b.pnlPct;
+    return a.originalConfidence - b.originalConfidence;
+  });
+
+  const weakest = eligible[0]!;
+  const improvement = newSignal.confidence - weakest.originalConfidence;
+
+  if (improvement < ROTATION_CONFIDENCE_IMPROVEMENT) {
+    console.log(
+      `[ROTATION] skipped: new=${(newSignal.confidence * 100).toFixed(0)}% vs weakest=${(weakest.originalConfidence * 100).toFixed(0)}% (Δ${(improvement * 100).toFixed(1)}pts < ${(ROTATION_CONFIDENCE_IMPROVEMENT * 100).toFixed(0)}pts)`,
+    );
+    return null;
+  }
+
+  const price = weakest.currentPrice!;
+  const entryPrice = Number(weakest.entry_price);
+  const fee = computeFeeAwarePnl(weakest.side, entryPrice, price, Number(weakest.quantity));
+  const closedAt = new Date().toISOString();
+
+  const { error: closeErr } = await db
+    .from("trades")
+    .update({
+      status: "closed",
+      pnl: fee.netPnl, gross_pnl: fee.grossPnl, net_pnl: fee.netPnl,
+      entry_fee: fee.entryFee, exit_fee: fee.exitFee, total_fees: fee.totalFees,
+      exit_price: price, close_reason: "rotated_out", closed_at: closedAt,
+    })
+    .eq("id", weakest.id)
+    .eq("status", "open");
+
+  if (closeErr) {
+    console.error(`[ROTATION] failed to close ${weakest.symbol}:`, closeErr);
+    return null;
+  }
+
+  await db.from("trade_alerts").insert({
+    trade_id: weakest.id, symbol: weakest.symbol, side: weakest.side,
+    event_type: "rotated_out", entry_price: entryPrice, exit_price: price,
+    pnl: fee.netPnl, pnl_pct: fee.netPnlPct, created_at: closedAt,
+  } as never);
+
+  console.log(
+    `[ROTATION] closed ${weakest.symbol} ${weakest.side} (PnL ${weakest.pnlPct.toFixed(2)}%, orig ${(weakest.originalConfidence * 100).toFixed(0)}%, age ${weakest.ageMin.toFixed(0)}m) → room for ${newSignal.symbol} (${(newSignal.confidence * 100).toFixed(0)}%)`,
+  );
+
+  return weakest.symbol;
+}
+
+/* ───────────── Execute trades (with rotation) ───────────── */
+
 export async function executeTrades(): Promise<number> {
   const db = await admin();
   const mode = tradingMode();
   await closeTriggeredTrades();
   const since = new Date(Date.now() - 15 * 60 * 1000).toISOString();
   const cooldownSince = new Date(Date.now() - SYMBOL_COOLDOWN_MINUTES * 60 * 1000).toISOString();
+
   const [signalsRes, openTradesRes, recentlyClosedRes] = await Promise.all([
-    db.from("composite_signals").select("*").gte("created_at", since).gte("confidence", MIN_CONFIDENCE).in("recommendation", ["buy", "sell"]),
-    db.from("trades").select("symbol").eq("status", "open"),
+    db.from("composite_signals").select("*").gte("created_at", since).gte("confidence", MIN_CONFIDENCE).in("recommendation", ["buy", "sell"]).order("confidence", { ascending: false }),
+    db.from("trades").select("id, symbol, side, quantity, entry_price, mode, composite_signal_id, created_at").eq("status", "open"),
     db.from("trades").select("symbol").eq("status", "closed").gte("closed_at", cooldownSince),
   ]);
   if (signalsRes.error) throw signalsRes.error;
   if (openTradesRes.error) throw openTradesRes.error;
   if (recentlyClosedRes.error) throw recentlyClosedRes.error;
-  const openSymbols = new Set(((openTradesRes.data ?? []) as { symbol: string }[]).map((t) => t.symbol));
-  const cooldownSymbols = new Set(((recentlyClosedRes.data ?? []) as { symbol: string }[]).map((t) => t.symbol));
-  if (openSymbols.size >= MAX_OPEN_TRADES) return 0;
+
+  const openTrades = (openTradesRes.data ?? []) as OpenTradeForRotation[];
+  const openSymbols = new Set(openTrades.map((t) => t.symbol));
+  const cooldownSymbols = new Set(
+    ((recentlyClosedRes.data ?? []) as { symbol: string }[]).map((t) => t.symbol),
+  );
+
+  // Pre-fetch original confidence for each open trade's signal (for rotation decisions)
+  const openSignalIds = openTrades
+    .map((t) => t.composite_signal_id)
+    .filter((id): id is string => id != null);
+  const openConfidenceMap = new Map<string, number>();
+  if (openSignalIds.length > 0) {
+    const { data: openSignals } = await db
+      .from("composite_signals")
+      .select("id, confidence")
+      .in("id", openSignalIds);
+    for (const s of (openSignals ?? []) as { id: string; confidence: number }[]) {
+      openConfidenceMap.set(s.id, Number(s.confidence));
+    }
+  }
 
   let prices: Map<string, number>;
   try { prices = await allBinancePrices(); }
   catch (e) { console.error("batch price fetch failed in executeTrades", e); return 0; }
 
   let opened = 0;
+  let rotationAttempted = false;
+
   for (const signal of (signalsRes.data ?? []) as {
     id: string; symbol: string; recommendation: string;
+    confidence: number;
     price_at?: number | null; created_at?: string | null;
   }[]) {
-    if (openSymbols.size >= MAX_OPEN_TRADES) break;
     if (openSymbols.has(signal.symbol)) continue;
     if (cooldownSymbols.has(signal.symbol)) continue;
-    const { data: existing } = await db.from("trades").select("id").eq("composite_signal_id", signal.id).limit(1);
+
+    const { data: existing } = await db
+      .from("trades")
+      .select("id")
+      .eq("composite_signal_id", signal.id)
+      .limit(1);
     if (existing && existing.length > 0) continue;
 
     const price = prices.get(binanceSymbol(signal.symbol));
     if (price == null) { console.error(`no price for ${signal.symbol}`); continue; }
 
     const signalPrice = Number(signal.price_at);
-    if (Number.isFinite(signalPrice) && signalPrice > 0 && Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT) {
-      console.log(`[ENTRY_REJECTED] ${signal.symbol}: price drift ${(Math.abs(price - signalPrice) / signalPrice * 100).toFixed(2)}% > ${(MAX_ENTRY_DRIFT_PCT * 100).toFixed(2)}%`);
+    if (
+      Number.isFinite(signalPrice) &&
+      signalPrice > 0 &&
+      Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT
+    ) {
+      console.log(
+        `[ENTRY_REJECTED] ${signal.symbol}: price drift ${(Math.abs(price - signalPrice) / signalPrice * 100).toFixed(2)}% > ${(MAX_ENTRY_DRIFT_PCT * 100).toFixed(2)}%`,
+      );
       continue;
     }
     const side = signal.recommendation as "buy" | "sell";
@@ -997,7 +1135,37 @@ export async function executeTrades(): Promise<number> {
       continue;
     }
 
-    const risk = await canOpenTrade(db as any, { symbol: signal.symbol, side, entryPrice: price, stopLoss, currentPrices: prices });
+    // Try normal entry first
+    let risk = await canOpenTrade(db as any, {
+      symbol: signal.symbol, side, entryPrice: price, stopLoss, currentPrices: prices,
+    });
+
+    // If we're at cap AND the signal is strong enough, attempt one rotation
+    if (
+      !risk.allowed &&
+      (risk.reason === "max_positions" || risk.reason === "portfolio_risk_limit") &&
+      !rotationAttempted &&
+      signal.confidence >= ROTATION_MIN_NEW_CONFIDENCE
+    ) {
+      rotationAttempted = true;
+      const rotatedSymbol = await attemptRotation(
+        db,
+        { symbol: signal.symbol, confidence: signal.confidence },
+        prices,
+        openTrades,
+        openConfidenceMap,
+      );
+
+      if (rotatedSymbol) {
+        openSymbols.delete(rotatedSymbol);
+        cooldownSymbols.add(rotatedSymbol);
+        // Retry the risk check now that a slot freed up
+        risk = await canOpenTrade(db as any, {
+          symbol: signal.symbol, side, entryPrice: price, stopLoss, currentPrices: prices,
+        });
+      }
+    }
+
     if (!risk.allowed) {
       console.log(`[RISK_REJECTED] ${signal.symbol} ${side}: ${risk.reason}`);
       continue;
@@ -1006,7 +1174,9 @@ export async function executeTrades(): Promise<number> {
       console.log(`[RISK_INVALID] ${signal.symbol}: quantity=${risk.quantity}`);
       continue;
     }
-    console.log(`[RISK_APPROVED] ${signal.symbol} ${side} | qty=${risk.quantity.toFixed(6)} notional=${risk.notional.toFixed(2)}`);
+    console.log(
+      `[RISK_APPROVED] ${signal.symbol} ${side} | qty=${risk.quantity.toFixed(6)} notional=${risk.notional.toFixed(2)}`,
+    );
     const quantity = risk.quantity;
     let exchangeOrderId: string | null = null;
     if (mode === "live") {
