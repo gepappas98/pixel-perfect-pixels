@@ -2,7 +2,11 @@ import { createHmac } from "crypto";
 import { canOpenTrade, RISK_CONFIG } from "./risk.engine";
 import { computeFeeAwarePnl, TRADING_FEE_RATE } from "./fees";
 import { fetchRelevantLessons, generatePostMortems } from "./council-learning";
-import { DEFAULT_STRATEGY, type StrategyConfig } from "./strategy.presets";
+import {
+  DEFAULT_STRATEGY,
+  STRATEGY_PRESETS,
+  type StrategyConfig,
+} from "./strategy.presets";
 import { maybeAutoSwitchStrategy } from "./strategy.functions";
 
 /* ───────────── Shared types (declared first) ───────────── */
@@ -1236,6 +1240,7 @@ function ruleBased(
   return {
     recommendation,
     confidence,
+    score,
     reasoning: reasons.length > 0 ? reasons.join("; ") : "insufficient signal",
   };
 }
@@ -1377,6 +1382,9 @@ export async function combineSignals(): Promise<number> {
   let created = 0;
   const nowIso = new Date().toISOString();
 
+  // ── Shadow variant buffer (observability only) ──
+  const variantRows: Record<string, unknown>[] = [];
+
   for (const symbol of symbols) {
     const whaleRows = whaleBySymbol.get(symbol) ?? [];
     let whale: Row = null;
@@ -1420,6 +1428,26 @@ export async function combineSignals(): Promise<number> {
     if (!whale && !mtfRaw.primary && !prediction && !council) continue;
 
     const result = ruleBased(whale, mtf, prediction, council, weights);
+
+    // ── Shadow evaluation across all presets ──
+    for (const [presetName, presetWeights] of Object.entries(
+      STRATEGY_PRESETS,
+    )) {
+      const altResult = ruleBased(whale, mtf, prediction, council, {
+        ...presetWeights,
+        updated_at: nowIso,
+      });
+      if (altResult.recommendation === "hold") continue;
+      variantRows.push({
+        strategy_name: presetName,
+        symbol,
+        confidence: altResult.confidence,
+        recommendation: altResult.recommendation,
+        reasoning: altResult.reasoning,
+        score: altResult.score,
+        created_at: nowIso,
+      });
+    }
 
     if (result.recommendation === "hold") continue;
 
@@ -1470,6 +1498,21 @@ export async function combineSignals(): Promise<number> {
     if (error) throw error;
     if (data?.length) created += 1;
   }
+
+  // ── Batch insert shadow variant signals (non-fatal) ──
+  if (variantRows.length > 0) {
+    const { error: variantErr } = await db
+      .from("strategy_variant_signals")
+      .insert(variantRows as never);
+    if (variantErr) {
+      console.error("[VARIANTS] insert failed:", variantErr);
+    } else {
+      console.log(
+        `[VARIANTS] Recorded ${variantRows.length} shadow signals across ${Object.keys(STRATEGY_PRESETS).length} presets`,
+      );
+    }
+  }
+
   return created;
 }
 
