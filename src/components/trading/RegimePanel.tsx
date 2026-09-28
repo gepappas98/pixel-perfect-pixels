@@ -12,10 +12,10 @@ import {
   Sparkles,
 } from "lucide-react";
 import { getMarketRegime } from "@/lib/market-regime.functions";
+import { STRATEGY_PRESETS } from "@/lib/strategy.presets";
 import {
   getStrategyConfig,
   updateStrategyConfig,
-  STRATEGY_PRESETS,
 } from "@/lib/strategy.functions";
 
 /* ───────────── Regime display config ───────────── */
