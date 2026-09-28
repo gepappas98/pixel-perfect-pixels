@@ -1,6 +1,6 @@
 /**
  * Single source of truth for trading fees and fee-aware PnL.
- * DB mirror: public.trading_fee_rate() (used by the check_and_close_trades cron).
+ * DB mirror: public.trading_fee_rate(). Trade closing is owned by pipeline.server.ts;
  */
 export const TRADING_FEE_RATE = 0.0005; // 0.05% per side
 
