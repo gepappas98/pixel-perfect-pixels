@@ -18,6 +18,106 @@ import { getTradingStatus, runPipeline } from "@/lib/pipeline.functions";
 import { resetAllData } from "@/lib/admin.functions";
 import { getSchedule, setSchedule } from "@/lib/schedule.functions";
 
+/* ───────────── Reusable PIN dialog ───────────── */
+
+function PinDialog({
+  open,
+  title,
+  description,
+  warning,
+  confirmLabel,
+  confirmVariant = "primary",
+  isPending,
+  error,
+  onConfirm,
+  onClose,
+}: {
+  open: boolean;
+  title: string;
+  description: string;
+  warning?: string;
+  confirmLabel: string;
+  confirmVariant?: "primary" | "destructive";
+  isPending: boolean;
+  error: string | null;
+  onConfirm: (pin: string) => void;
+  onClose: () => void;
+}) {
+  const [pin, setPin] = useState("");
+
+  function handleClose() {
+    setPin("");
+    onClose();
+  }
+
+  function handleConfirm() {
+    if (pin.length === 0 || isPending) return;
+    onConfirm(pin);
+  }
+
+  if (!open) return null;
+
+  const confirmClass =
+    confirmVariant === "destructive"
+      ? "bg-destructive text-destructive-foreground"
+      : "bg-primary text-primary-foreground";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onClick={handleClose}
+    >
+      <div
+        className="w-full max-w-sm rounded-lg border border-border bg-background p-5 shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="font-semibold text-foreground">{title}</h3>
+        <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+        {warning && (
+          <p className="mt-1.5 text-xs text-bull">{warning}</p>
+        )}
+
+        <input
+          type="password"
+          inputMode="numeric"
+          autoComplete="off"
+          value={pin}
+          onChange={(e) => setPin(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleConfirm();
+            if (e.key === "Escape") handleClose();
+          }}
+          placeholder="Enter PIN"
+          autoFocus
+          disabled={isPending}
+          className="mt-3 w-full rounded-md border border-border bg-surface-2 px-3 py-2 text-center font-mono text-lg tracking-widest text-foreground focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50"
+        />
+
+        {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            onClick={handleClose}
+            disabled={isPending}
+            className="rounded-md border border-border bg-muted px-3 py-1.5 text-xs text-foreground transition hover:bg-muted/80 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleConfirm}
+            disabled={pin.length === 0 || isPending}
+            className={`rounded-md px-3 py-1.5 text-xs font-semibold transition hover:opacity-90 disabled:opacity-50 ${confirmClass}`}
+          >
+            {isPending ? "Working…" : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ───────────── Schedule control ───────────── */
+
 function ScheduleControl() {
   const getFn = useServerFn(getSchedule);
   const setFn = useServerFn(setSchedule);
@@ -43,43 +143,84 @@ function ScheduleControl() {
   );
 }
 
-function ResetButton() {
-  const resetFn = useServerFn(resetAllData);
+/* ───────────── Run pipeline (PIN protected) ───────────── */
+
+function RunPipelineButton() {
+  const pipelineFn = useServerFn(runPipeline);
   const [showDialog, setShowDialog] = useState(false);
-  const [pin, setPin] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  const reset = useMutation({
-    mutationFn: (pinValue: string) => resetFn({ data: { pin: pinValue } }),
-    onSuccess: (data) => {
-      if (!data.ok) {
-        setError(data.error ?? "Reset failed");
-        return;
-      }
+  const run = useMutation({
+    mutationFn: (pin: string) => pipelineFn({ data: { pin } }),
+    onSuccess: () => {
       setShowDialog(false);
-      setPin("");
       setError(null);
-      console.log("[RESET] cleared:", data);
-      setTimeout(() => window.location.reload(), 200);
     },
     onError: (err) => {
       setError((err as Error).message);
-      setPin("");
     },
   });
-
-  function closeDialog() {
-    setShowDialog(false);
-    setPin("");
-    setError(null);
-  }
 
   return (
     <>
       <button
         onClick={() => {
           setShowDialog(true);
-          setPin("");
+          setError(null);
+        }}
+        title="Run the pipeline now (requires PIN)"
+        className="rounded-md bg-primary px-3.5 py-1.5 text-xs font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+      >
+        Run pipeline
+      </button>
+
+      <PinDialog
+        open={showDialog}
+        title="Run pipeline"
+        description="Manually trigger the pipeline. This consumes API quotas and takes ~60 seconds."
+        warning="✓ Requires PIN to prevent accidental spam."
+        confirmLabel={run.isPending ? "Running…" : "Run"}
+        isPending={run.isPending}
+        error={error}
+        onConfirm={(pin) => run.mutate(pin)}
+        onClose={() => {
+          setShowDialog(false);
+          setError(null);
+        }}
+      />
+    </>
+  );
+}
+
+/* ───────────── Reset data (PIN protected) ───────────── */
+
+function ResetButton() {
+  const resetFn = useServerFn(resetAllData);
+  const [showDialog, setShowDialog] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const reset = useMutation({
+    mutationFn: (pin: string) => resetFn({ data: { pin } }),
+    onSuccess: (data) => {
+      if (!data.ok) {
+        setError(data.error ?? "Reset failed");
+        return;
+      }
+      setShowDialog(false);
+      setError(null);
+      console.log("[RESET] cleared:", data);
+      setTimeout(() => window.location.reload(), 200);
+    },
+    onError: (err) => {
+      setError((err as Error).message);
+    },
+  });
+
+  return (
+    <>
+      <button
+        onClick={() => {
+          setShowDialog(true);
           setError(null);
         }}
         title="Reset pipeline data — keeps trades and lessons"
@@ -88,67 +229,26 @@ function ResetButton() {
         Reset data
       </button>
 
-      {showDialog && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-          onClick={closeDialog}
-        >
-          <div
-            className="w-full max-w-sm rounded-lg border border-border bg-background p-5 shadow-lg"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className="font-semibold text-foreground">Reset pipeline data</h3>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Deletes signals, whale alerts, technicals, predictions, council verdicts and pipeline runs.
-            </p>
-            <p className="mt-1.5 text-xs text-bull">
-              ✓ Trades and council lessons are <strong>preserved</strong>.
-            </p>
-
-            <input
-              type="password"
-              inputMode="numeric"
-              autoComplete="off"
-              value={pin}
-              onChange={(e) => setPin(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && pin.length > 0 && !reset.isPending) {
-                  reset.mutate(pin);
-                }
-                if (e.key === "Escape") closeDialog();
-              }}
-              placeholder="Enter PIN"
-              autoFocus
-              disabled={reset.isPending}
-              className="mt-3 w-full rounded-md border border-border bg-surface-2 px-3 py-2 text-center font-mono text-lg tracking-widest text-foreground focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50"
-            />
-
-            {error && (
-              <p className="mt-2 text-xs text-destructive">{error}</p>
-            )}
-
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                onClick={closeDialog}
-                disabled={reset.isPending}
-                className="rounded-md border border-border bg-muted px-3 py-1.5 text-xs text-foreground transition hover:bg-muted/80 disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => reset.mutate(pin)}
-                disabled={pin.length === 0 || reset.isPending}
-                className="rounded-md bg-destructive px-3 py-1.5 text-xs font-semibold text-destructive-foreground transition hover:opacity-90 disabled:opacity-50"
-              >
-                {reset.isPending ? "Clearing…" : "Confirm"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <PinDialog
+        open={showDialog}
+        title="Reset pipeline data"
+        description="Deletes signals, whale alerts, technicals, predictions, council verdicts and pipeline runs."
+        warning="✓ Trades and council lessons are preserved."
+        confirmLabel={reset.isPending ? "Clearing…" : "Confirm"}
+        confirmVariant="destructive"
+        isPending={reset.isPending}
+        error={error}
+        onConfirm={(pin) => reset.mutate(pin)}
+        onClose={() => {
+          setShowDialog(false);
+          setError(null);
+        }}
+      />
     </>
   );
 }
+
+/* ───────────── Route ───────────── */
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -174,14 +274,11 @@ export const Route = createFileRoute("/")({
 
 function CommandCenter() {
   const statusFn = useServerFn(getTradingStatus);
-  const pipelineFn = useServerFn(runPipeline);
 
   const { data: status } = useQuery({
     queryKey: ["trading-status"],
     queryFn: () => statusFn(),
   });
-
-  const run = useMutation({ mutationFn: () => pipelineFn({ data: undefined }) });
 
   return (
     <div className="min-h-screen">
@@ -207,26 +304,9 @@ function CommandCenter() {
             </span>
             <ScheduleControl />
             <ResetButton />
-            <button
-              onClick={() => run.mutate()}
-              disabled={run.isPending}
-              className="rounded-md bg-primary px-3.5 py-1.5 text-xs font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
-            >
-              {run.isPending ? "Running…" : "Run pipeline"}
-            </button>
+            <RunPipelineButton />
           </div>
         </div>
-        {run.data && (
-          <p className="mt-2 font-mono text-[11px] text-muted-foreground">
-            {run.data.whales} whale prints · {run.data.indicators} technicals ·{" "}
-            {run.data.predictions} markets · {run.data.signals} signals · {run.data.trades} trades
-          </p>
-        )}
-        {run.isError && (
-          <p className="mt-2 text-[11px] text-destructive">
-            Pipeline failed: {(run.error as Error).message}
-          </p>
-        )}
       </header>
 
       <main className="grid grid-cols-1 gap-4 p-5 sm:p-8 lg:grid-cols-3">
@@ -249,7 +329,6 @@ function CommandCenter() {
         </div>
       </main>
 
-      {/* ── Footer ── */}
       <footer className="border-t border-border px-5 py-6 sm:px-8">
         <div className="flex flex-col items-center justify-center gap-3 text-center sm:flex-row sm:gap-6">
           <Link
