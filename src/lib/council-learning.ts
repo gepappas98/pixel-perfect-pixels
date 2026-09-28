@@ -2,7 +2,10 @@
  * Post-mortem analysis κλειστών trades + retrieval προηγούμενων μαθημάτων.
  *
  * NOTE: Το openai/gpt-oss-20b είναι reasoning model — ξοδεύει tokens σε
- * internal reasoning. max_tokens πρέπει να είναι ≥ 500. */
+ * internal reasoning. max_tokens πρέπει να είναι ≥ 500.
+ *
+ * NOTE: Το `trades` table ΔΕΝ έχει στήλη pnl_pct — υπολογίζεται τοπικά
+ * από pnl / (entry_price * quantity) * 100. */
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const LESSON_MODEL = process.env["GROQ_MODEL"] ?? "openai/gpt-oss-20b";
@@ -15,13 +18,20 @@ interface TradeForPostMortem {
   id: string;
   symbol: string;
   side: "buy" | "sell";
+  quantity: number;
   entry_price: number;
   exit_price: number;
   pnl: number;
-  pnl_pct: number;
   close_reason: string;
   closed_at: string;
   composite_signal_id: string | null;
+}
+
+/** Compute pnl_pct locally from pnl and notional. */
+function computePnlPct(trade: TradeForPostMortem): number {
+  const notional = Number(trade.entry_price) * Number(trade.quantity);
+  if (!Number.isFinite(notional) || notional <= 0) return 0;
+  return (Number(trade.pnl) / notional) * 100;
 }
 
 export interface LearningResult {
@@ -35,6 +45,7 @@ export interface LearningResult {
 
 async function groqGenerateLesson(
   trade: TradeForPostMortem,
+  pnlPct: number,
   originalReasoning: string | null,
   originalVerdict: string | null,
 ): Promise<
@@ -58,7 +69,7 @@ async function groqGenerateLesson(
   const userPrompt = [
     `Symbol: ${trade.symbol}`,
     `Side: ${trade.side.toUpperCase()}`,
-    `PnL: ${trade.pnl.toFixed(2)} USD (${trade.pnl_pct.toFixed(2)}%)`,
+    `PnL: ${trade.pnl.toFixed(2)} USD (${pnlPct.toFixed(2)}%)`,
     `Close reason: ${trade.close_reason}`,
     `Original signal: ${originalVerdict ?? "unknown"}`,
     `Original reasoning: ${originalReasoning ?? "not recorded"}`,
@@ -116,10 +127,12 @@ export async function generatePostMortems(): Promise<LearningResult> {
     "@/integrations/supabase/client.server"
   );
 
+  // ⚠️ pnl_pct NOT selected — it doesn't exist in the trades schema.
+  // We select quantity instead and compute pnl_pct locally.
   const { data: trades, error } = await db
     .from("trades")
     .select(
-      "id, symbol, side, entry_price, exit_price, pnl, pnl_pct, close_reason, closed_at, composite_signal_id",
+      "id, symbol, side, quantity, entry_price, exit_price, pnl, close_reason, closed_at, composite_signal_id",
     )
     .eq("status", "closed")
     .eq("post_mortem_generated", false)
@@ -144,6 +157,8 @@ export async function generatePostMortems(): Promise<LearningResult> {
   let lastError: string | null = null;
 
   for (const trade of tradeList) {
+    const pnlPct = computePnlPct(trade);
+
     let originalReasoning: string | null = null;
     let originalVerdict: string | null = null;
 
@@ -163,6 +178,7 @@ export async function generatePostMortems(): Promise<LearningResult> {
 
     const result = await groqGenerateLesson(
       trade,
+      pnlPct,
       originalReasoning,
       originalVerdict,
     );
@@ -188,7 +204,7 @@ export async function generatePostMortems(): Promise<LearningResult> {
       },
       outcome: result.outcome,
       realized_pnl: trade.pnl,
-      pnl_pct: trade.pnl_pct,
+      pnl_pct: pnlPct, // ← computed locally
       lesson: result.lesson,
       source_trade_id: trade.id,
     } as never);
