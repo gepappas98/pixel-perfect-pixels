@@ -2,17 +2,20 @@
  * Risk Management Safety Layer — Paper Mode Only
  *
  * Safety rules:
- * - 0.5% max economic risk per trade, INCLUDING estimated entry + stop fees.
+ * - 0.25% max economic risk per trade, INCLUDING estimated entry + stop fees.
  * - 2.0% max aggregate open stop-risk, INCLUDING estimated fees.
  * - 2.0% daily economic loss limit = realized PnL today + current unrealized
  *   PnL on all open paper trades (net of estimated exit fees).
  * - 8 maximum open paper positions.
+ *
+ * NOTE: Per-trade risk reduced from 0.5% → 0.25% so the 2.0% portfolio cap
+ * fits 8 concurrent trades (was 4). Total portfolio risk is unchanged.
  */
 
 type Admin = Awaited<typeof import("@/integrations/supabase/client.server")>["supabaseAdmin"];
 
 export const RISK_CONFIG = {
-  MAX_RISK_PER_TRADE_PCT: 0.005,
+  MAX_RISK_PER_TRADE_PCT: 0.0025,
   MAX_PORTFOLIO_RISK_PCT: 0.02,
   DAILY_LOSS_LIMIT_PCT: 0.02,
   MAX_OPEN_POSITIONS: 8,
@@ -62,7 +65,6 @@ function athensStartOfDay(): string {
   const y = Number(get("year"));
   const m = Number(get("month"));
   const d = Number(get("day"));
-  // Noon UTC is safely inside the target Athens calendar day for offset lookup.
   const probe = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
   const offsetText = new Intl.DateTimeFormat("en-US", {
     timeZone: RISK_CONFIG.TIMEZONE,
@@ -120,11 +122,6 @@ export async function getDailyRealizedPnL(db: Admin): Promise<number> {
     .reduce((sum, t) => sum + (Number(t.pnl) || 0), 0);
 }
 
-/**
- * Economic PnL of all currently open paper trades.
- * Current price is supplied by the caller so the risk engine does not make
- * a second market-data request for every candidate trade.
- */
 export async function getOpenUnrealizedPnL(
   db: Admin,
   currentPrices: Map<string, number>,
@@ -208,7 +205,6 @@ export async function canOpenTrade(db: Admin, req: TradeRequest): Promise<RiskDe
     const maxPortfolioRisk = equity * RISK_CONFIG.MAX_PORTFOLIO_RISK_PCT;
     const dailyLossLimit = -(equity * RISK_CONFIG.DAILY_LOSS_LIMIT_PCT);
 
-    // Solve quantity so gross stop loss + entry fee + stop/exit fee <= maxTradeRisk.
     const perUnitEconomicRisk = stopDistance + (entryPrice + stopLoss) * RISK_CONFIG.FEE_RATE;
     if (!Number.isFinite(perUnitEconomicRisk) || perUnitEconomicRisk <= 0) return reject("invalid_risk", `${req.symbol} ${side}: invalid fee-aware per-unit risk`);
     const quantity = maxTradeRisk / perUnitEconomicRisk;
