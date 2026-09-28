@@ -3,20 +3,20 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
-
 import { SignalFeed } from "@/components/trading/SignalFeed";
 import { WhalePanel } from "@/components/trading/WhalePanel";
 import { IndicatorPanel } from "@/components/trading/IndicatorPanel";
 import { PredictionPanel } from "@/components/trading/PredictionPanel";
 import { CouncilPanel } from "@/components/trading/CouncilPanel";
 import { RegimePanel } from "@/components/trading/RegimePanel";
+import { StrategyPanel } from "@/components/trading/StrategyPanel";
 import { LessonsPanel } from "@/components/trading/LessonsPanel";
 import { TradesPanel } from "@/components/trading/TradesPanel";
 import { TradeAlertsPanel } from "@/components/trading/TradeAlertsPanel";
 import { CronHealthPanel } from "@/components/trading/CronHealthPanel";
 import { AIRiskSummary } from "@/components/trading/AIRiskSummary";
 import { PortfolioPanel } from "@/components/trading/PortfolioPanel";
-
+import { SupportDeveloper } from "@/components/trading/SupportDeveloper";
 import { getTradingStatus, runPipeline } from "@/lib/pipeline.functions";
 import { resetAllData } from "@/lib/admin.functions";
 import { getSchedule, setSchedule } from "@/lib/schedule.functions";
@@ -157,9 +157,7 @@ function RunPipelineButton() {
       setShowDialog(false);
       setError(null);
     },
-    onError: (err) => {
-      setError((err as Error).message);
-    },
+    onError: (err) => setError((err as Error).message),
   });
 
   return (
@@ -212,9 +210,7 @@ function ResetButton() {
       console.log("[RESET] cleared:", data);
       setTimeout(() => window.location.reload(), 200);
     },
-    onError: (err) => {
-      setError((err as Error).message);
-    },
+    onError: (err) => setError((err as Error).message),
   });
 
   return (
@@ -311,63 +307,48 @@ function CommandCenter() {
       </header>
 
       <main className="grid grid-cols-1 gap-4 p-5 sm:p-8 lg:grid-cols-3">
-        {/* ── Top row: Signal Feed (2 cols) ── */}
         <div className="lg:col-span-2 lg:row-span-2">
           <SignalFeed />
         </div>
-
-        {/* ── Right column: Whale + Technicals ── */}
         <WhalePanel />
         <IndicatorPanel />
-
-        {/* ── Predictions + Council ── */}
         <PredictionPanel />
         <CouncilPanel />
-
-        {/* ── Regime: what's happening right now ── */}
         <RegimePanel />
-
-
-        {/* ── Learning: post-mortems ── */}
+        <StrategyPanel />
         <LessonsPanel />
-
-        {/* ── AI: risk summary ── */}
         <AIRiskSummary />
-
-        {/* ── Health monitoring ── */}
         <CronHealthPanel />
-
-        {/* ── Portfolio aggregates ── */}
         <PortfolioPanel />
-
-        {/* ── Full-width: Positions ── */}
         <div className="lg:col-span-3">
           <TradesPanel />
         </div>
-
-        {/* ── Full-width: Closed positions ── */}
         <div className="lg:col-span-3">
           <TradeAlertsPanel />
         </div>
       </main>
 
       <footer className="border-t border-border px-5 py-6 sm:px-8">
-        <div className="flex flex-col items-center justify-center gap-3 text-center sm:flex-row sm:gap-6">
-          <Link
-            to="/about"
-            className="inline-flex items-center gap-2 rounded-md border border-accent/40 bg-accent/10 px-4 py-2 text-xs font-semibold text-accent transition hover:bg-accent/20"
-          >
-            📖 What is this? How does it work?
-          </Link>
-          <p className="text-[11px] text-muted-foreground">
-            Interested in this tool?{" "}
-            <a
-              href="mailto:gepappas98@gmail.com?subject=Interested%20in%20the%20Trading%20Command%20Center"
-              className="font-semibold text-bull underline-offset-2 hover:underline"
+        <div className="mx-auto max-w-4xl space-y-4">
+          <div className="flex flex-col items-center justify-center gap-3 text-center sm:flex-row sm:gap-6">
+            <Link
+              to="/about"
+              className="inline-flex items-center gap-2 rounded-md border border-accent/40 bg-accent/10 px-4 py-2 text-xs font-semibold text-accent transition hover:bg-accent/20"
             >
-              Contact gepappas98@gmail.com
-            </a>
-          </p>
+              📖 What is this? How does it work?
+            </Link>
+            <p className="text-[11px] text-muted-foreground">
+              Interested in this tool?{" "}
+              <a
+                href="mailto:gepappas98@gmail.com?subject=Interested%20in%20the%20Trading%20Command%20Center"
+                className="font-semibold text-bull underline-offset-2 hover:underline"
+              >
+                Contact gepappas98@gmail.com
+              </a>
+            </p>
+          </div>
+
+          <SupportDeveloper />
         </div>
       </footer>
     </div>
