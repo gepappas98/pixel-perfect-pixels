@@ -11,6 +11,7 @@ import { CouncilPanel } from "@/components/trading/CouncilPanel";
 import { RegimePanel } from "@/components/trading/RegimePanel";
 import { StrategyPanel } from "@/components/trading/StrategyPanel";
 import { LessonsPanel } from "@/components/trading/LessonsPanel";
+import { VariantComparisonPanel } from "@/components/trading/VariantComparisonPanel";
 import { TradesPanel } from "@/components/trading/TradesPanel";
 import { TradeAlertsPanel } from "@/components/trading/TradeAlertsPanel";
 import { CronHealthPanel } from "@/components/trading/CronHealthPanel";
@@ -21,6 +22,8 @@ import { GroqStatusIndicator } from "@/components/trading/GroqStatusIndicator";
 import { getTradingStatus, runPipeline } from "@/lib/pipeline.functions";
 import { resetAllData } from "@/lib/admin.functions";
 import { getSchedule, setSchedule } from "@/lib/schedule.functions";
+
+/* ───────────── Reusable PIN dialog ───────────── */
 
 function PinDialog({
   open,
@@ -116,6 +119,8 @@ function PinDialog({
   );
 }
 
+/* ───────────── Schedule control ───────────── */
+
 function ScheduleControl() {
   const getFn = useServerFn(getSchedule);
   const setFn = useServerFn(setSchedule);
@@ -140,6 +145,8 @@ function ScheduleControl() {
     </select>
   );
 }
+
+/* ───────────── Run pipeline (PIN protected) ───────────── */
 
 function RunPipelineButton() {
   const pipelineFn = useServerFn(runPipeline);
@@ -185,6 +192,8 @@ function RunPipelineButton() {
     </>
   );
 }
+
+/* ───────────── Reset data (PIN protected) ───────────── */
 
 function ResetButton() {
   const resetFn = useServerFn(resetAllData);
@@ -237,6 +246,8 @@ function ResetButton() {
     </>
   );
 }
+
+/* ───────────── Route ───────────── */
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -309,6 +320,7 @@ function CommandCenter() {
         <RegimePanel />
         <StrategyPanel />
         <LessonsPanel />
+        <VariantComparisonPanel />
         <AIRiskSummary />
         <CronHealthPanel />
         <PortfolioPanel />
