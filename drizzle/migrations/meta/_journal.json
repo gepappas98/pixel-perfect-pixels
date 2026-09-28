@@ -43,6 +43,13 @@
       "when": 1790547925447,
       "tag": "0005_trading_fees",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790578531270,
+      "tag": "0006_trade_safety_hardening",
+      "breakpoints": true
     }
   ]
 }
