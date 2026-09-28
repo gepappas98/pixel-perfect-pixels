@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
+import { SupportDeveloper } from "@/components/trading/SupportDeveloper";
 
 export const Route = createFileRoute("/about")({
   head: () => ({
@@ -813,6 +814,9 @@ function AboutPage() {
             </div>
           </div>
         </section>
+
+        {/* ── Support the developer ── */}
+        <SupportDeveloper />
 
         <p className="pb-4 text-center text-[11px] text-muted-foreground">
           Made with 🤖 + ❤️ · Trading Command Center · v2.0
