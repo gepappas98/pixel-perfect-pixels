@@ -40,7 +40,7 @@ export function LessonsPanel() {
   const { data, isLoading, error } = useQuery<CouncilLesson[]>({
     queryKey: ["council-lessons"],
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data, error } = await (supabase as any)
         .from("council_lessons")
         .select("id, symbol, verdict, outcome, realized_pnl, lesson, created_at")
         .order("created_at", { ascending: false })
