@@ -5,11 +5,6 @@ import { supabase } from "@/integrations/supabase/client";
 import { formatPrice } from "@/lib/format-price";
 import type { ClosedTrade } from "@/lib/trading-types";
 
-/**
- * Full date + time formatter.
- * Example output: "28 Sep 2026, 10:42:22"
- * Uses 24h clock and a fixed format so it looks the same for everyone.
- */
 function formatFullDateTime(value: string | null | undefined): string {
   if (!value) return "—";
   const d = new Date(value);
@@ -25,12 +20,31 @@ function formatFullDateTime(value: string | null | undefined): string {
   });
 }
 
-/** PnL % is not stored on `trades`, so we compute it from pnl / notional. */
 function computePnlPct(t: ClosedTrade): number | null {
   if (t.pnl == null) return null;
   const notional = Number(t.entry_price) * Number(t.quantity);
   if (!Number.isFinite(notional) || notional <= 0) return null;
   return (Number(t.pnl) / notional) * 100;
+}
+
+function reasonLabel(reason: string | null): string {
+  switch (reason) {
+    case "take_profit": return "target hit";
+    case "stop_loss": return "stop hit";
+    case "stale_exit": return "stale exit";
+    case "expired": return "expired";
+    default: return reason ?? "—";
+  }
+}
+
+function reasonTone(reason: string | null): string {
+  switch (reason) {
+    case "take_profit": return "text-bull";
+    case "stop_loss": return "text-bear";
+    case "stale_exit":
+    case "expired": return "text-muted-foreground";
+    default: return "text-muted-foreground";
+  }
 }
 
 export function TradeAlertsPanel() {
@@ -60,7 +74,7 @@ export function TradeAlertsPanel() {
     <section className="panel">
       <div className="mb-3 flex items-start justify-between gap-3">
         <div>
-          <h2 className="panel-title">Closed Positions (Stop/Target Hits)</h2>
+          <h2 className="panel-title">Closed Positions</h2>
           <p className="mt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
             {rows.length} closed
           </p>
@@ -95,7 +109,6 @@ export function TradeAlertsPanel() {
               {rows.map((t) => {
                 const pnlPct = computePnlPct(t);
                 const positive = (t.pnl ?? 0) >= 0;
-                const isTakeProfit = t.close_reason === "take_profit";
 
                 return (
                   <tr key={t.id} className="border-t border-border font-mono text-xs">
@@ -103,12 +116,8 @@ export function TradeAlertsPanel() {
                     <td className={`py-1.5 ${t.side === "buy" ? "text-bull" : "text-bear"}`}>
                       {t.side}
                     </td>
-                    <td
-                      className={`py-1.5 ${
-                        isTakeProfit ? "text-bull" : "text-bear"
-                      }`}
-                    >
-                      {isTakeProfit ? "target hit" : "stop hit"}
+                    <td className={`py-1.5 ${reasonTone(t.close_reason)}`}>
+                      {reasonLabel(t.close_reason)}
                     </td>
                     <td className="py-1.5 text-muted-foreground">
                       {formatPrice(Number(t.entry_price))}
