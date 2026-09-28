@@ -94,7 +94,8 @@ async function groqGenerateLesson(
 /* ───────────── Post-mortem generator ───────────── */
 
 export async function generatePostMortems(): Promise<number> {
-  const { supabaseAdmin: db } = await import("@/integrations/supabase/client.server");
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const db = supabaseAdmin as any;
 
   const { data: trades, error } = await db
     .from("trades")
@@ -184,7 +185,8 @@ export async function fetchRelevantLessons(
   const grouped = new Map<string, SymbolLesson[]>();
   if (symbols.length === 0) return grouped;
 
-  const { supabaseAdmin: db } = await import("@/integrations/supabase/client.server");
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const db = supabaseAdmin as any;
 
   // Φέρνουμε πρόσφατα lessons για τα συγκεκριμένα symbols.
   // Overfetch (2x) για να μπορούμε να κρατήσουμε ισορροπημένη ποσότητα ανά symbol.
