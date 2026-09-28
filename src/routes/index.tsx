@@ -1,20 +1,22 @@
+import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { SignalFeed } from "@/components/trading/SignalFeed";
 import { WhalePanel } from "@/components/trading/WhalePanel";
 import { IndicatorPanel } from "@/components/trading/IndicatorPanel";
 import { PredictionPanel } from "@/components/trading/PredictionPanel";
 import { CouncilPanel } from "@/components/trading/CouncilPanel";
-import { RiskPanel } from "@/components/trading/RiskPanel";
+import { LessonsPanel } from "@/components/trading/LessonsPanel";
 import { TradesPanel } from "@/components/trading/TradesPanel";
 import { TradeAlertsPanel } from "@/components/trading/TradeAlertsPanel";
 import { CronHealthPanel } from "@/components/trading/CronHealthPanel";
 import { AIRiskSummary } from "@/components/trading/AIRiskSummary";
 import { PortfolioPanel } from "@/components/trading/PortfolioPanel";
 import { getTradingStatus, runPipeline } from "@/lib/pipeline.functions";
+import { resetAllData } from "@/lib/admin.functions";
 import { getSchedule, setSchedule } from "@/lib/schedule.functions";
-import { useQueryClient } from "@tanstack/react-query";
 
 function ScheduleControl() {
   const getFn = useServerFn(getSchedule);
@@ -38,6 +40,49 @@ function ScheduleControl() {
       <option value={5}>Every 5 min</option>
       <option value={10}>Every 10 min</option>
     </select>
+  );
+}
+
+function ResetButton() {
+  const resetFn = useServerFn(resetAllData);
+  const [confirm, setConfirm] = useState(false);
+
+  const reset = useMutation({
+    mutationFn: () => resetFn({ data: undefined }),
+    onSuccess: (data) => {
+      setConfirm(false);
+      console.log("[RESET] cleared:", data);
+      setTimeout(() => window.location.reload(), 200);
+    },
+    onError: (err) => {
+      console.error("[RESET] failed", err);
+      setConfirm(false);
+    },
+  });
+
+  return (
+    <button
+      onClick={() => {
+        if (confirm) reset.mutate();
+        else setConfirm(true);
+      }}
+      onBlur={() => setConfirm(false)}
+      disabled={reset.isPending}
+      title={confirm ? "Click again to confirm — will delete ALL trades, signals, and history" : "Delete all trades and history"}
+      className={`rounded-md border px-3 py-1.5 text-xs font-semibold transition ${
+        reset.isPending
+          ? "border-border bg-muted text-muted-foreground cursor-wait"
+          : confirm
+            ? "border-destructive bg-destructive text-destructive-foreground"
+            : "border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive/20"
+      } disabled:opacity-50`}
+    >
+      {reset.isPending
+        ? "Clearing…"
+        : confirm
+          ? "Click again to confirm"
+          : "Reset all data"}
+    </button>
   );
 }
 
@@ -97,6 +142,7 @@ function CommandCenter() {
               {status?.mode ?? "paper"} mode
             </span>
             <ScheduleControl />
+            <ResetButton />
             <button
               onClick={() => run.mutate()}
               disabled={run.isPending}
@@ -125,11 +171,12 @@ function CommandCenter() {
         </div>
         <WhalePanel />
         <IndicatorPanel />
-        <RiskPanel />
-        <PortfolioPanel />
         <PredictionPanel />
         <CouncilPanel />
+        <LessonsPanel />
+        <AIRiskSummary />
         <CronHealthPanel />
+        <PortfolioPanel />
         <div className="lg:col-span-3">
           <TradesPanel />
         </div>
