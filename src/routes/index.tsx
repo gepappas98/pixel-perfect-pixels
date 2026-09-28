@@ -45,44 +45,108 @@ function ScheduleControl() {
 
 function ResetButton() {
   const resetFn = useServerFn(resetAllData);
-  const [confirm, setConfirm] = useState(false);
+  const [showDialog, setShowDialog] = useState(false);
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
   const reset = useMutation({
-    mutationFn: () => resetFn({ data: undefined }),
+    mutationFn: (pinValue: string) => resetFn({ data: { pin: pinValue } }),
     onSuccess: (data) => {
-      setConfirm(false);
+      if (!data.ok) {
+        setError(data.error ?? "Reset failed");
+        return;
+      }
+      setShowDialog(false);
+      setPin("");
+      setError(null);
       console.log("[RESET] cleared:", data);
       setTimeout(() => window.location.reload(), 200);
     },
     onError: (err) => {
-      console.error("[RESET] failed", err);
-      setConfirm(false);
+      setError((err as Error).message);
+      setPin("");
     },
   });
 
+  function closeDialog() {
+    setShowDialog(false);
+    setPin("");
+    setError(null);
+  }
+
   return (
-    <button
-      onClick={() => {
-        if (confirm) reset.mutate();
-        else setConfirm(true);
-      }}
-      onBlur={() => setConfirm(false)}
-      disabled={reset.isPending}
-      title={confirm ? "Click again to confirm — will delete ALL trades, signals, and history" : "Delete all trades and history"}
-      className={`rounded-md border px-3 py-1.5 text-xs font-semibold transition ${
-        reset.isPending
-          ? "border-border bg-muted text-muted-foreground cursor-wait"
-          : confirm
-            ? "border-destructive bg-destructive text-destructive-foreground"
-            : "border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive/20"
-      } disabled:opacity-50`}
-    >
-      {reset.isPending
-        ? "Clearing…"
-        : confirm
-          ? "Click again to confirm"
-          : "Reset all data"}
-    </button>
+    <>
+      <button
+        onClick={() => {
+          setShowDialog(true);
+          setPin("");
+          setError(null);
+        }}
+        title="Reset pipeline data — keeps trades and lessons"
+        className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-xs font-semibold text-destructive transition hover:bg-destructive/20"
+      >
+        Reset data
+      </button>
+
+      {showDialog && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={closeDialog}
+        >
+          <div
+            className="w-full max-w-sm rounded-lg border border-border bg-background p-5 shadow-lg"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="font-semibold text-foreground">Reset pipeline data</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Deletes signals, whale alerts, technicals, predictions, council verdicts and pipeline runs.
+            </p>
+            <p className="mt-1.5 text-xs text-bull">
+              ✓ Trades and council lessons are <strong>preserved</strong>.
+            </p>
+
+            <input
+              type="password"
+              inputMode="numeric"
+              autoComplete="off"
+              value={pin}
+              onChange={(e) => setPin(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && pin.length > 0 && !reset.isPending) {
+                  reset.mutate(pin);
+                }
+                if (e.key === "Escape") closeDialog();
+              }}
+              placeholder="Enter PIN"
+              autoFocus
+              disabled={reset.isPending}
+              className="mt-3 w-full rounded-md border border-border bg-surface-2 px-3 py-2 text-center font-mono text-lg tracking-widest text-foreground focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50"
+            />
+
+            {error && (
+              <p className="mt-2 text-xs text-destructive">{error}</p>
+            )}
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={closeDialog}
+                disabled={reset.isPending}
+                className="rounded-md border border-border bg-muted px-3 py-1.5 text-xs text-foreground transition hover:bg-muted/80 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => reset.mutate(pin)}
+                disabled={pin.length === 0 || reset.isPending}
+                className="rounded-md bg-destructive px-3 py-1.5 text-xs font-semibold text-destructive-foreground transition hover:opacity-90 disabled:opacity-50"
+              >
+                {reset.isPending ? "Clearing…" : "Confirm"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
