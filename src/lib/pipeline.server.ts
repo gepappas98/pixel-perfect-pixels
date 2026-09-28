@@ -1532,7 +1532,41 @@ export async function combineSignals(): Promise<number> {
   return created;
 }
 
-/* ───────────── Resolve variant signal outcomes ───────────── */
+/* ───────────── Resolve variant signal outcomes (4h candle-based) ───────────── */
+
+interface VariantCandle {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  closeTimeMs: number;
+}
+
+/** Fetch last N 4h candles for a symbol. Returns [] on error. */
+async function fetch4hCandles(
+  coin: string,
+  limit = 50,
+): Promise<VariantCandle[]> {
+  const symbol = binanceSymbol(coin);
+  try {
+    const res = await fetchWithTimeout(
+      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=4h&limit=${limit}`,
+    );
+    if (!res.ok) return [];
+    const raw = (await res.json()) as unknown[][];
+    if (!Array.isArray(raw)) return [];
+    return raw.map((r) => ({
+      open: parseFloat(String(r[1])),
+      high: parseFloat(String(r[2])),
+      low: parseFloat(String(r[3])),
+      close: parseFloat(String(r[4])),
+      closeTimeMs: Number(r[6]),
+    }));
+  } catch (e) {
+    console.error(`[VARIANTS] klines fetch failed for ${symbol}:`, e);
+    return [];
+  }
+}
 
 async function resolveVariantOutcomes(): Promise<number> {
   const db = await admin();
@@ -1545,7 +1579,8 @@ async function resolveVariantOutcomes(): Promise<number> {
     .select("id, symbol, recommendation, entry_price, created_at")
     .eq("outcome", "open")
     .not("entry_price", "is", null)
-    .gte("created_at", cutoff);
+    .gte("created_at", cutoff)
+    .order("created_at", { ascending: true });
 
   if (error) {
     console.error("[VARIANTS] resolve fetch failed:", error);
@@ -1553,17 +1588,16 @@ async function resolveVariantOutcomes(): Promise<number> {
   }
   if (!openVariants || openVariants.length === 0) return 0;
 
-  let prices: Map<string, number>;
-  try {
-    prices = await allBinancePrices();
-  } catch (e) {
-    console.error("[VARIANTS] resolve price fetch failed:", e);
-    return 0;
-  }
-
-  const nowMs = Date.now();
-  let resolved = 0;
-
+  // Group by symbol to minimize klines API calls
+  const bySymbol = new Map<
+    string,
+    {
+      id: string;
+      recommendation: string | null;
+      entry_price: number | null;
+      created_at: string;
+    }[]
+  >();
   for (const v of openVariants as {
     id: string;
     symbol: string;
@@ -1571,66 +1605,114 @@ async function resolveVariantOutcomes(): Promise<number> {
     entry_price: number | null;
     created_at: string;
   }[]) {
-    const binSym = binanceSymbol(v.symbol);
-    const price = prices.get(binSym);
-    if (price == null) continue;
-
-    const entry = Number(v.entry_price);
-    if (!Number.isFinite(entry) || entry <= 0) continue;
-
-    const rec = String(v.recommendation ?? "").toLowerCase();
-    if (rec !== "buy" && rec !== "sell") continue;
-
-    const ageHours = (nowMs - new Date(v.created_at).getTime()) / 3_600_000;
-
-    let outcome: "win" | "loss" | "expired" | null = null;
-    let exitPrice: number | null = null;
-
-    if (rec === "buy") {
-      if (price >= entry * (1 + VARIANT_TP_PCT)) {
-        outcome = "win";
-        exitPrice = entry * (1 + VARIANT_TP_PCT);
-      } else if (price <= entry * (1 - VARIANT_SL_PCT)) {
-        outcome = "loss";
-        exitPrice = entry * (1 - VARIANT_SL_PCT);
-      }
-    } else if (rec === "sell") {
-      if (price <= entry * (1 - VARIANT_TP_PCT)) {
-        outcome = "win";
-        exitPrice = entry * (1 - VARIANT_TP_PCT);
-      } else if (price >= entry * (1 + VARIANT_SL_PCT)) {
-        outcome = "loss";
-        exitPrice = entry * (1 + VARIANT_SL_PCT);
-      }
-    }
-
-    if (!outcome && ageHours >= VARIANT_MAX_HOURS) {
-      outcome = "expired";
-      exitPrice = price;
-    }
-
-    if (!outcome || exitPrice == null) continue;
-
-    const rawPnlPct = ((exitPrice - entry) / entry) * 100;
-    const pnlPct = rec === "buy" ? rawPnlPct : -rawPnlPct;
-
-    const { error: updateErr } = await db
-      .from("strategy_variant_signals")
-      .update({
-        outcome,
-        exit_price: exitPrice,
-        pnl_pct: pnlPct,
-        resolved_at: new Date().toISOString(),
-      })
-      .eq("id", v.id);
-
-    if (updateErr) {
-      console.error(`[VARIANTS] update failed for ${v.id}:`, updateErr);
-      continue;
-    }
-    resolved += 1;
+    const list = bySymbol.get(v.symbol) ?? [];
+    list.push({
+      id: v.id,
+      recommendation: v.recommendation,
+      entry_price: v.entry_price,
+      created_at: v.created_at,
+    });
+    bySymbol.set(v.symbol, list);
   }
 
+  const nowMs = Date.now();
+  let resolved = 0;
+
+  for (const [symbol, variants] of bySymbol) {
+    const candles = await fetch4hCandles(symbol, 50);
+    if (candles.length === 0) continue;
+
+    for (const v of variants) {
+      const entry = Number(v.entry_price);
+      if (!Number.isFinite(entry) || entry <= 0) continue;
+
+      const rec = String(v.recommendation ?? "").toLowerCase();
+      if (rec !== "buy" && rec !== "sell") continue;
+
+      const entryMs = new Date(v.created_at).getTime();
+
+      // TP/SL prices based on direction
+      const tpPrice =
+        rec === "buy"
+          ? entry * (1 + VARIANT_TP_PCT)
+          : entry * (1 - VARIANT_TP_PCT);
+      const slPrice =
+        rec === "buy"
+          ? entry * (1 - VARIANT_SL_PCT)
+          : entry * (1 + VARIANT_SL_PCT);
+
+      // Only consider candles that CLOSED after our entry time.
+      // This avoids intrabar contamination from candles that started
+      // before the signal existed.
+      const relevantCandles = candles.filter((c) => c.closeTimeMs > entryMs);
+
+      let outcome: "win" | "loss" | "expired" | null = null;
+      let exitPrice: number | null = null;
+
+      for (const c of relevantCandles) {
+        let hitSL = false;
+        let hitTP = false;
+
+        if (rec === "buy") {
+          hitSL = c.low <= slPrice;
+          hitTP = c.high >= tpPrice;
+        } else {
+          hitSL = c.high >= slPrice;
+          hitTP = c.low <= tpPrice;
+        }
+
+        // If both TP and SL were within the same candle, assume SL first
+        // (conservative backtesting convention).
+        if (hitSL) {
+          outcome = "loss";
+          exitPrice = slPrice;
+          break;
+        }
+        if (hitTP) {
+          outcome = "win";
+          exitPrice = tpPrice;
+          break;
+        }
+      }
+
+      // Expiry: if no TP/SL hit and age >= 7 days
+      if (!outcome) {
+        const ageHours = (nowMs - entryMs) / 3_600_000;
+        if (ageHours >= VARIANT_MAX_HOURS) {
+          const lastCandle = relevantCandles[relevantCandles.length - 1];
+          if (lastCandle) {
+            outcome = "expired";
+            exitPrice = lastCandle.close;
+          }
+        }
+      }
+
+      if (!outcome || exitPrice == null) continue;
+
+      const rawPnlPct = ((exitPrice - entry) / entry) * 100;
+      const pnlPct = rec === "buy" ? rawPnlPct : -rawPnlPct;
+
+      const { error: updateErr } = await db
+        .from("strategy_variant_signals")
+        .update({
+          outcome,
+          exit_price: exitPrice,
+          pnl_pct: pnlPct,
+          resolved_at: new Date().toISOString(),
+        })
+        .eq("id", v.id);
+
+      if (updateErr) {
+        console.error(`[VARIANTS] update failed for ${v.id}:`, updateErr);
+        continue;
+      }
+      resolved += 1;
+    }
+  }
+
+  if (resolved > 0) {
+    console.log(`[VARIANTS] Resolved ${resolved} outcomes (candle-based)`);
+  }
   return resolved;
 }
 
@@ -2186,9 +2268,7 @@ export async function runFullPipeline() {
     step = "resolve-variants";
     const resolvedVariants = await resolveVariantOutcomes();
     if (resolvedVariants > 0) {
-      console.log(
-        `[VARIANTS] Resolved ${resolvedVariants} variant outcomes`,
-      );
+      console.log(`[VARIANTS] Resolved ${resolvedVariants} variant outcomes`);
     }
 
     step = "trades";
