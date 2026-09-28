@@ -116,6 +116,11 @@ const COUNCIL_MAX_AGE_MS = 30 * 60 * 1000;
 
 const STRATEGY_CACHE_TTL_MS = 60_000;
 
+// Variant outcome tracking
+const VARIANT_TP_PCT = 0.04;
+const VARIANT_SL_PCT = 0.03;
+const VARIANT_MAX_HOURS = 168;
+
 function isFresh(value: unknown, maxAgeMs: number, now = Date.now()): boolean {
   const ts = new Date(String(value ?? "")).getTime();
   return Number.isFinite(ts) && now - ts >= 0 && now - ts <= maxAgeMs;
@@ -1382,7 +1387,7 @@ export async function combineSignals(): Promise<number> {
   let created = 0;
   const nowIso = new Date().toISOString();
 
-  // ── Shadow variant buffer (observability only) ──
+  // Shadow variant buffer (observability only)
   const variantRows: Record<string, unknown>[] = [];
 
   for (const symbol of symbols) {
@@ -1429,7 +1434,11 @@ export async function combineSignals(): Promise<number> {
 
     const result = ruleBased(whale, mtf, prediction, council, weights);
 
-    // ── Shadow evaluation across all presets ──
+    // ── Shadow evaluation across all presets (buy/sell only) ──
+    const mtfPrice =
+      typeof mtfRaw.primary?.["price"] === "number"
+        ? (mtfRaw.primary["price"] as number)
+        : null;
     for (const [presetName, presetWeights] of Object.entries(
       STRATEGY_PRESETS,
     )) {
@@ -1437,7 +1446,12 @@ export async function combineSignals(): Promise<number> {
         ...presetWeights,
         updated_at: nowIso,
       });
-      if (altResult.recommendation === "hold") continue;
+      if (
+        altResult.recommendation !== "buy" &&
+        altResult.recommendation !== "sell"
+      )
+        continue;
+      if (mtfPrice == null || mtfPrice <= 0) continue;
       variantRows.push({
         strategy_name: presetName,
         symbol,
@@ -1445,6 +1459,8 @@ export async function combineSignals(): Promise<number> {
         recommendation: altResult.recommendation,
         reasoning: altResult.reasoning,
         score: altResult.score,
+        entry_price: mtfPrice,
+        outcome: "open",
         created_at: nowIso,
       });
     }
@@ -1514,6 +1530,108 @@ export async function combineSignals(): Promise<number> {
   }
 
   return created;
+}
+
+/* ───────────── Resolve variant signal outcomes ───────────── */
+
+async function resolveVariantOutcomes(): Promise<number> {
+  const db = await admin();
+  const cutoff = new Date(
+    Date.now() - VARIANT_MAX_HOURS * 60 * 60 * 1000,
+  ).toISOString();
+
+  const { data: openVariants, error } = await db
+    .from("strategy_variant_signals")
+    .select("id, symbol, recommendation, entry_price, created_at")
+    .eq("outcome", "open")
+    .not("entry_price", "is", null)
+    .gte("created_at", cutoff);
+
+  if (error) {
+    console.error("[VARIANTS] resolve fetch failed:", error);
+    return 0;
+  }
+  if (!openVariants || openVariants.length === 0) return 0;
+
+  let prices: Map<string, number>;
+  try {
+    prices = await allBinancePrices();
+  } catch (e) {
+    console.error("[VARIANTS] resolve price fetch failed:", e);
+    return 0;
+  }
+
+  const nowMs = Date.now();
+  let resolved = 0;
+
+  for (const v of openVariants as {
+    id: string;
+    symbol: string;
+    recommendation: string | null;
+    entry_price: number | null;
+    created_at: string;
+  }[]) {
+    const binSym = binanceSymbol(v.symbol);
+    const price = prices.get(binSym);
+    if (price == null) continue;
+
+    const entry = Number(v.entry_price);
+    if (!Number.isFinite(entry) || entry <= 0) continue;
+
+    const rec = String(v.recommendation ?? "").toLowerCase();
+    if (rec !== "buy" && rec !== "sell") continue;
+
+    const ageHours = (nowMs - new Date(v.created_at).getTime()) / 3_600_000;
+
+    let outcome: "win" | "loss" | "expired" | null = null;
+    let exitPrice: number | null = null;
+
+    if (rec === "buy") {
+      if (price >= entry * (1 + VARIANT_TP_PCT)) {
+        outcome = "win";
+        exitPrice = entry * (1 + VARIANT_TP_PCT);
+      } else if (price <= entry * (1 - VARIANT_SL_PCT)) {
+        outcome = "loss";
+        exitPrice = entry * (1 - VARIANT_SL_PCT);
+      }
+    } else if (rec === "sell") {
+      if (price <= entry * (1 - VARIANT_TP_PCT)) {
+        outcome = "win";
+        exitPrice = entry * (1 - VARIANT_TP_PCT);
+      } else if (price >= entry * (1 + VARIANT_SL_PCT)) {
+        outcome = "loss";
+        exitPrice = entry * (1 + VARIANT_SL_PCT);
+      }
+    }
+
+    if (!outcome && ageHours >= VARIANT_MAX_HOURS) {
+      outcome = "expired";
+      exitPrice = price;
+    }
+
+    if (!outcome || exitPrice == null) continue;
+
+    const rawPnlPct = ((exitPrice - entry) / entry) * 100;
+    const pnlPct = rec === "buy" ? rawPnlPct : -rawPnlPct;
+
+    const { error: updateErr } = await db
+      .from("strategy_variant_signals")
+      .update({
+        outcome,
+        exit_price: exitPrice,
+        pnl_pct: pnlPct,
+        resolved_at: new Date().toISOString(),
+      })
+      .eq("id", v.id);
+
+    if (updateErr) {
+      console.error(`[VARIANTS] update failed for ${v.id}:`, updateErr);
+      continue;
+    }
+    resolved += 1;
+  }
+
+  return resolved;
 }
 
 /* ───────────── Trade executor ───────────── */
@@ -2065,6 +2183,14 @@ export async function runFullPipeline() {
     step = "signals";
     const signals = await combineSignals();
 
+    step = "resolve-variants";
+    const resolvedVariants = await resolveVariantOutcomes();
+    if (resolvedVariants > 0) {
+      console.log(
+        `[VARIANTS] Resolved ${resolvedVariants} variant outcomes`,
+      );
+    }
+
     step = "trades";
     const trades = await executeTrades();
     const mode = tradingMode();
@@ -2091,6 +2217,7 @@ export async function runFullPipeline() {
       council,
       signals,
       trades,
+      variants_resolved: resolvedVariants,
       mode,
       error_message: null,
       ai_status: learning.status,
