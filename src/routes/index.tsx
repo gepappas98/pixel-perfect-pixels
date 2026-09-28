@@ -3,17 +3,21 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
+
 import { SignalFeed } from "@/components/trading/SignalFeed";
 import { WhalePanel } from "@/components/trading/WhalePanel";
 import { IndicatorPanel } from "@/components/trading/IndicatorPanel";
 import { PredictionPanel } from "@/components/trading/PredictionPanel";
 import { CouncilPanel } from "@/components/trading/CouncilPanel";
+import { RegimePanel } from "@/components/trading/RegimePanel";
+import { StrategyPanel } from "@/components/trading/StrategyPanel";
 import { LessonsPanel } from "@/components/trading/LessonsPanel";
 import { TradesPanel } from "@/components/trading/TradesPanel";
 import { TradeAlertsPanel } from "@/components/trading/TradeAlertsPanel";
 import { CronHealthPanel } from "@/components/trading/CronHealthPanel";
 import { AIRiskSummary } from "@/components/trading/AIRiskSummary";
 import { PortfolioPanel } from "@/components/trading/PortfolioPanel";
+
 import { getTradingStatus, runPipeline } from "@/lib/pipeline.functions";
 import { resetAllData } from "@/lib/admin.functions";
 import { getSchedule, setSchedule } from "@/lib/schedule.functions";
@@ -73,9 +77,7 @@ function PinDialog({
       >
         <h3 className="font-semibold text-foreground">{title}</h3>
         <p className="mt-1 text-xs text-muted-foreground">{description}</p>
-        {warning && (
-          <p className="mt-1.5 text-xs text-bull">{warning}</p>
-        )}
+        {warning && <p className="mt-1.5 text-xs text-bull">{warning}</p>}
 
         <input
           type="password"
@@ -310,20 +312,43 @@ function CommandCenter() {
       </header>
 
       <main className="grid grid-cols-1 gap-4 p-5 sm:p-8 lg:grid-cols-3">
+        {/* ── Top row: Signal Feed (2 cols) ── */}
         <div className="lg:col-span-2 lg:row-span-2">
           <SignalFeed />
         </div>
+
+        {/* ── Right column: Whale + Technicals ── */}
         <WhalePanel />
         <IndicatorPanel />
+
+        {/* ── Predictions + Council ── */}
         <PredictionPanel />
         <CouncilPanel />
+
+        {/* ── Regime: what's happening right now ── */}
+        <RegimePanel />
+
+        {/* ── Strategy: user-tunable weights ── */}
+        <StrategyPanel />
+
+        {/* ── Learning: post-mortems ── */}
         <LessonsPanel />
+
+        {/* ── AI: risk summary ── */}
         <AIRiskSummary />
+
+        {/* ── Health monitoring ── */}
         <CronHealthPanel />
+
+        {/* ── Portfolio aggregates ── */}
         <PortfolioPanel />
+
+        {/* ── Full-width: Positions ── */}
         <div className="lg:col-span-3">
           <TradesPanel />
         </div>
+
+        {/* ── Full-width: Closed positions ── */}
         <div className="lg:col-span-3">
           <TradeAlertsPanel />
         </div>
