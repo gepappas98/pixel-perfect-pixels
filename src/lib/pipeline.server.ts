@@ -182,7 +182,6 @@ async function fetchStrategy(): Promise<StrategyConfig> {
   }
 }
 
-/** Clear the cache after auto-switch so the new weights apply immediately. */
 export function invalidateStrategyCache() {
   strategyCache = null;
 }
@@ -1078,7 +1077,6 @@ export async function collectCouncilSignals(): Promise<number> {
     if (!whale && !mtfRaw.primary && !prediction) continue;
     perSymbol.set(symbol, { whale, mtf, mtfRaw, prediction });
 
-    // Attach rsi4h for the AI qualifier — only when defined (exactOptionalPropertyTypes)
     const rsi4hRaw = mtfRaw.primary?.["rsi"];
     if (typeof rsi4hRaw === "number") {
       (mtf as unknown as Record<string, unknown>)["rsi4h"] = rsi4hRaw;
@@ -1663,8 +1661,6 @@ async function closeTriggeredTrades(): Promise<number> {
   return closed;
 }
 
-/* ───────────── Signal rotation ───────────── */
-
 interface OpenTradeForRotation {
   id: string;
   symbol: string;
@@ -1771,8 +1767,6 @@ async function attemptRotation(
   );
   return weakest.symbol;
 }
-
-/* ───────────── Execute trades ───────────── */
 
 export async function executeTrades(): Promise<number> {
   const db = await admin();
@@ -2010,7 +2004,6 @@ export async function runFullPipeline() {
     step = "council";
     const council = await collectCouncilSignals();
 
-    // ── Auto-adaptive strategy ──
     step = "auto-strategy";
     try {
       const autoSwitch = await maybeAutoSwitchStrategy();
@@ -2034,8 +2027,15 @@ export async function runFullPipeline() {
     const mode = tradingMode();
 
     step = "post-mortem";
-    const lessons = await generatePostMortems();
-    if (lessons > 0) console.log(`[LESSON] Generated ${lessons} new lessons`);
+    const learning = await generatePostMortems();
+    if (learning.generated > 0) {
+      console.log(`[LESSON] Generated ${learning.generated} new lessons`);
+    }
+    if (learning.status !== "ok") {
+      console.warn(
+        `[LESSON] AI status: ${learning.status} — ${learning.error ?? "unknown"}`,
+      );
+    }
 
     const completedAt = new Date();
     const summary = {
@@ -2050,6 +2050,9 @@ export async function runFullPipeline() {
       trades,
       mode,
       error_message: null,
+      ai_status: learning.status,
+      ai_error: learning.error,
+      ai_lessons_generated: learning.generated,
     };
     if (runId) {
       const { error: updateError } = await db
