@@ -219,6 +219,9 @@ export type Database = {
       }
       pipeline_runs: {
         Row: {
+          ai_error: string | null
+          ai_lessons_generated: number | null
+          ai_status: string | null
           completed_at: string | null
           council: number | null
           duration_ms: number | null
@@ -236,6 +239,9 @@ export type Database = {
           whales: number | null
         }
         Insert: {
+          ai_error?: string | null
+          ai_lessons_generated?: number | null
+          ai_status?: string | null
           completed_at?: string | null
           council?: number | null
           duration_ms?: number | null
@@ -253,6 +259,9 @@ export type Database = {
           whales?: number | null
         }
         Update: {
+          ai_error?: string | null
+          ai_lessons_generated?: number | null
+          ai_status?: string | null
           completed_at?: string | null
           council?: number | null
           duration_ms?: number | null
