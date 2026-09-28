@@ -613,6 +613,19 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      cleanup_old_pipeline_data: {
+        Args: never
+        Returns: {
+          deleted_composite_signals: number
+          deleted_council_signals: number
+          deleted_indicator_snapshots: number
+          deleted_pipeline_runs: number
+          deleted_prediction_snapshots: number
+          deleted_trade_alerts: number
+          deleted_variant_signals: number
+          deleted_whale_alerts: number
+        }[]
+      }
       get_portfolio_summary: {
         Args: never
         Returns: {
