@@ -1,6 +1,7 @@
 import { createHmac } from "crypto";
 import { canOpenTrade, RISK_CONFIG } from "./risk.engine";
 import { computeFeeAwarePnl, TRADING_FEE_RATE } from "./fees";
+import { fetchRelevantLessons, generatePostMortems } from "./council-learning";
 
 /* ───────────── Concurrency helper (pMap) ───────────── */
 
@@ -382,7 +383,12 @@ export async function collectPredictions(): Promise<number> {
       no = prices[1] ? parseFloat(prices[1]) : null;
     } catch { /* unparsable */ }
     if (yes == null || !Number.isFinite(yes) || yes < 0 || yes > 1) continue;
-    rows.push({ market_slug: m.slug, question, related_symbol: symbol, yes_price: yes, no_price: no, volume_24h: m.volume24hr ?? null, created_at: new Date().toISOString(), raw: m as unknown as Record<string, unknown> });
+    rows.push({
+      market_slug: m.slug, question, related_symbol: symbol,
+      yes_price: yes, no_price: no, volume_24h: m.volume24hr ?? null,
+      created_at: new Date().toISOString(),
+      raw: m as unknown as Record<string, unknown>,
+    });
   }
   if (rows.length === 0) return 0;
   const { data, error } = await db.from("prediction_snapshots").upsert(rows as never, { onConflict: "market_slug" }).select("id");
@@ -405,8 +411,6 @@ function predictionDirection(prediction: Row): "bullish" | "bearish" | "neutral"
   const isBullishQ = BULLISH_QUESTION.test(q);
   const isBearishQ = BEARISH_QUESTION.test(q);
   if (!isBullishQ && !isBearishQ) return "neutral";
-  // "upward probability" = P(price moves up)
-  // bullish question: up = yes. bearish question: up = 1 - yes.
   const up = isBullishQ ? yes : 1 - yes;
   if (up > 0.6) return "bullish";
   if (up < 0.4) return "bearish";
@@ -429,28 +433,17 @@ function councilEvaluation(whale: Row, indicator: Row, prediction: Row) {
   if (flow === "accumulation") { votes.push("BUY"); reasons.push("whale tracker sees accumulation"); }
   else if (flow === "distribution") { votes.push("SELL"); reasons.push("whale tracker sees distribution"); }
   else { votes.push("HOLD"); reasons.push("whale tracker has no directional flow"); }
-  // Bug #1 fix: use predictionDirection αντί για raw yes_price
   const dir = predictionDirection(prediction);
-  if (dir === "bullish") {
-    votes.push("BUY");
-    reasons.push("sentiment leans bullish");
-  } else if (dir === "bearish") {
-    votes.push("SELL");
-    reasons.push("sentiment leans bearish");
-  } else {
-    votes.push("HOLD");
-    reasons.push("sentiment is inconclusive");
-  }
+  if (dir === "bullish") { votes.push("BUY"); reasons.push("sentiment leans bullish"); }
+  else if (dir === "bearish") { votes.push("SELL"); reasons.push("sentiment leans bearish"); }
+  else { votes.push("HOLD"); reasons.push("sentiment is inconclusive"); }
   const counts = votes.reduce<Record<string, number>>((all, vote) => { all[vote] = (all[vote] ?? 0) + 1; return all; }, {});
   const ordered = (Object.entries(counts) as [CouncilVerdict, number][]).sort((a, b) => b[1] - a[1]);
   const [topVote, topCount] = ordered[0] ?? ["HOLD", 0];
   const rawConviction = Math.round((topCount / votes.length) * 100);
   const verdict: CouncilVerdict = topCount === 1 ? "AVOID" : topVote;
-  // HOLD = no directional edge → conviction 0
   const conviction = verdict === "HOLD" ? 0 : rawConviction;
 
-  /* Bug #4 fix: το "consensus" στο reflection πρέπει να δείχνει
-   * την πραγματική πλειοψηφία, όχι το directional conviction. */
   const reflection = verdict === "HOLD"
     ? `HOLD (no directional edge): ${reasons.join("; ")}.`
     : `${verdict} with ${conviction}% conviction: ${reasons.join("; ")}.`;
@@ -494,15 +487,24 @@ async function groqBatchCouncil(
   if (candidates.length === 0) return result;
   const apiKey = process.env["GROQ_API_KEY"];
   if (!apiKey) { console.error("[GROQ] GROQ_API_KEY not set — falling back to deterministic council"); return result; }
-  const payload = candidates.map((c) => ({
-    symbol: c.symbol,
-    whale_direction: c.whale?.["direction"] ?? "none",
-    whale_usd: Math.round(c.whaleUsd),
-    rsi: typeof c.indicator?.["rsi"] === "number" ? Math.round(c.indicator["rsi"] as number) : null,
-    technical_signal: c.indicator?.["signal"] ?? "unknown",
-    price: c.indicator?.["price"] ?? null,
-    prediction_direction: predictionDirection(c.prediction),
-  }));
+
+  // ── RAG: ανάκτηση προηγούμενων μαθημάτων ανά symbol ──
+  const lessonsMap = await fetchRelevantLessons(candidates.map((c) => c.symbol), 5);
+
+  const payload = candidates.map((c) => {
+    const lessons = lessonsMap.get(c.symbol) ?? [];
+    return {
+      symbol: c.symbol,
+      whale_direction: c.whale?.["direction"] ?? "none",
+      whale_usd: Math.round(c.whaleUsd),
+      rsi: typeof c.indicator?.["rsi"] === "number" ? Math.round(c.indicator["rsi"] as number) : null,
+      technical_signal: c.indicator?.["signal"] ?? "unknown",
+      price: c.indicator?.["price"] ?? null,
+      prediction_direction: predictionDirection(c.prediction),
+      past_lessons: lessons.map((l) => `[${l.outcome}] ${l.lesson}`),
+    };
+  });
+
   const systemPrompt = [
     "You are a professional crypto trading council AI.",
     "You are a confirmation layer, not the sole decision maker.",
@@ -513,7 +515,10 @@ async function groqBatchCouncil(
     "AVOID = conflicting signals or high uncertainty.",
     "HOLD = no clear directional edge.",
     "BUY or SELL only when evidence is reasonably aligned.",
+    // ── Learning layer ──
+    "If past_lessons are provided for a symbol, weigh them as real experience: a lesson learned from a [loss] should reduce confidence in repeating the same mistake; a [win] lesson can increase confidence in the same pattern.",
   ].join("\n");
+
   try {
     const res = await fetch(GROQ_URL, {
       method: "POST",
@@ -665,7 +670,6 @@ function ruleBased(whale: Row, indicator: Row, prediction: Row, council: Row) {
   if (indicator?.["signal"] === "bullish") { score += 1; reasons.push("bullish technicals (RSI/MACD)"); }
   else if (indicator?.["signal"] === "bearish") { score -= 1; reasons.push("bearish technicals (RSI/MACD)"); }
 
-  // Bug #1 fix: use predictionDirection αντί για raw yes_price
   const predDir = predictionDirection(prediction);
   if (predDir === "bullish") { score += 0.5; reasons.push("prediction market bullish"); }
   else if (predDir === "bearish") { score -= 0.5; reasons.push("prediction market bearish"); }
@@ -713,7 +717,6 @@ function signalFingerprint(
     normalize(whale?.["buy_usd"]),
     normalize(whale?.["sell_usd"]),
     normalize(whale?.["usd_value"]),
-    // ⚠️ ΔΕΝ βάζουμε created_at — είναι volatile
     round2(indicator?.["rsi"]),
     round2(indicator?.["macd"]),
     round2(indicator?.["macd_signal"]),
@@ -722,7 +725,6 @@ function signalFingerprint(
     normalize(prediction?.["market_slug"]),
     normalize(prediction?.["yes_price"]),
     normalize(prediction?.["no_price"]),
-    // ⚠️ ΔΕΝ βάζουμε source_created_at — είναι volatile
     normalize(council?.["final_verdict"]),
     normalize(council?.["conviction"]),
     result.recommendation,
@@ -807,8 +809,6 @@ export async function combineSignals(): Promise<number> {
     }
 
     const fingerprint = signalFingerprint(symbol, whale, indicator, prediction, council, result);
-    // Bug #2 fix: ignoreDuplicates: false → UPDATE των υπαρχόντων (refresh created_at).
-    // Έτσι αποφεύγουμε τα duplicates ΕΝΩ κρατάμε το signal "φρέσκο" στο UI.
     const { data, error } = await db
       .from("composite_signals")
       .upsert({
@@ -863,7 +863,6 @@ async function placeLiveOrder(coin: string, side: "buy" | "sell", quantity: numb
 
 async function closeTriggeredTrades(): Promise<number> {
   const db = await admin();
-  // Bug #3 fix: περιλαμβάνουμε και live trades (πριν ήταν μόνο paper).
   const { data: openTrades, error } = await db
     .from("trades")
     .select("id, symbol, side, quantity, entry_price, stop_loss, take_profit, mode")
@@ -888,14 +887,13 @@ async function closeTriggeredTrades(): Promise<number> {
     const hitTakeProfit = trade.take_profit != null && (trade.side === "buy" ? price >= trade.take_profit : price <= trade.take_profit);
     if (!hitStopLoss && !hitTakeProfit) continue;
 
-    // Live: place an opposite market order on Binance to actually close.
     if (trade.mode === "live") {
       const opposite: "buy" | "sell" = trade.side === "buy" ? "sell" : "buy";
       try {
         await placeLiveOrder(trade.symbol, opposite, Number(trade.quantity));
       } catch (e) {
         console.error(`[LIVE] failed to close ${trade.symbol} ${opposite}:`, e);
-        continue; // don't mark closed if exchange order failed
+        continue;
       }
     }
 
@@ -946,7 +944,6 @@ export async function executeTrades(): Promise<number> {
   const cooldownSymbols = new Set(((recentlyClosedRes.data ?? []) as { symbol: string }[]).map((t) => t.symbol));
   if (openSymbols.size >= MAX_OPEN_TRADES) return 0;
 
-  // Bug #5 fix: batch fetch ΟΛΩΝ των prices upfront (1 request αντί N).
   let prices: Map<string, number>;
   try { prices = await allBinancePrices(); }
   catch (e) { console.error("batch price fetch failed in executeTrades", e); return 0; }
@@ -973,16 +970,17 @@ export async function executeTrades(): Promise<number> {
     const side = signal.recommendation as "buy" | "sell";
     const stopLoss = side === "buy" ? price * (1 - STOP_LOSS_PCT) : price * (1 + STOP_LOSS_PCT);
     const takeProfit = side === "buy" ? price * (1 + TAKE_PROFIT_PCT) : price * (1 - TAKE_PROFIT_PCT);
+
     if (signal.created_at && !isFresh(signal.created_at, 15 * 60 * 1000)) {
       console.log(`[ENTRY_REJECTED] ${signal.symbol}: composite signal is stale`);
       continue;
     }
+
     const risk = await canOpenTrade(db as any, { symbol: signal.symbol, side, entryPrice: price, stopLoss, currentPrices: prices });
     if (!risk.allowed) {
       console.log(`[RISK_REJECTED] ${signal.symbol} ${side}: ${risk.reason}`);
       continue;
     }
-    // Bug #6 fix: validate quantity πριν το insert.
     if (!Number.isFinite(risk.quantity) || risk.quantity <= 0) {
       console.log(`[RISK_INVALID] ${signal.symbol}: quantity=${risk.quantity}`);
       continue;
@@ -1019,7 +1017,7 @@ export async function executeTrades(): Promise<number> {
   return opened;
 }
 
-/* ───────────── Full pipeline with step tracking ───────────── */
+/* ───────────── Full pipeline with step tracking + learning ───────────── */
 
 export async function runFullPipeline() {
   const db = await admin();
@@ -1064,6 +1062,11 @@ export async function runFullPipeline() {
     step = "trades";
     const trades = await executeTrades();
     const mode = tradingMode();
+
+    // ── Post-mortem: learning από κλειστά trades ──
+    step = "post-mortem";
+    const lessons = await generatePostMortems();
+    if (lessons > 0) console.log(`[LESSON] Generated ${lessons} new lessons`);
 
     const completedAt = new Date();
     const summary = {
