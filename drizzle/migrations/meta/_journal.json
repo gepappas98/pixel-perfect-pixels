@@ -57,6 +57,13 @@
       "when": 1790578536683,
       "tag": "0007_unschedule_legacy_trade_monitor",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790581472946,
+      "tag": "0008_council_learning",
+      "breakpoints": true
     }
   ]
 }
