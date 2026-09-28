@@ -1,10 +1,8 @@
 /* ───────────── AI Council Learning ─────────────
  * Post-mortem analysis κλειστών trades + retrieval προηγούμενων μαθημάτων.
- * Δεν απαιτεί embeddings — χρησιμοποιεί symbol-based retrieval.
  *
- * NOTE: Το μοντέλο openai/gpt-oss-20b είναι reasoning model — ξοδεύει
- * tokens σε internal reasoning πριν γράψει το content. Γι' αυτό το
- * max_tokens πρέπει να είναι ≥ 500 (80 ήταν πολύ λίγο → empty content). */
+ * NOTE: Το openai/gpt-oss-20b είναι reasoning model — ξοδεύει tokens σε
+ * internal reasoning. max_tokens πρέπει να είναι ≥ 500. */
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const LESSON_MODEL = process.env["GROQ_MODEL"] ?? "openai/gpt-oss-20b";
@@ -26,15 +24,25 @@ interface TradeForPostMortem {
   composite_signal_id: string | null;
 }
 
+export interface LearningResult {
+  generated: number;
+  attempted: number;
+  status: "ok" | "degraded_fallback" | "failed";
+  error: string | null;
+}
+
 /* ───────────── Groq: generate lesson ───────────── */
 
 async function groqGenerateLesson(
   trade: TradeForPostMortem,
   originalReasoning: string | null,
   originalVerdict: string | null,
-): Promise<{ lesson: string; outcome: "win" | "loss" | "breakeven" } | null> {
+): Promise<
+  | { lesson: string; outcome: "win" | "loss" | "breakeven" }
+  | { error: string }
+> {
   const apiKey = process.env["GROQ_API_KEY"];
-  if (!apiKey) return null;
+  if (!apiKey) return { error: "GROQ_API_KEY not set" };
 
   const outcome: "win" | "loss" | "breakeven" =
     trade.pnl > 0 ? "win" : trade.pnl < 0 ? "loss" : "breakeven";
@@ -80,7 +88,7 @@ async function groqGenerateLesson(
 
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`Groq HTTP ${res.status}: ${body.slice(0, 200)}`);
+      return { error: `HTTP ${res.status}: ${body.slice(0, 150)}` };
     }
 
     const data = (await res.json()) as {
@@ -88,10 +96,7 @@ async function groqGenerateLesson(
     };
     const content = data.choices?.[0]?.message?.content?.trim();
     if (!content) {
-      console.warn(
-        `[LESSON] Groq returned empty content for ${trade.symbol} — likely max_tokens too low`,
-      );
-      return null;
+      return { error: "Empty content (likely max_tokens too low)" };
     }
 
     const clean = content
@@ -100,14 +105,13 @@ async function groqGenerateLesson(
       .trim();
     return { lesson: clean, outcome };
   } catch (e) {
-    console.error(`[LESSON] Groq failed for ${trade.symbol}:`, e);
-    return null;
+    return { error: e instanceof Error ? e.message : String(e) };
   }
 }
 
 /* ───────────── Post-mortem generator ───────────── */
 
-export async function generatePostMortems(): Promise<number> {
+export async function generatePostMortems(): Promise<LearningResult> {
   const { supabaseAdmin: db } = await import(
     "@/integrations/supabase/client.server"
   );
@@ -124,13 +128,22 @@ export async function generatePostMortems(): Promise<number> {
 
   if (error) {
     console.error("[LESSON] failed to fetch closed trades:", error);
-    return 0;
+    return {
+      generated: 0,
+      attempted: 0,
+      status: "failed",
+      error: `fetch: ${error.message}`,
+    };
   }
-  if (!trades || trades.length === 0) return 0;
+  if (!trades || trades.length === 0) {
+    return { generated: 0, attempted: 0, status: "ok", error: null };
+  }
 
+  const tradeList = trades as TradeForPostMortem[];
   let generated = 0;
+  let lastError: string | null = null;
 
-  for (const trade of trades as TradeForPostMortem[]) {
+  for (const trade of tradeList) {
     let originalReasoning: string | null = null;
     let originalVerdict: string | null = null;
 
@@ -153,9 +166,11 @@ export async function generatePostMortems(): Promise<number> {
       originalReasoning,
       originalVerdict,
     );
-    if (!result) {
+
+    if ("error" in result) {
+      lastError = result.error;
       console.warn(
-        `[LESSON] Groq failed for trade ${trade.id.slice(0, 8)} — will retry next cycle`,
+        `[LESSON] Groq failed for ${trade.symbol}: ${result.error} — will retry next cycle`,
       );
       continue;
     }
@@ -179,6 +194,7 @@ export async function generatePostMortems(): Promise<number> {
     } as never);
 
     if (insertErr) {
+      lastError = insertErr.message;
       console.error(`[LESSON] insert failed for ${trade.symbol}:`, insertErr);
       continue;
     }
@@ -189,10 +205,24 @@ export async function generatePostMortems(): Promise<number> {
       .eq("id", trade.id);
 
     generated += 1;
-    console.log(`[LESSON] ${trade.symbol} [${result.outcome}]: ${result.lesson}`);
+    console.log(
+      `[LESSON] ${trade.symbol} [${result.outcome}]: ${result.lesson}`,
+    );
   }
 
-  return generated;
+  const status: LearningResult["status"] =
+    generated === tradeList.length
+      ? "ok"
+      : generated > 0
+        ? "degraded_fallback"
+        : "failed";
+
+  return {
+    generated,
+    attempted: tradeList.length,
+    status,
+    error: lastError,
+  };
 }
 
 /* ───────────── Retrieval για RAG ───────────── */
