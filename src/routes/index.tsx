@@ -17,11 +17,10 @@ import { CronHealthPanel } from "@/components/trading/CronHealthPanel";
 import { AIRiskSummary } from "@/components/trading/AIRiskSummary";
 import { PortfolioPanel } from "@/components/trading/PortfolioPanel";
 import { SupportDeveloper } from "@/components/trading/SupportDeveloper";
+import { GroqStatusIndicator } from "@/components/trading/GroqStatusIndicator";
 import { getTradingStatus, runPipeline } from "@/lib/pipeline.functions";
 import { resetAllData } from "@/lib/admin.functions";
 import { getSchedule, setSchedule } from "@/lib/schedule.functions";
-
-/* ───────────── Reusable PIN dialog ───────────── */
 
 function PinDialog({
   open,
@@ -117,8 +116,6 @@ function PinDialog({
   );
 }
 
-/* ───────────── Schedule control ───────────── */
-
 function ScheduleControl() {
   const getFn = useServerFn(getSchedule);
   const setFn = useServerFn(setSchedule);
@@ -143,8 +140,6 @@ function ScheduleControl() {
     </select>
   );
 }
-
-/* ───────────── Run pipeline (PIN protected) ───────────── */
 
 function RunPipelineButton() {
   const pipelineFn = useServerFn(runPipeline);
@@ -190,8 +185,6 @@ function RunPipelineButton() {
     </>
   );
 }
-
-/* ───────────── Reset data (PIN protected) ───────────── */
 
 function ResetButton() {
   const resetFn = useServerFn(resetAllData);
@@ -245,8 +238,6 @@ function ResetButton() {
   );
 }
 
-/* ───────────── Route ───────────── */
-
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
@@ -290,6 +281,7 @@ function CommandCenter() {
             </p>
           </div>
           <div className="flex items-center gap-3">
+            <GroqStatusIndicator />
             <span
               className={`rounded-full border px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider ${
                 status?.mode === "live"
