@@ -406,6 +406,39 @@ export type Database = {
         }
         Relationships: []
       }
+      strategy_variant_signals: {
+        Row: {
+          confidence: number | null
+          created_at: string
+          id: string
+          reasoning: string | null
+          recommendation: string | null
+          score: number | null
+          strategy_name: string
+          symbol: string
+        }
+        Insert: {
+          confidence?: number | null
+          created_at?: string
+          id?: string
+          reasoning?: string | null
+          recommendation?: string | null
+          score?: number | null
+          strategy_name: string
+          symbol: string
+        }
+        Update: {
+          confidence?: number | null
+          created_at?: string
+          id?: string
+          reasoning?: string | null
+          recommendation?: string | null
+          score?: number | null
+          strategy_name?: string
+          symbol?: string
+        }
+        Relationships: []
+      }
       trade_alerts: {
         Row: {
           created_at: string
