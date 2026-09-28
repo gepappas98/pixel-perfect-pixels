@@ -77,6 +77,9 @@ export interface Trade {
   gross_pnl?: number | null;
   net_pnl?: number | null;
   created_at: string;
+  closed_at?: string | null;
+  close_reason?: string | null;
+  exit_price?: number | null;
 }
 
 export interface TradeAlert {
@@ -89,5 +92,35 @@ export interface TradeAlert {
   exit_price: number;
   pnl: number;
   pnl_pct: number;
+  created_at: string;
+}
+
+/**
+ * A closed trade with the extra fields written by closeTriggeredTrades().
+ * Used by TradeAlertsPanel to display both open and close timestamps.
+ */
+export interface ClosedTrade {
+  id: string;
+  symbol: string;
+  side: "buy" | "sell";
+  quantity: number;
+  entry_price: number;
+  exit_price: number | null;
+  pnl: number | null; // net realized PnL (after fees)
+  close_reason: string | null; // "stop_loss" | "take_profit" | other
+  created_at: string; // when the trade was opened
+  closed_at: string | null; // when the trade was closed
+}
+
+export interface CouncilLesson {
+  id: string;
+  symbol: string;
+  verdict: string | null;
+  conviction: number | null;
+  outcome: "win" | "loss" | "breakeven";
+  realized_pnl: number | null;
+  pnl_pct: number | null;
+  lesson: string;
+  source_trade_id: string | null;
   created_at: string;
 }
