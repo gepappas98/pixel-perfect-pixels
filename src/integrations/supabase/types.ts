@@ -88,6 +88,48 @@ export type Database = {
           },
         ]
       }
+      council_lessons: {
+        Row: {
+          conviction: number | null
+          created_at: string
+          entry_context: Json | null
+          id: string
+          lesson: string
+          outcome: string
+          pnl_pct: number | null
+          realized_pnl: number | null
+          source_trade_id: string | null
+          symbol: string
+          verdict: string | null
+        }
+        Insert: {
+          conviction?: number | null
+          created_at?: string
+          entry_context?: Json | null
+          id?: string
+          lesson: string
+          outcome: string
+          pnl_pct?: number | null
+          realized_pnl?: number | null
+          source_trade_id?: string | null
+          symbol: string
+          verdict?: string | null
+        }
+        Update: {
+          conviction?: number | null
+          created_at?: string
+          entry_context?: Json | null
+          id?: string
+          lesson?: string
+          outcome?: string
+          pnl_pct?: number | null
+          realized_pnl?: number | null
+          source_trade_id?: string | null
+          symbol?: string
+          verdict?: string | null
+        }
+        Relationships: []
+      }
       council_signals: {
         Row: {
           conviction: number | null
@@ -376,6 +418,7 @@ export type Database = {
           mode: string
           net_pnl: number | null
           pnl: number | null
+          post_mortem_generated: boolean | null
           quantity: number
           side: string
           status: string
@@ -399,6 +442,7 @@ export type Database = {
           mode?: string
           net_pnl?: number | null
           pnl?: number | null
+          post_mortem_generated?: boolean | null
           quantity: number
           side: string
           status?: string
@@ -422,6 +466,7 @@ export type Database = {
           mode?: string
           net_pnl?: number | null
           pnl?: number | null
+          post_mortem_generated?: boolean | null
           quantity?: number
           side?: string
           status?: string
