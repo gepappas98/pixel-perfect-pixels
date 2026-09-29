@@ -236,7 +236,6 @@ export type Database = {
           started_at: string
           status: string
           trades: number | null
-          variants_resolved: number | null
           whales: number | null
         }
         Insert: {
@@ -257,7 +256,6 @@ export type Database = {
           started_at?: string
           status?: string
           trades?: number | null
-          variants_resolved?: number | null
           whales?: number | null
         }
         Update: {
@@ -278,7 +276,6 @@ export type Database = {
           started_at?: string
           status?: string
           trades?: number | null
-          variants_resolved?: number | null
           whales?: number | null
         }
         Relationships: []
@@ -376,7 +373,7 @@ export type Database = {
           last_auto_reasoning: string | null
           last_auto_switch_at: string | null
           prediction_weight: number
-          preset_name: string | null
+          preset_name: string
           technicals_weight: number
           updated_at: string
           whale_weight: number
@@ -389,7 +386,7 @@ export type Database = {
           last_auto_reasoning?: string | null
           last_auto_switch_at?: string | null
           prediction_weight?: number
-          preset_name?: string | null
+          preset_name?: string
           technicals_weight?: number
           updated_at?: string
           whale_weight?: number
@@ -402,7 +399,7 @@ export type Database = {
           last_auto_reasoning?: string | null
           last_auto_switch_at?: string | null
           prediction_weight?: number
-          preset_name?: string | null
+          preset_name?: string
           technicals_weight?: number
           updated_at?: string
           whale_weight?: number
@@ -631,6 +628,19 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      cleanup_old_pipeline_data: {
+        Args: never
+        Returns: {
+          deleted_composite_signals: number
+          deleted_council_signals: number
+          deleted_indicator_snapshots: number
+          deleted_pipeline_runs: number
+          deleted_prediction_snapshots: number
+          deleted_trade_alerts: number
+          deleted_variant_signals: number
+          deleted_whale_alerts: number
+        }[]
+      }
       get_portfolio_summary: {
         Args: never
         Returns: {
