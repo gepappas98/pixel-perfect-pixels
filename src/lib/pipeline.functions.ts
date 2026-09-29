@@ -5,22 +5,27 @@ const PIPELINE_PIN = "5155";
 export const runPipeline = createServerFn({ method: "POST" })
   .validator((data: { pin?: string } | undefined) => {
     const pin = data?.pin;
+
     if (typeof pin !== "string") {
       throw new Error("PIN is required to run the pipeline");
     }
+
     return { pin };
   })
   .handler(async ({ data }) => {
     if (data.pin !== PIPELINE_PIN) {
       throw new Error("Invalid PIN");
     }
+
     const { runFullPipeline } = await import("./pipeline.server");
+
     return await runFullPipeline();
   });
 
 export const getTradingStatus = createServerFn({ method: "GET" }).handler(
   async () => {
     const { tradingMode } = await import("./pipeline.server");
+
     return {
       mode: tradingMode(),
       binanceConfigured:
@@ -36,6 +41,7 @@ export const getAiHealthStatus = createServerFn({ method: "GET" }).handler(
       const { supabaseAdmin } = await import(
         "@/integrations/supabase/client.server"
       );
+
       const { data, error } = await supabaseAdmin
         .from("pipeline_runs")
         .select(
@@ -44,6 +50,7 @@ export const getAiHealthStatus = createServerFn({ method: "GET" }).handler(
         .not("ai_status", "is", null)
         .order("started_at", { ascending: false })
         .limit(10);
+
       if (error) throw error;
 
       const rows = (data ?? []) as {
@@ -65,20 +72,28 @@ export const getAiHealthStatus = createServerFn({ method: "GET" }).handler(
       }
 
       const last = rows[0]!;
-      const lastSuccess = rows.find((r) => r.ai_status === "ok");
+      const lastSuccess = rows.find(
+        (row) => row.ai_status === "ok",
+      );
 
       return {
         available: true as const,
-        status: last.ai_status as "ok" | "degraded_fallback" | "failed",
+        status: last.ai_status as
+          | "ok"
+          | "degraded_fallback"
+          | "failed",
         error: last.ai_error,
         lastSuccessAt: lastSuccess?.completed_at ?? null,
         lessonsGenerated: last.ai_lessons_generated ?? 0,
       };
-    } catch (e) {
+    } catch (error) {
       return {
         available: false as const,
         status: "unknown" as const,
-        error: e instanceof Error ? e.message : String(e),
+        error:
+          error instanceof Error
+            ? error.message
+            : String(error),
         lastSuccessAt: null,
         lessonsGenerated: 0,
       };
@@ -86,78 +101,144 @@ export const getAiHealthStatus = createServerFn({ method: "GET" }).handler(
   },
 );
 
+/* ───────────── Cron health ───────────── */
+
+/**
+ * Production cron health.
+ *
+ * The production scheduler uses Supabase pg_cron.
+ *
+ * It does not populate public.pipeline_runs, so pipeline_runs
+ * must NOT be used as the source of truth for cron health.
+ *
+ * The RPC public.get_pipeline_cron_health() reads:
+ *
+ *   cron.job
+ *   cron.job_run_details
+ *
+ * and returns the actual scheduler state.
+ */
 export const getCronHealth = createServerFn({ method: "GET" }).handler(
   async () => {
     try {
       const { supabaseAdmin } = await import(
         "@/integrations/supabase/client.server"
       );
-      const { data: schedule } = await (supabaseAdmin.from as any)(
-        "pipeline_settings",
-      )
-        .select("interval_minutes")
-        .eq("id", 1)
-        .maybeSingle();
-      const { data: runs, error } = await (supabaseAdmin.from as any)(
-        "pipeline_runs",
-      )
-        .select("id,status,started_at,completed_at,error_message")
-        .order("started_at", { ascending: false })
-        .limit(20);
-      if (error) throw error;
 
-      const intervalMinutes = Number(schedule?.interval_minutes ?? 0);
-      const lastSuccess =
-        (runs ?? []).find(
-          (run: { status: string }) => run.status === "success",
-        ) ?? null;
-      const consecutiveFailures = (runs ?? []).findIndex(
-        (run: { status: string }) => run.status === "success",
+      const { data, error } = await (supabaseAdmin.rpc as any)(
+        "get_pipeline_cron_health",
       );
-      const failureCount =
-        consecutiveFailures === -1 ? (runs ?? []).length : consecutiveFailures;
-      const lastCompletedAt = lastSuccess?.completed_at ?? null;
-      const nextRunAt =
-        lastCompletedAt && intervalMinutes > 0
-          ? new Date(
-              new Date(lastCompletedAt).getTime() + intervalMinutes * 60_000,
-            ).toISOString()
-          : null;
-      const staleAfterMinutes = Math.max(intervalMinutes * 2, 15);
+
+      if (error) {
+        throw error;
+      }
+
+      const health = (data ?? {}) as {
+        available?: boolean;
+        intervalMinutes?: number;
+        schedule?: string;
+        lastSuccessAt?: string | null;
+        lastSuccessStatus?: string | null;
+        nextRunAt?: string | null;
+        consecutiveFailures?: number;
+        recentErrors?: Array<{
+          id: string;
+          started_at: string;
+          message: string;
+        }>;
+        jobs?: Array<{
+          jobid: number;
+          jobname: string;
+          schedule: string;
+          active: boolean;
+          last_status: string | null;
+          last_run_at: string | null;
+          last_end_at: string | null;
+        }>;
+      };
+
+      const intervalMinutes = Number(
+        health.intervalMinutes ?? 15,
+      );
+
+      const lastSuccessAt =
+        health.lastSuccessAt ?? null;
+
+      /*
+       * The production pipeline runs every 15 minutes.
+       *
+       * Allow two complete intervals before declaring the
+       * scheduler stale. Never use the old 5-minute watchdog
+       * threshold here.
+       */
+      const staleAfterMinutes = Math.max(
+        intervalMinutes * 2,
+        30,
+      );
+
       const stale =
-        !lastCompletedAt ||
-        Date.now() - new Date(lastCompletedAt).getTime() >
+        !lastSuccessAt ||
+        Date.now() -
+          new Date(lastSuccessAt).getTime() >
           staleAfterMinutes * 60_000;
 
-      const recentErrors = (runs ?? [])
-        .filter(
-          (run: { status: string; error_message?: string | null }) =>
-            run.status === "error" && run.error_message,
-        )
-        .slice(0, 5)
-        .map((run: { id: string; started_at: string; error_message: string }) => ({
-          id: run.id,
-          started_at: run.started_at,
-          message: run.error_message,
-        }));
+      const recentErrors = Array.isArray(
+        health.recentErrors,
+      )
+        ? health.recentErrors.slice(0, 5)
+        : [];
+
+      const jobs = Array.isArray(health.jobs)
+        ? health.jobs
+        : [];
 
       return {
         available: true,
+
         intervalMinutes,
-        lastSuccess,
-        nextRunAt,
-        consecutiveFailures: failureCount,
+
+        schedule:
+          health.schedule ??
+          "*/15 * * * *",
+
+        lastSuccess: lastSuccessAt
+          ? {
+              completed_at: lastSuccessAt,
+              status:
+                health.lastSuccessStatus ??
+                "succeeded",
+            }
+          : null,
+
+        nextRunAt:
+          health.nextRunAt ?? null,
+
+        consecutiveFailures:
+          Number(
+            health.consecutiveFailures ?? 0,
+          ),
+
         stale,
+
         staleAfterMinutes,
+
         recentErrors,
+
+        jobs,
       };
     } catch (error) {
+      console.error(
+        "[CRON_HEALTH] failed to read cron health:",
+        error,
+      );
+
       return {
         available: false,
+
         reason:
           error instanceof Error
             ? error.message
-            : "Supabase health storage is unavailable",
+            : "Supabase cron health is unavailable",
       };
     }
   },
