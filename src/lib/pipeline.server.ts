@@ -146,6 +146,76 @@ async function fetchWithTimeout(input: string, init?: RequestInit) {
   });
 }
 
+/* ───────────── Market data with fallback (geo-block safe) ─────────────
+ * api.binance.com μπλοκάρει κάποιες περιοχές (HTTP 451 / "restricted location").
+ * Ο Lovable server συχνά τρέχει από τέτοια περιοχή, οπότε όλα τα public
+ * market-data calls δοκιμάζουν με σειρά:
+ *   1. api.binance.com
+ *   2. data-api.binance.vision (ίδιο API, μόνο market data, χωρίς geo-block)
+ * Για τις τιμές (ticker) υπάρχει τρίτο fallback: Hyperliquid allMids.
+ * Τα signed/live order endpoints ΔΕΝ περνάνε από εδώ.
+ */
+const BINANCE_MARKET_HOSTS = [
+  "https://api.binance.com",
+  "https://data-api.binance.vision",
+] as const;
+const MARKET_HOST_STICKY_MS = 10 * 60 * 1000;
+let preferredMarketHost: { host: string; ts: number } | null = null;
+
+export interface MarketDataHealth {
+  priceSource: "binance" | "binance-vision" | "hyperliquid" | "none" | null;
+  binanceFailures: number;
+  lastError: string | null;
+}
+const marketHealth: MarketDataHealth = {
+  priceSource: null,
+  binanceFailures: 0,
+  lastError: null,
+};
+function resetMarketHealth() {
+  marketHealth.priceSource = null;
+  marketHealth.binanceFailures = 0;
+  marketHealth.lastError = null;
+}
+export function getMarketHealth(): MarketDataHealth {
+  return { ...marketHealth };
+}
+
+/** GET σε public Binance market-data path (π.χ. "/api/v3/klines?...") με fallback host. */
+async function binancePublicGet(pathAndQuery: string): Promise<Response> {
+  const now = Date.now();
+  const preferred =
+    preferredMarketHost && now - preferredMarketHost.ts < MARKET_HOST_STICKY_MS
+      ? preferredMarketHost.host
+      : null;
+  const hosts: string[] = preferred
+    ? [preferred, ...BINANCE_MARKET_HOSTS.filter((h) => h !== preferred)]
+    : [...BINANCE_MARKET_HOSTS];
+  let last: Response | null = null;
+  let lastErr: unknown = null;
+  for (const host of hosts) {
+    try {
+      const res = await fetchWithTimeout(`${host}${pathAndQuery}`);
+      // 451 = geo-block, 403 = WAF/CloudFront block, 418/429 = ban/rate limit
+      if (res.ok) {
+        preferredMarketHost = { host, ts: now };
+        return res;
+      }
+      last = res;
+      if (![403, 418, 429, 451].includes(res.status) && res.status < 500)
+        return res; // πραγματικό 4xx (π.χ. invalid symbol) — δεν αλλάζει με άλλο host
+      marketHealth.binanceFailures += 1;
+      marketHealth.lastError = `${host} HTTP ${res.status}`;
+    } catch (e) {
+      lastErr = e;
+      marketHealth.binanceFailures += 1;
+      marketHealth.lastError = `${host} ${serializeError(e)}`;
+    }
+  }
+  if (last) return last;
+  throw lastErr ?? new Error("all Binance market hosts failed");
+}
+
 type Admin = Awaited<
   typeof import("@/integrations/supabase/client.server")
 >["supabaseAdmin"];
@@ -356,8 +426,8 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
     async (coin) => {
       const out: Record<string, unknown>[] = [];
       try {
-        const res = await fetchWithTimeout(
-          `https://api.binance.com/api/v3/aggTrades?symbol=${binanceSymbol(coin)}&limit=1000`,
+        const res = await binancePublicGet(
+          `/api/v3/aggTrades?symbol=${binanceSymbol(coin)}&limit=1000`,
         );
         if (!res.ok) return out;
         const trades = (await res.json()) as BinanceAggTrade[];
@@ -459,8 +529,8 @@ async function fetchIndicatorForTimeframe(
 ): Promise<Record<string, unknown> | null> {
   const symbol = binanceSymbol(coin);
   try {
-    const res = await fetchWithTimeout(
-      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${timeframe}&limit=${KLINE_LIMIT}`,
+    const res = await binancePublicGet(
+      `/api/v3/klines?symbol=${symbol}&interval=${timeframe}&limit=${KLINE_LIMIT}`,
     );
     if (!res.ok) return null;
     const raw = (await res.json()) as unknown[][];
@@ -909,7 +979,9 @@ async function groqBatchCouncil(
           { role: "user", content: JSON.stringify(payload) },
         ],
         temperature: 0.2,
-        max_tokens: 1024,
+        // gpt-oss: reasoning tokens μετράνε στο max_tokens → χαμηλό effort + headroom
+        ...(/gpt-oss/i.test(GROQ_MODEL) ? { reasoning_effort: "low" } : {}),
+        max_tokens: 2048,
       }),
       signal: AbortSignal.timeout(GROQ_TIMEOUT_MS),
     });
@@ -1133,6 +1205,11 @@ export async function collectCouncilSignals(): Promise<number> {
       ctx.mtfRaw.primary?.["id"],
       ctx.prediction?.["id"],
       usedAi ? "ai" : "rule",
+      // Verdict + conviction στο key: αν αλλάξει η απόφαση για τα ίδια inputs
+      // γράφεται ΝΕΑ γραμμή αντί να αλλοιωθεί αναδρομικά το council που
+      // ήδη δείχνουν παλιότερα composite_signals.
+      result.final_verdict,
+      String(Math.round(Number(result.conviction) || 0)),
     ].join(":");
     rows.push({
       symbol,
@@ -1158,6 +1235,19 @@ export async function collectCouncilSignals(): Promise<number> {
 }
 
 /* ───────────── Signal combiner (weight-aware) ───────────── */
+
+/** Αν το composite_signals.price_at δεν υπάρχει, το μαθαίνουμε μία φορά ανά instance. */
+let compositePriceAtSupported = true;
+
+function isMissingColumnError(err: unknown, column: string): boolean {
+  const e = err as { code?: string; message?: string } | null;
+  if (!e) return false;
+  // PGRST204 = column not in schema cache, 42703 = undefined_column
+  return (
+    (e.code === "PGRST204" || e.code === "42703") &&
+    String(e.message ?? "").includes(column)
+  );
+}
 
 const COMPOSITE_AI_BASE_WEIGHT = 0.75;
 
@@ -1542,24 +1632,39 @@ export async function combineSignals(): Promise<number> {
       weights,
       result,
     );
-    const { data, error } = await db
+    const compositeRow: Record<string, unknown> = {
+      symbol,
+      whale_alert_id: (whaleRows[0]?.["id"] as string) ?? null,
+      indicator_snapshot_id: (mtfRaw.primary?.["id"] as string) ?? null,
+      prediction_snapshot_id: (prediction?.["id"] as string) ?? null,
+      council_signal_id: (council?.["id"] as string) ?? null,
+      confidence: result.confidence,
+      recommendation: result.recommendation,
+      reasoning: result.reasoning,
+      fingerprint,
+      created_at: nowIso,
+    };
+    if (compositePriceAtSupported && mtfPrice != null && mtfPrice > 0)
+      compositeRow["price_at"] = mtfPrice;
+    let { data, error } = await db
       .from("composite_signals")
-      .upsert(
-        {
-          symbol,
-          whale_alert_id: (whaleRows[0]?.["id"] as string) ?? null,
-          indicator_snapshot_id: (mtfRaw.primary?.["id"] as string) ?? null,
-          prediction_snapshot_id: (prediction?.["id"] as string) ?? null,
-          council_signal_id: (council?.["id"] as string) ?? null,
-          confidence: result.confidence,
-          recommendation: result.recommendation,
-          reasoning: result.reasoning,
-          fingerprint,
-          created_at: nowIso,
-        } as never,
-        { onConflict: "fingerprint", ignoreDuplicates: false },
-      )
+      .upsert(compositeRow as never, {
+        onConflict: "fingerprint",
+        ignoreDuplicates: false,
+      })
       .select("id");
+    if (error && isMissingColumnError(error, "price_at")) {
+      // Η στήλη δεν υπάρχει ακόμα (migration 20260929220000 δεν έχει τρέξει)
+      compositePriceAtSupported = false;
+      delete compositeRow["price_at"];
+      ({ data, error } = await db
+        .from("composite_signals")
+        .upsert(compositeRow as never, {
+          onConflict: "fingerprint",
+          ignoreDuplicates: false,
+        })
+        .select("id"));
+    }
     if (error) throw error;
     if (data?.length) created += 1;
   }
@@ -1612,8 +1717,8 @@ async function fetch4hCandles(
   const symbol = binanceSymbol(coin);
 
   try {
-    const res = await fetchWithTimeout(
-      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=4h&limit=${limit}`,
+    const res = await binancePublicGet(
+      `/api/v3/klines?symbol=${symbol}&interval=4h&limit=${limit}`,
     );
 
     if (!res.ok) {
@@ -1862,18 +1967,69 @@ export function tradingMode(): "paper" | "live" {
   return mode === "live" && liveEnabled && hasKeys ? "live" : "paper";
 }
 
-async function allBinancePrices(): Promise<Map<string, number>> {
-  const res = await fetchWithTimeout(
-    "https://api.binance.com/api/v3/ticker/price",
-  );
-  if (!res.ok) throw new Error(`batch price fetch failed HTTP ${res.status}`);
-  const data = (await res.json()) as { symbol: string; price: string }[];
+/** Hyperliquid mids → map σε Binance-style keys (BTCUSDT). kXXX = τιμή ανά 1000 units. */
+async function hyperliquidPricesAsBinance(): Promise<Map<string, number>> {
+  const mids = await hlPost<Record<string, string>>({ type: "allMids" });
   const map = new Map<string, number>();
-  for (const d of data) {
-    const p = Number(d.price);
-    if (Number.isFinite(p)) map.set(d.symbol, p);
+  for (const [coin, raw] of Object.entries(mids ?? {})) {
+    if (coin.startsWith("@")) continue; // spot index keys
+    const px = Number(raw);
+    if (!Number.isFinite(px) || px <= 0) continue;
+    if (/^k[A-Z0-9]+$/.test(coin)) {
+      map.set(`${coin.slice(1)}USDT`, px / 1000);
+    } else {
+      map.set(`${coin}USDT`, px);
+    }
   }
+  // Binance ονόματα που διαφέρουν από το HL
+  if (!map.has("POLUSDT") && map.has("MATICUSDT"))
+    map.set("POLUSDT", map.get("MATICUSDT")!);
+  if (!map.has("RENDERUSDT") && map.has("RNDRUSDT"))
+    map.set("RENDERUSDT", map.get("RNDRUSDT")!);
   return map;
+}
+
+async function allBinancePrices(): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  try {
+    const res = await binancePublicGet("/api/v3/ticker/price");
+    if (res.ok) {
+      const data = (await res.json()) as { symbol: string; price: string }[];
+      for (const d of data) {
+        const p = Number(d.price);
+        if (Number.isFinite(p)) map.set(d.symbol, p);
+      }
+      marketHealth.priceSource =
+        preferredMarketHost?.host.includes("binance.vision")
+          ? "binance-vision"
+          : "binance";
+    } else {
+      marketHealth.lastError = `ticker HTTP ${res.status}`;
+    }
+  } catch (e) {
+    marketHealth.lastError = `ticker ${serializeError(e)}`;
+  }
+
+  if (map.size > 0) return map;
+
+  // Τελευταίο fallback: Hyperliquid (perp mids — αρκετά κοντά για paper TP/SL)
+  try {
+    const hl = await hyperliquidPricesAsBinance();
+    if (hl.size > 0) {
+      marketHealth.priceSource = "hyperliquid";
+      console.warn(
+        `[PRICES] Binance unavailable (${marketHealth.lastError}) — using Hyperliquid mids (${hl.size})`,
+      );
+      return hl;
+    }
+  } catch (e) {
+    marketHealth.lastError = `hyperliquid ${serializeError(e)}`;
+  }
+
+  marketHealth.priceSource = "none";
+  throw new Error(
+    `batch price fetch failed: ${marketHealth.lastError ?? "no source"}`,
+  );
 }
 
 async function placeLiveOrder(
@@ -1935,7 +2091,8 @@ async function closeTriggeredTrades(): Promise<number> {
   try {
     prices = await allBinancePrices();
   } catch (e) {
-    console.error("batch price fetch failed, skipping close checks", e);
+    console.error("[DEGRADED] batch price fetch failed, skipping close checks", e);
+    marketHealth.lastError = `close-checks: ${serializeError(e)}`;
     return 0;
   }
   let closed = 0;
@@ -2209,7 +2366,8 @@ export async function executeTrades(): Promise<number> {
   try {
     prices = await allBinancePrices();
   } catch (e) {
-    console.error("batch price fetch failed in executeTrades", e);
+    console.error("[DEGRADED] batch price fetch failed in executeTrades", e);
+    marketHealth.lastError = `execute-trades: ${serializeError(e)}`;
     return 0;
   }
 
@@ -2364,6 +2522,7 @@ export async function runFullPipeline() {
     throw new Error(`pipeline start/lock failed: ${insertError.message}`);
   }
   const runId = (runRow as { id: string }).id;
+  resetMarketHealth();
 
   let step = "init";
   try {
@@ -2423,6 +2582,14 @@ export async function runFullPipeline() {
     }
 
     const completedAt = new Date();
+    const health = getMarketHealth();
+    const degradedNote =
+      health.priceSource === "none" || health.priceSource === null
+        ? `[degraded] no price source — TP/SL checks & new trades skipped (${health.lastError ?? "unknown"})`
+        : health.priceSource !== "binance"
+          ? `[degraded] price source=${health.priceSource} (binance failures=${health.binanceFailures})`
+          : null;
+    if (degradedNote) console.warn(`[PIPELINE] ${degradedNote}`);
     const summary = {
       completed_at: completedAt.toISOString(),
       duration_ms: completedAt.getTime() - startedAt.getTime(),
@@ -2435,7 +2602,8 @@ export async function runFullPipeline() {
       trades,
       variants_resolved: resolvedVariants,
       mode,
-      error_message: null,
+      // status μένει "success" (το run ολοκληρώθηκε)· το degraded φαίνεται στο error_message
+      error_message: degradedNote,
       ai_status: learning.status,
       ai_error: learning.error,
       ai_lessons_generated: learning.generated,

@@ -2,7 +2,7 @@
  * Post-mortem analysis κλειστών trades + retrieval προηγούμενων μαθημάτων.
  *
  * NOTE: Το openai/gpt-oss-20b είναι reasoning model — ξοδεύει tokens σε
- * internal reasoning. max_tokens πρέπει να είναι ≥ 500.
+ * internal reasoning. max_tokens πρέπει να είναι ≥ 1000 (με reasoning_effort=low).
  *
  * NOTE: Το `trades` table ΔΕΝ έχει στήλη pnl_pct — υπολογίζεται τοπικά
  * από pnl / (entry_price * quantity) * 100. */
@@ -12,7 +12,7 @@ const LESSON_MODEL = process.env["GROQ_MODEL"] ?? "openai/gpt-oss-20b";
 const GROQ_TIMEOUT_MS = 20_000;
 const POST_MORTEM_BATCH_MAX = 5;
 const LESSONS_PER_SYMBOL = 5;
-const LESSON_MAX_TOKENS = 500;
+const LESSON_MAX_TOKENS = 1200;
 
 interface TradeForPostMortem {
   id: string;
@@ -93,6 +93,7 @@ async function groqGenerateLesson(
         ],
         temperature: 0.3,
         max_tokens: LESSON_MAX_TOKENS,
+        ...(/gpt-oss/i.test(LESSON_MODEL) ? { reasoning_effort: "low" } : {}),
       }),
       signal: AbortSignal.timeout(GROQ_TIMEOUT_MS),
     });

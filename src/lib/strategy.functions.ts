@@ -377,7 +377,11 @@ async function askGroqForPreset(
         temperature: 0.15,
         // gpt-oss-20b είναι reasoning model: χρειάζεται headroom για
         // internal reasoning tokens πριν παραγάγει το τελικό JSON.
-        max_tokens: 600,
+        // 600 δεν έφτανε: finish_reason=length με ~600 reasoning tokens και κενό content.
+        max_tokens: 1500,
+        ...(/gpt-oss/i.test(process.env["GROQ_MODEL"] ?? "openai/gpt-oss-20b")
+          ? { reasoning_effort: "low" }
+          : {}),
       }),
       signal: AbortSignal.timeout(20_000),
     });
