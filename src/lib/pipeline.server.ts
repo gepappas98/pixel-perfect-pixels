@@ -146,6 +146,28 @@ async function fetchWithTimeout(input: string, init?: RequestInit) {
   });
 }
 
+const BINANCE_MARKET_HOSTS = [
+  "https://api.binance.com",
+  "https://data-api.binance.vision",
+] as const;
+let preferredMarketHost: (typeof BINANCE_MARKET_HOSTS)[number] | null = null;
+
+async function binancePublicGet(pathAndQuery: string): Promise<Response> {
+  const hosts = preferredMarketHost
+    ? [preferredMarketHost, ...BINANCE_MARKET_HOSTS.filter((host) => host !== preferredMarketHost)]
+    : [...BINANCE_MARKET_HOSTS];
+  let lastResponse: Response | null = null;
+  for (const host of hosts) {
+    const response = await fetchWithTimeout(`${host}${pathAndQuery}`);
+    lastResponse = response;
+    if (response.ok || (![403, 418, 429, 451].includes(response.status) && response.status < 500)) {
+      if (response.ok) preferredMarketHost = host;
+      return response;
+    }
+  }
+  return lastResponse ?? new Response(null, { status: 503 });
+}
+
 type Admin = Awaited<
   typeof import("@/integrations/supabase/client.server")
 >["supabaseAdmin"];
@@ -356,8 +378,8 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
     async (coin) => {
       const out: Record<string, unknown>[] = [];
       try {
-        const res = await fetchWithTimeout(
-          `https://api.binance.com/api/v3/aggTrades?symbol=${binanceSymbol(coin)}&limit=1000`,
+        const res = await binancePublicGet(
+          `/api/v3/aggTrades?symbol=${binanceSymbol(coin)}&limit=1000`,
         );
         if (!res.ok) return out;
         const trades = (await res.json()) as BinanceAggTrade[];
@@ -459,8 +481,8 @@ async function fetchIndicatorForTimeframe(
 ): Promise<Record<string, unknown> | null> {
   const symbol = binanceSymbol(coin);
   try {
-    const res = await fetchWithTimeout(
-      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${timeframe}&limit=${KLINE_LIMIT}`,
+    const res = await binancePublicGet(
+      `/api/v3/klines?symbol=${symbol}&interval=${timeframe}&limit=${KLINE_LIMIT}`,
     );
     if (!res.ok) return null;
     const raw = (await res.json()) as unknown[][];
@@ -909,7 +931,8 @@ async function groqBatchCouncil(
           { role: "user", content: JSON.stringify(payload) },
         ],
         temperature: 0.2,
-        max_tokens: 1024,
+        ...( /gpt-oss/i.test(GROQ_MODEL) ? { reasoning_effort: "low" } : {}),
+        max_tokens: 2048,
       }),
       signal: AbortSignal.timeout(GROQ_TIMEOUT_MS),
     });
@@ -1133,6 +1156,8 @@ export async function collectCouncilSignals(): Promise<number> {
       ctx.mtfRaw.primary?.["id"],
       ctx.prediction?.["id"],
       usedAi ? "ai" : "rule",
+      result.final_verdict,
+      String(Math.round(Number(result.conviction) || 0)),
     ].join(":");
     rows.push({
       symbol,
@@ -1612,8 +1637,8 @@ async function fetch4hCandles(
   const symbol = binanceSymbol(coin);
 
   try {
-    const res = await fetchWithTimeout(
-      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=4h&limit=${limit}`,
+    const res = await binancePublicGet(
+      `/api/v3/klines?symbol=${symbol}&interval=4h&limit=${limit}`,
     );
 
     if (!res.ok) {
@@ -1863,17 +1888,32 @@ export function tradingMode(): "paper" | "live" {
 }
 
 async function allBinancePrices(): Promise<Map<string, number>> {
-  const res = await fetchWithTimeout(
-    "https://api.binance.com/api/v3/ticker/price",
-  );
-  if (!res.ok) throw new Error(`batch price fetch failed HTTP ${res.status}`);
-  const data = (await res.json()) as { symbol: string; price: string }[];
-  const map = new Map<string, number>();
-  for (const d of data) {
-    const p = Number(d.price);
-    if (Number.isFinite(p)) map.set(d.symbol, p);
+  try {
+    const res = await binancePublicGet("/api/v3/ticker/price");
+    if (res.ok) {
+      const data = (await res.json()) as { symbol: string; price: string }[];
+      const map = new Map<string, number>();
+      for (const d of data) {
+        const p = Number(d.price);
+        if (Number.isFinite(p)) map.set(d.symbol, p);
+      }
+      if (map.size > 0) return map;
+    }
+  } catch {
+    // Fall through to the public derivatives feed.
   }
-  return map;
+  const mids = await hlPost<Record<string, string>>({ type: "allMids" });
+  const fallback = new Map<string, number>();
+  for (const [coin, raw] of Object.entries(mids ?? {})) {
+    const price = Number(raw);
+    if (!Number.isFinite(price) || price <= 0 || coin.startsWith("@")) continue;
+    const base = coin.startsWith("k") ? coin.slice(1) : coin;
+    fallback.set(`${base}USDT`, coin.startsWith("k") ? price / 1000 : price);
+  }
+  if (fallback.has("MATICUSDT") && !fallback.has("POLUSDT")) fallback.set("POLUSDT", fallback.get("MATICUSDT")!);
+  if (fallback.has("RNDRUSDT") && !fallback.has("RENDERUSDT")) fallback.set("RENDERUSDT", fallback.get("RNDRUSDT")!);
+  if (fallback.size === 0) throw new Error("batch price fetch failed: no price source");
+  return fallback;
 }
 
 async function placeLiveOrder(
