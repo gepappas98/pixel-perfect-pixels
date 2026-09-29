@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { serializeError } from "./error-serialize";
 
 /* ───────────── Types ───────────── */
 
@@ -69,7 +70,7 @@ function predictionDirectionFromSnapshot(
   return "neutral";
 }
 
-/* ───────────── Recommendation logic ───────────── */
+/* ───────────── Regime classification ───────────── */
 
 function classifyRegime(score: number): RegimeLabel {
   if (score >= 0.5) return "strong_bull";
@@ -88,6 +89,68 @@ function recommendPreset(score: number, confidence: number): string {
   return "conservative";
 }
 
+/* ───────────── Resilient technicals fetch ───────────── */
+
+interface TechsFetchResult {
+  rows: { symbol: string; signal: string | null }[];
+  window: string;
+  error: string | null;
+}
+
+/**
+ * Resilient technicals fetch:
+ *   1. Δοκίμασε 4h @ 6h (το κανονικό)
+ *   2. Αν 0 rows, δοκίμασε 4h @ 24h
+ *   3. Αν ακόμη 0, δοκίμασε 4h @ 7d
+ *   4. Log diagnostics ώστε να ξέρουμε τι συμβαίνει
+ */
+async function fetchTechnicalsResilient(
+  db: Awaited<
+    typeof import("@/integrations/supabase/client.server")
+  >["supabaseAdmin"],
+): Promise<TechsFetchResult> {
+  const now = Date.now();
+  const windows = [
+    { label: "4h/6h", ms: 6 * 3600_000 },
+    { label: "4h/24h", ms: 24 * 3600_000 },
+    { label: "4h/7d", ms: 7 * 86400_000 },
+  ];
+
+  let lastError: string | null = null;
+
+  for (const w of windows) {
+    const cutoff = new Date(now - w.ms).toISOString();
+    const { data, error } = await db
+      .from("indicator_snapshots")
+      .select("symbol, signal, created_at")
+      .eq("timeframe", "4h")
+      .gte("created_at", cutoff)
+      .order("created_at", { ascending: false })
+      .limit(5000);
+
+    if (error) {
+      lastError = serializeError(error);
+      console.error(
+        `[REGIME] technicals ${w.label} query failed: ${lastError}`,
+      );
+      continue;
+    }
+
+    const rows = (data ?? []) as { symbol: string; signal: string | null }[];
+    console.log(`[REGIME] technicals ${w.label}: ${rows.length} rows`);
+
+    if (rows.length > 0) {
+      return { rows, window: w.label, error: null };
+    }
+  }
+
+  return {
+    rows: [],
+    window: "none",
+    error: lastError ?? "no rows in any window",
+  };
+}
+
 /* ───────────── Server function ───────────── */
 
 export const getMarketRegime = createServerFn({ method: "GET" }).handler(
@@ -100,27 +163,40 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
     const sixHoursAgo = new Date(now - 6 * 60 * 60 * 1000).toISOString();
     const thirtyMinAgo = new Date(now - 30 * 60 * 1000).toISOString();
 
-    const [whalesRes, techsRes, predsRes, councilRes] = await Promise.all([
+    // Technicals με resilient fetch (έχει το δικό του error handling)
+    const techsResult = await fetchTechnicalsResilient(db);
+
+    const [whalesRes, predsRes, councilRes] = await Promise.all([
       db
         .from("whale_alerts")
         .select("direction, usd_value")
         .gte("created_at", sixHoursAgo),
       db
-        .from("indicator_snapshots")
-        .select("symbol, signal, created_at")
-        .eq("timeframe", "4h")
-        .gte("created_at", sixHoursAgo)
-        .order("created_at", { ascending: false }),
-      db
         .from("prediction_snapshots")
         .select("market_slug, question, yes_price, created_at")
-        .order("created_at", { ascending: false }),
+        .order("created_at", { ascending: false })
+        .limit(2000),
       db
         .from("council_signals")
         .select("symbol, final_verdict, source_created_at")
         .gte("source_created_at", thirtyMinAgo)
         .order("source_created_at", { ascending: false }),
     ]);
+
+    // Explicit error logging
+    if (whalesRes.error)
+      console.error("[REGIME] whales query:", serializeError(whalesRes.error));
+    if (predsRes.error)
+      console.error(
+        "[REGIME] predictions query:",
+        serializeError(predsRes.error),
+      );
+    if (councilRes.error)
+      console.error("[REGIME] council query:", serializeError(councilRes.error));
+
+    console.log(
+      `[REGIME] rows: whales=${whalesRes.data?.length ?? 0} techs=${techsResult.rows.length}(${techsResult.window}) preds=${predsRes.data?.length ?? 0} council=${councilRes.data?.length ?? 0}`,
+    );
 
     // ── Whale aggregates ──
     let buyUsd = 0;
@@ -142,10 +218,7 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
     let techBull = 0;
     let techBear = 0;
     let techNeu = 0;
-    for (const t of (techsRes.data ?? []) as {
-      symbol: string;
-      signal: string | null;
-    }[]) {
+    for (const t of techsResult.rows) {
       if (seenTech.has(t.symbol)) continue;
       seenTech.add(t.symbol);
       if (t.signal === "bullish") techBull++;
@@ -153,8 +226,7 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
       else techNeu++;
     }
     const totalTech = techBull + techBear + techNeu;
-    const techBreadth =
-      totalTech > 0 ? (techBull - techBear) / totalTech : 0;
+    const techBreadth = totalTech > 0 ? (techBull - techBear) / totalTech : 0;
 
     // ── Predictions (latest per market) ──
     const seenPred = new Set<string>();
@@ -174,8 +246,7 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
       else predNeu++;
     }
     const totalPred = predBull + predBear + predNeu;
-    const predConsensus =
-      totalPred > 0 ? (predBull - predBear) / totalPred : 0;
+    const predConsensus = totalPred > 0 ? (predBull - predBear) / totalPred : 0;
 
     // ── Council (latest per symbol) ──
     const seenCouncil = new Set<string>();
@@ -227,7 +298,6 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
       );
     }
     if (Math.abs(techBreadth) > 0.15) {
-      // ✅ FIXED: use the right counter for the direction
       reasons.push(
         techBreadth > 0
           ? `${techBull}/${totalTech} coins technically bullish`
@@ -249,6 +319,13 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
       );
     }
     if (reasons.length === 0) reasons.push("signals mixed or unclear");
+
+    // Diagnostic: αν τα technicals είναι 0, πρόσθεσέ το στο reasoning
+    if (totalTech === 0) {
+      reasons.push(
+        `(technicals empty — window ${techsResult.window}${techsResult.error ? `, err: ${techsResult.error}` : ""})`,
+      );
+    }
 
     return {
       whale: {
