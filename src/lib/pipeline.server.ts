@@ -1413,6 +1413,9 @@ export async function combineSignals(): Promise<number> {
   // Shadow variant buffer (observability only)
   const variantRows: Record<string, unknown>[] = [];
 
+  // Shadow conflict buffer — watch_conflict_fix observability
+  const shadowConflictBuffer: Record<string, unknown>[] = [];
+
   for (const symbol of symbols) {
     const whaleRows = whaleBySymbol.get(symbol) ?? [];
     let whale: Row = null;
@@ -1459,7 +1462,7 @@ export async function combineSignals(): Promise<number> {
       conflictFixEnabled,
     });
 
-    // Shadow mode: log τι θα γινόταν με το fix ενεργό
+    // Shadow mode: log + persist τι θα γινόταν με το fix ενεργό
     if (conflictShadowMode && !conflictFixEnabled) {
       const shadow = ruleBased(whale, mtf, prediction, council, weights, {
         conflictFixEnabled: true,
@@ -1468,6 +1471,15 @@ export async function combineSignals(): Promise<number> {
         console.log(
           `[WATCH_CONFLICT_SHADOW] ${symbol}: would be ${shadow.recommendation} (currently ${result.recommendation})`,
         );
+        shadowConflictBuffer.push({
+          symbol,
+          current_recommendation: result.recommendation,
+          would_be_recommendation: shadow.recommendation,
+          score: result.score,
+          confidence: result.confidence,
+          reasoning: shadow.reasoning,
+          detected_at: nowIso,
+        });
       }
     }
 
@@ -1562,6 +1574,20 @@ export async function combineSignals(): Promise<number> {
     } else {
       console.log(
         `[VARIANTS] Recorded ${variantRows.length} shadow signals across ${Object.keys(STRATEGY_PRESETS).length} presets`,
+      );
+    }
+  }
+
+  // ── Batch insert shadow conflicts (non-fatal) ──
+  if (shadowConflictBuffer.length > 0) {
+    const { error: shadowErr } = await db
+      .from("shadow_conflicts")
+      .insert(shadowConflictBuffer as never);
+    if (shadowErr) {
+      console.error("[SHADOW_CONFLICTS] insert failed:", shadowErr);
+    } else {
+      console.log(
+        `[SHADOW_CONFLICTS] Recorded ${shadowConflictBuffer.length} would-be changes`,
       );
     }
   }
