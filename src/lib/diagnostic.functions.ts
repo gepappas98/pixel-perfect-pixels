@@ -11,14 +11,12 @@ export const getWatchDiagnostic = createServerFn({ method: "GET" }).handler(
 
     const targetSymbols = ["HEMI", "PIXEL", "SPY", "ADA", "BTC"];
 
-    // 1. Strategy weights
     const { data: strategy } = await db
       .from("strategy_config")
       .select("*")
       .eq("id", 1)
       .maybeSingle();
 
-    // 2. Watch composite signals (τελευταία 30 λεπτά)
     const since = new Date(Date.now() - 30 * 60 * 1000).toISOString();
     const { data: watches } = await db
       .from("composite_signals")
@@ -29,14 +27,12 @@ export const getWatchDiagnostic = createServerFn({ method: "GET" }).handler(
       .order("created_at", { ascending: false })
       .limit(30);
 
-    // 3. Όλα τα council_signals για αυτά τα symbols
     const { data: councils } = await db
       .from("council_signals")
       .select("*")
       .in("symbol", targetSymbols)
       .order("source_created_at", { ascending: false });
 
-    // 4. Source presence matrix
     const watchRows = (watches ?? []).map((w: any) => ({
       symbol: w.symbol,
       confidence: w.confidence,
@@ -50,7 +46,6 @@ export const getWatchDiagnostic = createServerFn({ method: "GET" }).handler(
       council_signal_id: w.council_signal_id,
     }));
 
-    // 5. Source count matrix (aggregate)
     const { data: allWatches } = await db
       .from("composite_signals")
       .select(
@@ -95,7 +90,7 @@ export const getWatchDiagnostic = createServerFn({ method: "GET" }).handler(
   },
 );
 
-/* ───────────── Shadow conflicts ───────────── */
+/* ───────────── Shadow conflicts + cleanup diagnostic ───────────── */
 
 export const getShadowConflicts = createServerFn({ method: "GET" }).handler(
   async () => {
@@ -104,8 +99,9 @@ export const getShadowConflicts = createServerFn({ method: "GET" }).handler(
     );
 
     const since24h = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const since30m = new Date(Date.now() - 30 * 60 * 1000).toISOString();
 
-    // Τελευταία 50 rows
+    /* ── 1. Shadow conflicts (existing) ── */
     const { data: recent, error: recentErr } = await supabaseAdmin
       .from("shadow_conflicts")
       .select("*")
@@ -116,7 +112,6 @@ export const getShadowConflicts = createServerFn({ method: "GET" }).handler(
       console.error("[SHADOW_DIAG] recent fetch failed:", recentErr);
     }
 
-    // Aggregate ανά symbol (24h)
     const { data: all, error: allErr } = await supabaseAdmin
       .from("shadow_conflicts")
       .select(
@@ -179,11 +174,91 @@ export const getShadowConflicts = createServerFn({ method: "GET" }).handler(
 
     aggregate.sort((a, b) => b.count - a.count);
 
+    /* ── 2. Cleanup config ── */
+    let cleanup_config: unknown = null;
+    let cleanup_error: string | null = null;
+    try {
+      const { data, error } = await supabaseAdmin
+        .from("pipeline_settings")
+        .select("cleanup_config")
+        .eq("id", 1)
+        .maybeSingle();
+      if (error) throw error;
+      cleanup_config = data?.cleanup_config ?? null;
+      if (!data) cleanup_error = "no pipeline_settings row with id=1";
+    } catch (e) {
+      cleanup_error = e instanceof Error ? e.message : String(e);
+      console.error("[SHADOW_DIAG] cleanup_config fetch failed:", e);
+    }
+
+    /* ── 3. Recent composite signals (last 30 min) ── */
+    let recent_composites: unknown[] = [];
+    let composites_error: string | null = null;
+    try {
+      const { data, error } = await supabaseAdmin
+        .from("composite_signals")
+        .select(
+          "symbol, recommendation, confidence, reasoning, created_at, whale_alert_id, indicator_snapshot_id, prediction_snapshot_id, council_signal_id",
+        )
+        .gte("created_at", since30m)
+        .order("created_at", { ascending: false })
+        .limit(30);
+      if (error) throw error;
+      recent_composites = (data ?? []).map((r: any) => ({
+        symbol: r.symbol,
+        recommendation: r.recommendation,
+        confidence: r.confidence,
+        reasoning: r.reasoning,
+        created_at: r.created_at,
+        has_whale: r.whale_alert_id != null,
+        has_indicator: r.indicator_snapshot_id != null,
+        has_prediction: r.prediction_snapshot_id != null,
+        has_council: r.council_signal_id != null,
+      }));
+    } catch (e) {
+      composites_error = e instanceof Error ? e.message : String(e);
+      console.error("[SHADOW_DIAG] composite fetch failed:", e);
+    }
+
+    /* ── 4. Recent pipeline runs ── */
+    let recent_runs: unknown[] = [];
+    try {
+      const { data } = await supabaseAdmin
+        .from("pipeline_runs")
+        .select("id, started_at, completed_at, status, signals, trades, error_message")
+        .order("started_at", { ascending: false })
+        .limit(5);
+      recent_runs = data ?? [];
+    } catch (e) {
+      console.error("[SHADOW_DIAG] pipeline_runs fetch failed:", e);
+    }
+
+    /* ── 5. Current strategy weights ── */
+    let strategy: unknown = null;
+    try {
+      const { data } = await supabaseAdmin
+        .from("strategy_config")
+        .select("*")
+        .eq("id", 1)
+        .maybeSingle();
+      strategy = data ?? null;
+    } catch (e) {
+      console.error("[SHADOW_DIAG] strategy fetch failed:", e);
+    }
+
     return {
       generated_at: new Date().toISOString(),
+      // Shadow conflicts (existing)
       total_24h: all?.length ?? 0,
       recent: recent ?? [],
       aggregate_24h: aggregate,
+      // New diagnostic fields
+      cleanup_config,
+      cleanup_error,
+      recent_composites,
+      composites_error,
+      recent_runs,
+      strategy,
     };
   },
 );
