@@ -4,7 +4,7 @@ import {
   getShadowConflicts,
 } from "@/lib/diagnostic.functions";
 
-export const Route = createFileRoute("/api/diagnostic/$")({
+export const Route = createFileRoute("/api/diagnostic")({
   server: {
     handlers: {
       GET: async ({ request, params }) => {
