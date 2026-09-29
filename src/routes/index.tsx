@@ -304,6 +304,7 @@ function CommandCenter() {
               {status?.mode ?? "paper"} mode
             </span>
             <ScheduleControl />
+            <DiagnosticButton />
             <ResetButton />
             <RunPipelineButton />
           </div>
