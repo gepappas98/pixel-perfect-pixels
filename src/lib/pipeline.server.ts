@@ -8,6 +8,9 @@ import {
   type StrategyConfig,
 } from "./strategy.presets";
 import { maybeAutoSwitchStrategy } from "./strategy.functions";
+import { fetchCleanupConfig } from "./cleanup-config.server";
+import { detectHardConflict } from "./watch-conflict";
+import { serializeError } from "./error-serialize";
 
 /* ───────────── Shared types (declared first) ───────────── */
 
@@ -1173,10 +1176,15 @@ function ruleBased(
   prediction: Row,
   council: Row,
   weights: StrategyConfig,
+  options?: { conflictFixEnabled?: boolean },
 ) {
   let score = 0;
   const reasons: string[] = [];
   let aiAvoid = false;
+
+  // Hard conflict detection: whale & prediction αντίθετα, no technicals
+  const predDir = predictionDirection(prediction);
+  const conflict = detectHardConflict(whale, mtf.direction, predDir);
 
   if (whale?.["direction"] === "accumulation") {
     score += 1 * weights.whale_weight;
@@ -1195,7 +1203,6 @@ function ruleBased(
     );
   }
 
-  const predDir = predictionDirection(prediction);
   if (predDir === "bullish") {
     score += 0.5 * weights.prediction_weight;
     reasons.push(
@@ -1234,11 +1241,23 @@ function ruleBased(
     }
   }
 
-  let recommendation: "buy" | "sell" | "hold" | "watch" = "watch";
-  if (score >= 1.5) recommendation = "buy";
-  else if (score <= -1.5) recommendation = "sell";
-  else if (Math.abs(score) < 0.5) recommendation = "hold";
-  if (aiAvoid) recommendation = "watch";
+  // ── Recommendation logic ──
+  // Default = hold (ρητά, όχι fallthrough)
+  let recommendation: "buy" | "sell" | "hold" | "watch" = "hold";
+
+  if (conflict.hardConflict && options?.conflictFixEnabled) {
+    recommendation = "hold";
+    reasons.push(
+      `hard conflict (whale=${conflict.whaleDir}, pred=${conflict.predDir}, no technicals) → hold`,
+    );
+  } else {
+    if (score >= 1.5) recommendation = "buy";
+    else if (score <= -1.5) recommendation = "sell";
+    else if (Math.abs(score) < 0.5) recommendation = "hold";
+    else recommendation = "watch";
+
+    if (aiAvoid) recommendation = "watch";
+  }
 
   const max = compositeMaxScore(weights);
   const confidence = max > 0 ? Math.min(1, Math.abs(score) / max) : 0;
@@ -1298,6 +1317,9 @@ function signalFingerprint(
 export async function combineSignals(): Promise<number> {
   const db = await admin();
   const weights = await fetchStrategy();
+  const cleanupCfg = await fetchCleanupConfig();
+  const conflictFixEnabled = cleanupCfg.watch_conflict_fix.enabled;
+  const conflictShadowMode = cleanupCfg.watch_conflict_fix.shadow_mode;
 
   const { data: councilRows } = await db
     .from("council_signals")
@@ -1433,7 +1455,21 @@ export async function combineSignals(): Promise<number> {
     const council = (latestCouncil.get(symbol) ?? null) as Row;
     if (!whale && !mtfRaw.primary && !prediction && !council) continue;
 
-    const result = ruleBased(whale, mtf, prediction, council, weights);
+    const result = ruleBased(whale, mtf, prediction, council, weights, {
+      conflictFixEnabled,
+    });
+
+    // Shadow mode: log τι θα γινόταν με το fix ενεργό
+    if (conflictShadowMode && !conflictFixEnabled) {
+      const shadow = ruleBased(whale, mtf, prediction, council, weights, {
+        conflictFixEnabled: true,
+      });
+      if (shadow.recommendation !== result.recommendation) {
+        console.log(
+          `[WATCH_CONFLICT_SHADOW] ${symbol}: would be ${shadow.recommendation} (currently ${result.recommendation})`,
+        );
+      }
+    }
 
     // ── Shadow evaluation across all presets (buy/sell only) ──
     const mtfPrice =
@@ -2388,7 +2424,7 @@ export async function runFullPipeline() {
     }
     return { whales, indicators, predictions, council, signals, trades, mode };
   } catch (e) {
-    const raw = e instanceof Error ? e.message : String(e);
+    const raw = serializeError(e);
     const message = `[step: ${step}] ${raw}`;
     const completedAt = new Date();
     console.error(`[PIPELINE_FAILED] ${message}`);
