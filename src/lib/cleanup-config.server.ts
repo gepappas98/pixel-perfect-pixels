@@ -42,7 +42,7 @@ export async function fetchCleanupConfig(): Promise<CleanupConfig> {
 
     const config: CleanupConfig = {
       ...DEFAULT_CLEANUP_CONFIG,
-      ...((data?.cleanup_config as Partial<CleanupConfig>) ?? {}),
+      ...(((data as any)?.cleanup_config as Partial<CleanupConfig>) ?? {}),
     };
 
     cache = { config, ts: now };

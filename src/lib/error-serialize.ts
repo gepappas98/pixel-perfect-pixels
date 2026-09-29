@@ -28,19 +28,19 @@ export function serializeError(e: unknown): string {
     const obj = e as Record<string, unknown>;
 
     // Supabase PostgrestError / similar
-    if (typeof obj.message === "string" && obj.message.length > 0) {
+    if (typeof obj["message"] === "string" && obj["message"].length > 0) {
       const extras: string[] = [];
-      if (typeof obj.code === "string") extras.push(`code=${obj.code}`);
-      if (typeof obj.details === "string") extras.push(`details=${obj.details}`);
-      if (typeof obj.hint === "string") extras.push(`hint=${obj.hint}`);
+      if (typeof obj["code"] === "string") extras.push(`code=${obj["code"]}`);
+      if (typeof obj["details"] === "string") extras.push(`details=${obj["details"]}`);
+      if (typeof obj["hint"] === "string") extras.push(`hint=${obj["hint"]}`);
       return extras.length > 0
-        ? `${obj.message} | ${extras.join(" | ")}`
-        : obj.message;
+        ? `${obj["message"]} | ${extras.join(" | ")}`
+        : obj["message"];
     }
 
-    if (typeof obj.error === "string") return obj.error;
-    if (typeof obj.error === "object" && obj.error !== null) {
-      return serializeError(obj.error);
+    if (typeof obj["error"] === "string") return obj["error"];
+    if (typeof obj["error"] === "object" && obj["error"] !== null) {
+      return serializeError(obj["error"]);
     }
 
     try {

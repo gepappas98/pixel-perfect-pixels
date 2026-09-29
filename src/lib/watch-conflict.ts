@@ -1,4 +1,4 @@
-import type { SignalDir } from "./trading-types";
+type SignalDir = "bullish" | "bearish" | "neutral";
 
 type Row = Record<string, unknown> | null;
 
