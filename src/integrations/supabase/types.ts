@@ -236,6 +236,7 @@ export type Database = {
           started_at: string
           status: string
           trades: number | null
+          variants_resolved: number
           whales: number | null
         }
         Insert: {
@@ -256,6 +257,7 @@ export type Database = {
           started_at?: string
           status?: string
           trades?: number | null
+          variants_resolved?: number
           whales?: number | null
         }
         Update: {
@@ -276,6 +278,7 @@ export type Database = {
           started_at?: string
           status?: string
           trades?: number | null
+          variants_resolved?: number
           whales?: number | null
         }
         Relationships: []
@@ -641,6 +644,7 @@ export type Database = {
           deleted_whale_alerts: number
         }[]
       }
+      get_pipeline_cron_health: { Args: never; Returns: Json }
       get_portfolio_summary: {
         Args: never
         Returns: {
