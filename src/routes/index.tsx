@@ -19,6 +19,7 @@ import { AIRiskSummary } from "@/components/trading/AIRiskSummary";
 import { PortfolioPanel } from "@/components/trading/PortfolioPanel";
 import { SupportDeveloper } from "@/components/trading/SupportDeveloper";
 import { GroqStatusIndicator } from "@/components/trading/GroqStatusIndicator";
+import { DiagnosticButton } from "@/components/trading/DiagnosticButton";
 import { getTradingStatus, runPipeline } from "@/lib/pipeline.functions";
 import { resetAllData } from "@/lib/admin.functions";
 import { getSchedule, setSchedule } from "@/lib/schedule.functions";
@@ -303,6 +304,7 @@ function CommandCenter() {
               {status?.mode ?? "paper"} mode
             </span>
             <ScheduleControl />
+            <DiagnosticButton />
             <ResetButton />
             <RunPipelineButton />
           </div>
