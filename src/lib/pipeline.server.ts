@@ -1581,7 +1581,7 @@ export async function combineSignals(): Promise<number> {
   // ── Batch insert shadow conflicts (non-fatal) ──
   if (shadowConflictBuffer.length > 0) {
     const { error: shadowErr } = await db
-      .from("shadow_conflicts")
+      .from("shadow_conflicts" as never)
       .insert(shadowConflictBuffer as never);
     if (shadowErr) {
       console.error("[SHADOW_CONFLICTS] insert failed:", shadowErr);
