@@ -71,6 +71,13 @@
       "when": 1790666398935,
       "tag": "0009_pipeline_cron_health",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790739745141,
+      "tag": "0010_allow_stale_exit_close_reasons",
+      "breakpoints": true
     }
   ]
 }

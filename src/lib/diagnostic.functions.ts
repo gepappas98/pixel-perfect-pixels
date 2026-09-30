@@ -1,3 +1,4 @@
+import type { Json } from "@/integrations/supabase/types";
 import { createServerFn } from "@tanstack/react-start";
 
 /* ───────────── Watch diagnostic ───────────── */
@@ -98,11 +99,13 @@ export const getShadowConflicts = createServerFn({ method: "GET" }).handler(
       "@/integrations/supabase/client.server"
     );
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const loose = supabaseAdmin as unknown as { from: (t: string) => any };
     const since24h = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
     const since30m = new Date(Date.now() - 30 * 60 * 1000).toISOString();
 
     /* ── 1. Shadow conflicts (existing) ── */
-    const { data: recent, error: recentErr } = await supabaseAdmin
+    const { data: recent, error: recentErr } = await loose
       .from("shadow_conflicts")
       .select("*")
       .order("detected_at", { ascending: false })
@@ -112,7 +115,7 @@ export const getShadowConflicts = createServerFn({ method: "GET" }).handler(
       console.error("[SHADOW_DIAG] recent fetch failed:", recentErr);
     }
 
-    const { data: all, error: allErr } = await supabaseAdmin
+    const { data: all, error: allErr } = await loose
       .from("shadow_conflicts")
       .select(
         "symbol, current_recommendation, would_be_recommendation, score, confidence",
@@ -175,10 +178,10 @@ export const getShadowConflicts = createServerFn({ method: "GET" }).handler(
     aggregate.sort((a, b) => b.count - a.count);
 
     /* ── 2. Cleanup config ── */
-    let cleanup_config: unknown = null;
+    let cleanup_config: Json = null;
     let cleanup_error: string | null = null;
     try {
-      const { data, error } = await supabaseAdmin
+      const { data, error } = await loose
         .from("pipeline_settings")
         .select("cleanup_config")
         .eq("id", 1)
@@ -192,7 +195,7 @@ export const getShadowConflicts = createServerFn({ method: "GET" }).handler(
     }
 
     /* ── 3. Recent composite signals (last 30 min) ── */
-    let recent_composites: unknown[] = [];
+    let recent_composites: Json[] = [];
     let composites_error: string | null = null;
     try {
       const { data, error } = await supabaseAdmin
@@ -221,7 +224,7 @@ export const getShadowConflicts = createServerFn({ method: "GET" }).handler(
     }
 
     /* ── 4. Recent pipeline runs ── */
-    let recent_runs: unknown[] = [];
+    let recent_runs: Json[] = [];
     try {
       const { data } = await supabaseAdmin
         .from("pipeline_runs")
@@ -234,7 +237,7 @@ export const getShadowConflicts = createServerFn({ method: "GET" }).handler(
     }
 
     /* ── 5. Current strategy weights ── */
-    let strategy: unknown = null;
+    let strategy: Json = null;
     try {
       const { data } = await supabaseAdmin
         .from("strategy_config")
