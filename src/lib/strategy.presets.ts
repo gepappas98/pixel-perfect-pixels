@@ -64,6 +64,13 @@ export const STRATEGY_PRESETS: Record<
     council_weight: 1.2,
     preset_name: "conservative",
   },
+  "volatility-timing": {
+    whale_weight: 0.3,
+    technicals_weight: 2.2,
+    prediction_weight: 0.5,
+    council_weight: 1.0,
+    preset_name: "volatility-timing",
+  },
 };
 
 export const PRESET_LABELS: Record<string, string> = {
@@ -73,5 +80,6 @@ export const PRESET_LABELS: Record<string, string> = {
   "sentiment-first": "Sentiment-First",
   "ai-driven": "AI-Driven",
   conservative: "Conservative",
+  "volatility-timing": "BB + Aroon Timing",
   custom: "Custom",
 };

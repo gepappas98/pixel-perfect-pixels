@@ -77,6 +77,26 @@ export function IndicatorPanel() {
             const rsi = i.rsi != null ? Number(i.rsi) : null;
             const price = i.price != null ? Number(i.price) : null;
             const sig = String(i.signal ?? "neutral").toLowerCase();
+            const raw = (i as IndicatorSnapshot & { raw?: unknown }).raw as
+              | { aroon?: { up?: number; down?: number; osc?: number }; bollinger?: { upper?: number; lower?: number } }
+              | undefined;
+            const aroonOsc = Number(raw?.aroon?.osc ?? 0);
+            const upper = Number(raw?.bollinger?.upper ?? NaN);
+            const lower = Number(raw?.bollinger?.lower ?? NaN);
+            const squeeze =
+              Number.isFinite(upper) && Number.isFinite(lower) && price != null
+                ? (upper - lower) / price < 0.04
+                : false;
+            const bandState = squeeze
+              ? "Squeeze"
+              : price != null && Number.isFinite(upper) && price >= upper * 0.99
+                ? "Exhaustion"
+                : price != null && Number.isFinite(lower) && price <= lower * 1.01
+                  ? "Breakout"
+                  : null;
+            const technicalTag = bandState
+              ? `${bandState} · ${aroonOsc >= 20 ? "A↑" : aroonOsc <= -20 ? "A↓" : "A·"}`
+              : null;
 
             return (
               <tr key={i.id} className="border-t border-border">
@@ -88,7 +108,12 @@ export function IndicatorPanel() {
                   {price != null ? price.toFixed(2) : "—"}
                 </td>
                 <td className={`py-1 text-xs ${tone[sig] ?? tone["neutral"]}`}>
-                  {i.signal ?? "—"}
+                  <div>{i.signal ?? "—"}</div>
+                  {technicalTag && (
+                    <div className="text-[9px] text-muted-foreground">
+                      {technicalTag}
+                    </div>
+                  )}
                 </td>
               </tr>
             );
