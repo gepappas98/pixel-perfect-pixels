@@ -11,6 +11,11 @@ import { maybeAutoSwitchStrategy } from "./strategy.functions";
 import { fetchCleanupConfig } from "./cleanup-config.server";
 import { detectHardConflict } from "./watch-conflict";
 import { serializeError } from "./error-serialize";
+import {
+  checkMtfGate,
+  type MtfCounts,
+  type MtfGateConfig,
+} from "./mtf-gate";
 
 /* ───────────── Shared types (declared first) ───────────── */
 
@@ -931,6 +936,10 @@ interface MultiTfResult {
   aligned: boolean;
   conflict: boolean;
   detail: string;
+  // MTF gate counts — πόσα timeframes συμφωνούν
+  bullCount: number;
+  bearCount: number;
+  neuCount: number;
 }
 
 function evaluateMultiTimeframe(tf: MultiTfInput): MultiTfResult {
@@ -950,6 +959,10 @@ function evaluateMultiTimeframe(tf: MultiTfInput): MultiTfResult {
     s === "bullish" ? "bull" : s === "bearish" ? "bear" : "neu";
   const detail = `4h ${label(p)} · 1h ${label(f)} · 1d ${label(t)}`;
 
+  const bullCount = [p, f, t].filter((s) => s === "bullish").length;
+  const bearCount = [p, f, t].filter((s) => s === "bearish").length;
+  const neuCount = [p, f, t].filter((s) => s === "neutral").length;
+
   if (p === "neutral") {
     return {
       direction: "neutral",
@@ -957,6 +970,9 @@ function evaluateMultiTimeframe(tf: MultiTfInput): MultiTfResult {
       aligned: false,
       conflict: false,
       detail,
+      bullCount,
+      bearCount,
+      neuCount,
     };
   }
 
@@ -970,7 +986,16 @@ function evaluateMultiTimeframe(tf: MultiTfInput): MultiTfResult {
   const aligned = f === p && t === p;
   const conflict = t !== "neutral" && t !== p;
 
-  return { direction: p, score: base * multiplier, aligned, conflict, detail };
+  return {
+    direction: p,
+    score: base * multiplier,
+    aligned,
+    conflict,
+    detail,
+    bullCount,
+    bearCount,
+    neuCount,
+  };
 }
 
 /* ───────────── Deterministic council fallback ───────────── */
@@ -1436,7 +1461,11 @@ function ruleBased(
   prediction: Row,
   council: Row,
   weights: StrategyConfig,
-  options?: { conflictFixEnabled?: boolean },
+  options?: {
+    conflictFixEnabled?: boolean;
+    mtfGateConfig?: MtfGateConfig;
+    symbol?: string;
+  },
 ) {
   let score = 0;
   const reasons: string[] = [];
@@ -1504,6 +1533,7 @@ function ruleBased(
   // ── Recommendation logic ──
   // Default = hold (ρητά, όχι fallthrough)
   let recommendation: "buy" | "sell" | "hold" | "watch" = "hold";
+  let mtfGateDecision: ReturnType<typeof checkMtfGate> | null = null;
 
   if (conflict.hardConflict && options?.conflictFixEnabled) {
     recommendation = "hold";
@@ -1519,6 +1549,37 @@ function ruleBased(
     if (aiAvoid) recommendation = "watch";
   }
 
+  // ── MTF Confirmation Gate ──
+  // Αν το score πέρασε threshold για buy/sell, αλλά το MTF δεν συμφωνεί → hold
+  if (
+    options?.mtfGateConfig &&
+    (recommendation === "buy" || recommendation === "sell")
+  ) {
+    const mtfCounts: MtfCounts = {
+      bullCount: mtf.bullCount,
+      bearCount: mtf.bearCount,
+      neuCount: mtf.neuCount,
+    };
+    mtfGateDecision = checkMtfGate(
+      recommendation,
+      mtfCounts,
+      options.mtfGateConfig,
+    );
+
+    if (!mtfGateDecision.passed) {
+      if (options.mtfGateConfig.enabled) {
+        // Enable mode: reject πραγματικά
+        reasons.push(`MTF gate REJECTED: ${mtfGateDecision.rejectReason}`);
+        recommendation = "hold";
+      } else if (options.mtfGateConfig.shadow_mode) {
+        // Shadow mode: log only, μην αλλάξεις
+        reasons.push(
+          `MTF gate SHADOW (would reject): ${mtfGateDecision.rejectReason}`,
+        );
+      }
+    }
+  }
+
   const max = compositeMaxScore(weights);
   const confidence = max > 0 ? Math.min(1, Math.abs(score) / max) : 0;
 
@@ -1527,6 +1588,7 @@ function ruleBased(
     confidence,
     score,
     reasoning: reasons.length > 0 ? reasons.join("; ") : "insufficient signal",
+    mtfGateDecision,
   };
 }
 
@@ -1580,6 +1642,7 @@ export async function combineSignals(): Promise<number> {
   const cleanupCfg = await fetchCleanupConfig();
   const conflictFixEnabled = cleanupCfg.watch_conflict_fix.enabled;
   const conflictShadowMode = cleanupCfg.watch_conflict_fix.shadow_mode;
+  const mtfGateConfig = cleanupCfg.mtf_confirmation_gate;
 
   const { data: councilRows } = await db
     .from("council_signals")
@@ -1676,6 +1739,9 @@ export async function combineSignals(): Promise<number> {
   // Shadow conflict buffer — watch_conflict_fix observability
   const shadowConflictBuffer: Record<string, unknown>[] = [];
 
+  // Shadow MTF gate buffer — mtf_confirmation_gate observability
+  const shadowMtfGateBuffer: Record<string, unknown>[] = [];
+
   for (const symbol of symbols) {
     const whaleRows = whaleBySymbol.get(symbol) ?? [];
     let whale: Row = null;
@@ -1720,6 +1786,8 @@ export async function combineSignals(): Promise<number> {
 
     const result = ruleBased(whale, mtf, prediction, council, weights, {
       conflictFixEnabled,
+      mtfGateConfig,
+      symbol,
     });
 
     // Shadow mode: log + persist τι θα γινόταν με το fix ενεργό
@@ -1743,6 +1811,40 @@ export async function combineSignals(): Promise<number> {
       }
     }
 
+    // Shadow MTF gate logging — αν το gate δεν είναι enabled
+    if (
+      mtfGateConfig &&
+      !mtfGateConfig.enabled &&
+      mtfGateConfig.shadow_mode &&
+      (result.recommendation === "buy" || result.recommendation === "sell")
+    ) {
+      const mtfCounts: MtfCounts = {
+        bullCount: mtf.bullCount,
+        bearCount: mtf.bearCount,
+        neuCount: mtf.neuCount,
+      };
+      const decision = checkMtfGate(
+        result.recommendation,
+        mtfCounts,
+        mtfGateConfig,
+      );
+      if (!decision.passed) {
+        shadowMtfGateBuffer.push({
+          symbol,
+          side: result.recommendation,
+          score: result.score,
+          confidence: result.confidence,
+          mtf_bull_count: mtfCounts.bullCount,
+          mtf_bear_count: mtfCounts.bearCount,
+          mtf_neutral_count: mtfCounts.neuCount,
+          original_recommendation: result.recommendation,
+          gated_recommendation: "hold",
+          reasoning: result.reasoning,
+          detected_at: nowIso,
+        });
+      }
+    }
+
     // ── Shadow evaluation across all presets (buy/sell only) ──
     const mtfPrice =
       typeof mtfRaw.primary?.["price"] === "number"
@@ -1751,43 +1853,51 @@ export async function combineSignals(): Promise<number> {
     for (const [presetName, presetWeights] of Object.entries(
       STRATEGY_PRESETS,
     )) {
-    const altResult = ruleBased(whale, mtf, prediction, council, {
-      ...presetWeights,
-      updated_at: nowIso,
-    });
-    if (presetName === "volatility-timing") {
-      const primaryRaw = mtfRaw.primary?.["raw"] as Row;
-      const aroonData = primaryRaw?.["aroon"] as Row;
-      const osc = Number(aroonData?.["osc"] ?? 0);
-      const confirmed =
-        (altResult.recommendation === "buy" && osc >= 20) ||
-        (altResult.recommendation === "sell" && osc <= -20);
-      if (!confirmed) continue;
-    }
-    if (presetName === "smc-reversal" || presetName === "smc-structure") {
-      const primaryRaw = mtfRaw.primary?.["raw"] as Row;
-      const smc = primaryRaw?.["smc"] as SmcResult | undefined;
-      const confirmed =
-        (altResult.recommendation === "sell" &&
-(smc?.signal === "bsl_sweep_trap" || smc?.signal === "bearish_continuation" || smc?.signal === "bearish_reversal")) ||
-  (altResult.recommendation === "buy" &&
-  (smc?.signal === "ssl_sweep_trap" || smc?.signal === "bullish_continuation" || smc?.signal === "bullish_reversal"));
-      if (!confirmed) continue;
-    }
-    if (presetName === "vwap-momentum") {
-      const fastRaw = mtfRaw.fast?.["raw"] as Row;
-      const fastPrice = Number(mtfRaw.fast?.["price"] ?? 0);
-      const fastVwap = Number(fastRaw?.["vwap"] ?? 0);
-      const fastRsi = Number(mtfRaw.fast?.["rsi"] ?? 50);
-      const confirmed =
-        (altResult.recommendation === "buy" && fastRsi >= 60 && fastPrice > fastVwap) ||
-        (altResult.recommendation === "sell" && fastRsi <= 40 && fastPrice < fastVwap);
-      if (!confirmed) continue;
-    }
-    if (
-      altResult.recommendation !== "buy" &&
-      altResult.recommendation !== "sell"
-    )
+      const altResult = ruleBased(whale, mtf, prediction, council, {
+        ...presetWeights,
+        updated_at: nowIso,
+      });
+      if (presetName === "volatility-timing") {
+        const primaryRaw = mtfRaw.primary?.["raw"] as Row;
+        const aroonData = primaryRaw?.["aroon"] as Row;
+        const osc = Number(aroonData?.["osc"] ?? 0);
+        const confirmed =
+          (altResult.recommendation === "buy" && osc >= 20) ||
+          (altResult.recommendation === "sell" && osc <= -20);
+        if (!confirmed) continue;
+      }
+      if (presetName === "smc-reversal" || presetName === "smc-structure") {
+        const primaryRaw = mtfRaw.primary?.["raw"] as Row;
+        const smc = primaryRaw?.["smc"] as SmcResult | undefined;
+        const confirmed =
+          (altResult.recommendation === "sell" &&
+            (smc?.signal === "bsl_sweep_trap" ||
+              smc?.signal === "bearish_continuation" ||
+              smc?.signal === "bearish_reversal")) ||
+          (altResult.recommendation === "buy" &&
+            (smc?.signal === "ssl_sweep_trap" ||
+              smc?.signal === "bullish_continuation" ||
+              smc?.signal === "bullish_reversal"));
+        if (!confirmed) continue;
+      }
+      if (presetName === "vwap-momentum") {
+        const fastRaw = mtfRaw.fast?.["raw"] as Row;
+        const fastPrice = Number(mtfRaw.fast?.["price"] ?? 0);
+        const fastVwap = Number(fastRaw?.["vwap"] ?? 0);
+        const fastRsi = Number(mtfRaw.fast?.["rsi"] ?? 50);
+        const confirmed =
+          (altResult.recommendation === "buy" &&
+            fastRsi >= 60 &&
+            fastPrice > fastVwap) ||
+          (altResult.recommendation === "sell" &&
+            fastRsi <= 40 &&
+            fastPrice < fastVwap);
+        if (!confirmed) continue;
+      }
+      if (
+        altResult.recommendation !== "buy" &&
+        altResult.recommendation !== "sell"
+      )
         continue;
       if (mtfPrice == null || mtfPrice <= 0) continue;
       variantRows.push({
@@ -1877,6 +1987,20 @@ export async function combineSignals(): Promise<number> {
     } else {
       console.log(
         `[SHADOW_CONFLICTS] Recorded ${shadowConflictBuffer.length} would-be changes`,
+      );
+    }
+  }
+
+  // ── Batch insert shadow MTF gates (non-fatal) ──
+  if (shadowMtfGateBuffer.length > 0) {
+    const { error: mtfErr } = await db
+      .from("shadow_mtf_gates" as never)
+      .insert(shadowMtfGateBuffer as never);
+    if (mtfErr) {
+      console.error("[SHADOW_MTF_GATES] insert failed:", mtfErr);
+    } else {
+      console.log(
+        `[SHADOW_MTF_GATES] Recorded ${shadowMtfGateBuffer.length} would-be rejects`,
       );
     }
   }
