@@ -82,35 +82,18 @@ export function VariantComparisonPanel() {
 
   const rows = data ?? [];
 
-  // Aggregate per strategy
   const agg = new Map<string, StrategyStats>();
   for (const r of rows) {
-    const s = r.strategy_name;
-    const bucket = agg.get(s) ?? {
-      wins: 0,
-      losses: 0,
-      expired: 0,
-      open: 0,
-      resolved: 0,
-      totalPnlPct: 0,
-    };
-
-    if (r.outcome === "win") bucket.wins++;
-    else if (r.outcome === "loss") bucket.losses++;
-    else if (r.outcome === "expired") bucket.expired++;
-    else if (r.outcome === "open") bucket.open++;
-
-    if (
-      r.outcome === "win" ||
-      r.outcome === "loss" ||
-      r.outcome === "expired"
-    ) {
-      bucket.resolved++;
-      bucket.totalPnlPct += Number(r.pnl_pct ?? 0);
-    }
-
-    agg.set(s, bucket);
+    agg.set(r.strategy_name, {
+      wins: Number(r.wins ?? 0),
+      losses: Number(r.losses ?? 0),
+      expired: Number(r.expired ?? 0),
+      open: Number(r.open_count ?? 0),
+      resolved: Number(r.resolved ?? 0),
+      totalPnlPct: Number(r.total_pnl_pct ?? 0),
+    });
   }
+
 
   const strategies = PRESET_ORDER.filter((s) => agg.has(s));
   const totalResolved = strategies.reduce(
