@@ -504,7 +504,17 @@ interface SmcResult {
   fibRetest: { inGoldenPocket: boolean; fib618: number; fib786: number; range: number };
   lastSwingHigh: number | null;
   lastSwingLow: number | null;
+  sweepTrap: {
+    detected: boolean;
+    type: "bsl_sweep" | "ssl_sweep" | "none";
+    liquidityLevel: number;
+    sweepWickHigh?: number;
+    sweepWickLow?: number;
+    fvgConfirmed: boolean;
+  };
   signal:
+    | "bsl_sweep_trap"
+    | "ssl_sweep_trap"
     | "bearish_continuation"
     | "bearish_reversal"
     | "bullish_continuation"
@@ -512,12 +522,20 @@ interface SmcResult {
     | "neutral";
 }
 
-function detectSmc(highs: number[], lows: number[], closes: number[]): SmcResult {
+function detectSmc(
+  opens: number[],
+  highs: number[],
+  lows: number[],
+  closes: number[],
+): SmcResult {
   const empty: SmcResult = {
     choch: "none", bos: "none",
     fvg: { type: "none", top: 0, bottom: 0, retesting: false },
     fibRetest: { inGoldenPocket: false, fib618: 0, fib786: 0, range: 0 },
-    lastSwingHigh: null, lastSwingLow: null, signal: "neutral",
+    lastSwingHigh: null,
+    lastSwingLow: null,
+    sweepTrap: { detected: false, type: "none", liquidityLevel: 0, fvgConfirmed: false },
+    signal: "neutral",
   };
   const len = closes.length;
   if (len < 12) return empty;
@@ -552,8 +570,86 @@ function detectSmc(highs: number[], lows: number[], closes: number[]): SmcResult
     if (lows[i - 2]! > highs[i]!) { fvgType = "bearish"; fvgTop = lows[i - 2]!; fvgBottom = highs[i]!; retesting = currentPrice >= fvgBottom && currentPrice <= fvgTop * 1.002; break; }
     if (highs[i - 2]! < lows[i]!) { fvgType = "bullish"; fvgBottom = highs[i - 2]!; fvgTop = lows[i]!; retesting = currentPrice <= fvgTop && currentPrice >= fvgBottom * 0.998; break; }
   }
-  const signal: SmcResult["signal"] = bos === "bearish" && inGoldenPocket ? "bearish_continuation" : choch === "bearish" && (fvgType === "bearish" || retesting) ? "bearish_reversal" : bos === "bullish" && range > 0 && currentPrice <= lastSwingLow! + range * 0.382 ? "bullish_continuation" : choch === "bullish" && (fvgType === "bullish" || retesting) ? "bullish_reversal" : "neutral";
-  return { choch, bos, fvg: { type: fvgType, top: fvgTop, bottom: fvgBottom, retesting }, fibRetest: { inGoldenPocket, fib618, fib786, range }, lastSwingHigh, lastSwingLow, signal };
+  let sweepTrap: SmcResult["sweepTrap"] = {
+    detected: false,
+    type: "none",
+    liquidityLevel: 0,
+    fvgConfirmed: false,
+  };
+  const targetBsl = lastSwingHigh !== null && prevSwingHigh !== null &&
+    Math.abs(lastSwingHigh - prevSwingHigh) / lastSwingHigh <= 0.002
+    ? Math.max(lastSwingHigh, prevSwingHigh)
+    : lastSwingHigh;
+  if (targetBsl !== null && targetBsl > 0) {
+    for (let i = len - 1; i >= Math.max(0, len - 3); i--) {
+      const candleRange = highs[i]! - lows[i]!;
+      const upperWick = highs[i]! - Math.max(opens[i]!, closes[i]!);
+      if (
+        highs[i]! > targetBsl &&
+        closes[i]! < targetBsl &&
+        candleRange > 0 &&
+        upperWick / candleRange >= 0.4
+      ) {
+        sweepTrap = {
+          detected: true,
+          type: "bsl_sweep",
+          liquidityLevel: targetBsl,
+          sweepWickHigh: highs[i],
+          fvgConfirmed: fvgType === "bearish" || retesting,
+        };
+        break;
+      }
+    }
+  }
+  const targetSsl = lastSwingLow !== null && prevSwingLow !== null &&
+    Math.abs(lastSwingLow - prevSwingLow) / lastSwingLow <= 0.002
+    ? Math.min(lastSwingLow, prevSwingLow)
+    : lastSwingLow;
+  if (!sweepTrap.detected && targetSsl !== null && targetSsl > 0) {
+    for (let i = len - 1; i >= Math.max(0, len - 3); i--) {
+      const candleRange = highs[i]! - lows[i]!;
+      const lowerWick = Math.min(opens[i]!, closes[i]!) - lows[i]!;
+      if (
+        lows[i]! < targetSsl &&
+        closes[i]! > targetSsl &&
+        candleRange > 0 &&
+        lowerWick / candleRange >= 0.4
+      ) {
+        sweepTrap = {
+          detected: true,
+          type: "ssl_sweep",
+          liquidityLevel: targetSsl,
+          sweepWickLow: lows[i],
+          fvgConfirmed: fvgType === "bullish" || retesting,
+        };
+        break;
+      }
+    }
+  }
+  const signal: SmcResult["signal"] =
+    sweepTrap.detected && sweepTrap.fvgConfirmed && sweepTrap.type === "bsl_sweep"
+      ? "bsl_sweep_trap"
+      : sweepTrap.detected && sweepTrap.fvgConfirmed && sweepTrap.type === "ssl_sweep"
+        ? "ssl_sweep_trap"
+        : bos === "bearish" && inGoldenPocket
+          ? "bearish_continuation"
+          : choch === "bearish" && (fvgType === "bearish" || retesting)
+            ? "bearish_reversal"
+            : bos === "bullish" && range > 0 && currentPrice <= lastSwingLow! + range * 0.382
+              ? "bullish_continuation"
+              : choch === "bullish" && (fvgType === "bullish" || retesting)
+                ? "bullish_reversal"
+                : "neutral";
+  return {
+    choch,
+    bos,
+    fvg: { type: fvgType, top: fvgTop, bottom: fvgBottom, retesting },
+    fibRetest: { inGoldenPocket, fib618, fib786, range },
+    lastSwingHigh,
+    lastSwingLow,
+    sweepTrap,
+    signal,
+  };
 }
 
 function classify(
@@ -565,6 +661,8 @@ function classify(
   trend: { up: number; down: number; osc: number },
   smc?: SmcResult,
 ): "bullish" | "bearish" | "neutral" {
+  if (smc?.signal === "bsl_sweep_trap") return "bearish";
+  if (smc?.signal === "ssl_sweep_trap") return "bullish";
   if (smc?.signal === "bearish_continuation" || smc?.signal === "bearish_reversal") {
     const momentum = m - s;
     if (momentum <= 0 || r >= 45) return "bearish";
@@ -594,6 +692,7 @@ async function fetchIndicatorForTimeframe(
     );
     if (!res.ok) return null;
     const raw = (await res.json()) as unknown[][];
+    const opens = raw.map((r) => parseFloat(String(r[1])));
     const highs = raw.map((r) => parseFloat(String(r[2])));
     const lows = raw.map((r) => parseFloat(String(r[3])));
     const closes = raw.map((r) => parseFloat(String(r[4])));
@@ -601,6 +700,7 @@ async function fetchIndicatorForTimeframe(
     if (
       closes.length < 30 ||
       closes.some((c) => !Number.isFinite(c)) ||
+      opens.some((v) => !Number.isFinite(v)) ||
       highs.some((v) => !Number.isFinite(v)) ||
       lows.some((v) => !Number.isFinite(v)) ||
       volumes.some((v) => !Number.isFinite(v) || v < 0)
@@ -611,7 +711,7 @@ async function fetchIndicatorForTimeframe(
     const bb = bollinger(closes);
     const trend = aroon(highs, lows);
     const vwap = computeVwap(highs, lows, closes, volumes);
-    const smc = detectSmc(highs, lows, closes);
+    const smc = detectSmc(opens, highs, lows, closes);
     const candleCloseTime = new Date(
       Number(raw[raw.length - 1]?.[6]),
     ).toISOString();
@@ -1669,9 +1769,9 @@ export async function combineSignals(): Promise<number> {
       const smc = primaryRaw?.["smc"] as SmcResult | undefined;
       const confirmed =
         (altResult.recommendation === "sell" &&
-          (smc?.signal === "bearish_continuation" || smc?.signal === "bearish_reversal")) ||
-        (altResult.recommendation === "buy" &&
-          (smc?.signal === "bullish_continuation" || smc?.signal === "bullish_reversal"));
+(smc?.signal === "bsl_sweep_trap" || smc?.signal === "bearish_continuation" || smc?.signal === "bearish_reversal")) ||
+  (altResult.recommendation === "buy" &&
+  (smc?.signal === "ssl_sweep_trap" || smc?.signal === "bullish_continuation" || smc?.signal === "bullish_reversal"));
       if (!confirmed) continue;
     }
     if (presetName === "vwap-momentum") {
