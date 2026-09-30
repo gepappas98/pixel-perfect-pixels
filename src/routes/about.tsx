@@ -523,6 +523,179 @@ function AboutPage() {
           </ProNote>
         </Section>
 
+        {/* ── Fees ── */}
+        <Section
+          emoji="💸"
+          title="Trading fees"
+          subtitle="Every number you see is net"
+        >
+          <p>
+            Real trading costs money. Every trade here is charged a fee on the
+            way in <em>and</em> on the way out, exactly like a real exchange
+            would. So the profit and loss you see on screen is what you would
+            actually keep — never an optimistic figure.
+          </p>
+
+          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+            <Stat label="Fee per side" value="0.05%" hint="entry and exit" />
+            <Stat label="Round trip" value="0.10%" hint="total per trade" />
+            <Stat label="Shown PnL" value="Net" hint="fees already deducted" />
+          </div>
+
+          <ProNote>
+            <p>
+              <strong>Single source of truth:</strong>{" "}
+              <code>TRADING_FEE_RATE = 0.0005</code> in <code>src/lib/fees.ts</code>,
+              mirrored by <code>public.trading_fee_rate()</code> in SQL. Change both together.
+            </p>
+            <p>
+              <strong>Storage:</strong> <code>entry_fee</code> saved on open,
+              actual fees plus gross and net PnL on close. The <code>pnl</code>{" "}
+              column always holds <em>net</em> PnL.
+            </p>
+            <p>
+              <strong>Sizing:</strong> fees are included in the stop-distance
+              denominator, so risk per trade stays at 0.25% after costs.
+            </p>
+          </ProNote>
+        </Section>
+
+        {/* ── Strategy presets ── */}
+        <Section
+          emoji="🎛️"
+          title="Strategy presets & weights"
+          subtitle="How much each witness counts"
+        >
+          <p>
+            The four evidence sources don't have to count equally. A{" "}
+            <strong>preset</strong> decides how loud each one is. Prefer chart
+            signals? Turn technicals up. Trust big-money flow? Turn whales up.
+          </p>
+
+          <ul className="ml-5 list-disc space-y-1.5">
+            <li><strong>Balanced</strong> — all four sources weighted evenly.</li>
+            <li><strong>Chart Trader</strong> — technicals lead the decision.</li>
+            <li><strong>Whale-Focused</strong> — large-money flow leads.</li>
+            <li><strong>Sentiment-First</strong> — prediction markets lead.</li>
+            <li><strong>AI-Driven</strong> — the AI council gets the loudest vote.</li>
+            <li><strong>Conservative</strong> — needs broad agreement before acting.</li>
+          </ul>
+
+          <p>
+            You can also drag the sliders yourself. Changed weights show an{" "}
+            <strong>UNSAVED</strong> badge until you press Save — nothing takes
+            effect before that.
+          </p>
+
+          <ProNote>
+            <p>
+              <strong>Presets:</strong> <code>src/lib/strategy.presets.ts</code>.
+              Weights multiply the per-source score before thresholding.
+            </p>
+            <p>
+              <strong>Auto-switch:</strong> optional 4h re-evaluation asks Groq
+              which preset fits the current regime (max 600 output tokens, 20s
+              timeout). Failures are logged and the active preset is kept.
+            </p>
+          </ProNote>
+        </Section>
+
+        {/* ── Shadow variants ── */}
+        <Section
+          emoji="🧪"
+          title="Shadow testing (Variant Performance)"
+          subtitle="All 6 presets compete, without risking anything"
+        >
+          <p>
+            On every cycle, all six presets are scored in parallel — not just
+            the active one. The five that aren't in charge still record what
+            they <em>would</em> have traded. It's a permanent, honest contest
+            running in the background.
+          </p>
+
+          <ul className="ml-5 list-disc space-y-1.5">
+            <li>Each shadow trade assumes <strong>$1,000</strong>, take profit <strong>+4%</strong>, stop <strong>−3%</strong>.</li>
+            <li>Unresolved after <strong>7 days</strong> → closed at market as <em>expired</em>.</li>
+            <li>Outcomes are checked against real 4-hour candles — no guessing.</li>
+            <li>Shadow results <strong>never</strong> touch the real paper portfolio.</li>
+          </ul>
+
+          <p>
+            The Variant Performance panel then ranks the presets by win rate and
+            hypothetical profit, so you can see which style is actually working
+            in current conditions before you switch to it.
+          </p>
+
+          <ProNote>
+            <p>
+              <strong>Table:</strong> <code>strategy_variant_signals</code>
+              (outcome: <code>open</code> / <code>win</code> / <code>loss</code> /{" "}
+              <code>expired</code>). Resolver: <code>resolveVariantOutcomes()</code>{" "}
+              using Binance 4h klines, high/low touch detection.
+            </p>
+            <p>
+              <strong>Panel query:</strong> filters on resolved outcomes
+              server-side — a plain recency query hits the 1,000-row API cap and
+              returns only freshly-open rows.
+            </p>
+            <p>
+              <strong>Bookkeeping:</strong> each run writes{" "}
+              <code>variants_resolved</code> back to <code>pipeline_runs</code>.
+            </p>
+          </ProNote>
+        </Section>
+
+        {/* ── Automation ── */}
+        <Section
+          emoji="⏰"
+          title="Automation & housekeeping"
+          subtitle="What runs by itself"
+        >
+          <p>
+            Nothing here needs you to be at the screen. A scheduler triggers the
+            full cycle around the clock, a watchdog repairs anything that stalls,
+            and a weekly cleanup keeps the data small and fast.
+          </p>
+
+          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+            <Stat label="Pipeline" value="10 min" hint="round the clock" />
+            <Stat label="Watchdog" value="5 min" hint="clears stalled runs" />
+            <Stat label="Cleanup" value="Weekly" hint="Monday 03:00 UTC" />
+          </div>
+
+          <p className="mt-3">
+            The cleanup removes only data nobody reads any more. Things you care
+            about are kept <strong>forever</strong>: every trade, every lesson,
+            and every buy/sell signal.
+          </p>
+
+          <ul className="ml-5 list-disc space-y-1.5">
+            <li><strong>Kept forever</strong> — trades, council lessons, buy/sell signals, portfolio history.</li>
+            <li><strong>Removed after 7 days</strong> — whale alerts, watch/hold signals, shadow variant signals, indicator and prediction snapshots, run history.</li>
+            <li><strong>Removed after 30 days</strong> — trade alerts.</li>
+          </ul>
+
+          <ProNote>
+            <p>
+              <strong>Jobs:</strong> <code>trading-pipeline-auto</code> (*/10),{" "}
+              <code>reconcile-stuck-pipeline-runs</code> (*/5),{" "}
+              <code>refresh-pattern-stats</code> (*/10).
+            </p>
+            <p>
+              <strong>Cleanup hook:</strong>{" "}
+              <code>cleanup_old_pipeline_data()</code> is invoked from the
+              reconcile job inside a Monday 03:00–03:05 UTC window
+              (<code>isodow = 1</code>), avoiding a separate cron entry.
+            </p>
+            <p>
+              <strong>Stall repair:</strong> runs left in <code>running</code>{" "}
+              past the timeout are marked <code>error</code> so the{" "}
+              <code>pipeline_runs_one_active</code> index stops blocking new runs.
+            </p>
+          </ProNote>
+        </Section>
+
+
         {/* ── The panels ── */}
         <Section
           emoji="🖥️"
