@@ -4,16 +4,14 @@ import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Loader2, GitCompare, Info } from "lucide-react";
 
-interface VariantRow {
+interface VariantPerfRow {
   strategy_name: string;
-  symbol: string;
-  recommendation: string | null;
-  confidence: number | null;
-  entry_price: number | null;
-  exit_price: number | null;
-  outcome: string | null;
-  pnl_pct: number | null;
-  created_at: string;
+  wins: number;
+  losses: number;
+  expired: number;
+  open_count: number;
+  resolved: number;
+  total_pnl_pct: number;
 }
 
 const PRESET_ORDER = [
@@ -46,26 +44,19 @@ interface StrategyStats {
 const POSITION_SIZE_USD = 1000;
 
 export function VariantComparisonPanel() {
-  const { data, isLoading, error } = useQuery<VariantRow[]>({
+  const { data, isLoading, error } = useQuery<VariantPerfRow[]>({
     queryKey: ["strategy-variants-perf"],
     queryFn: async () => {
-      const since = new Date(
-        Date.now() - 7 * 24 * 60 * 60 * 1000,
-      ).toISOString();
-      const { data, error } = await supabase
-        .from("strategy_variant_signals")
-        .select(
-          "strategy_name, symbol, recommendation, confidence, entry_price, exit_price, outcome, pnl_pct, created_at",
-        )
-        .gte("created_at", since)
-        .order("created_at", { ascending: false })
-        .limit(5000);
+      const { data, error } = await supabase.rpc("get_variant_performance", {
+        days: 7,
+      });
       if (error) throw error;
-      return (data ?? []) as VariantRow[];
+      return (data ?? []) as VariantPerfRow[];
     },
     refetchInterval: 60_000,
     staleTime: 30_000,
   });
+
 
   if (isLoading) {
     return (
@@ -91,35 +82,18 @@ export function VariantComparisonPanel() {
 
   const rows = data ?? [];
 
-  // Aggregate per strategy
   const agg = new Map<string, StrategyStats>();
   for (const r of rows) {
-    const s = r.strategy_name;
-    const bucket = agg.get(s) ?? {
-      wins: 0,
-      losses: 0,
-      expired: 0,
-      open: 0,
-      resolved: 0,
-      totalPnlPct: 0,
-    };
-
-    if (r.outcome === "win") bucket.wins++;
-    else if (r.outcome === "loss") bucket.losses++;
-    else if (r.outcome === "expired") bucket.expired++;
-    else if (r.outcome === "open") bucket.open++;
-
-    if (
-      r.outcome === "win" ||
-      r.outcome === "loss" ||
-      r.outcome === "expired"
-    ) {
-      bucket.resolved++;
-      bucket.totalPnlPct += Number(r.pnl_pct ?? 0);
-    }
-
-    agg.set(s, bucket);
+    agg.set(r.strategy_name, {
+      wins: Number(r.wins ?? 0),
+      losses: Number(r.losses ?? 0),
+      expired: Number(r.expired ?? 0),
+      open: Number(r.open_count ?? 0),
+      resolved: Number(r.resolved ?? 0),
+      totalPnlPct: Number(r.total_pnl_pct ?? 0),
+    });
   }
+
 
   const strategies = PRESET_ORDER.filter((s) => agg.has(s));
   const totalResolved = strategies.reduce(

@@ -78,6 +78,13 @@
       "when": 1790739745141,
       "tag": "0010_allow_stale_exit_close_reasons",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1790740340833,
+      "tag": "0011_variant_performance_summary",
+      "breakpoints": true
     }
   ]
 }

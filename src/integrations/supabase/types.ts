@@ -664,6 +664,18 @@ export type Database = {
           win_rate_pct: number
         }[]
       }
+      get_variant_performance: {
+        Args: { days?: number }
+        Returns: {
+          expired: number
+          losses: number
+          open_count: number
+          resolved: number
+          strategy_name: string
+          total_pnl_pct: number
+          wins: number
+        }[]
+      }
       reconcile_stuck_pipeline_runs: { Args: never; Returns: number }
       refresh_pattern_stats: { Args: never; Returns: number }
       set_pipeline_schedule: { Args: { _minutes: number }; Returns: number }
