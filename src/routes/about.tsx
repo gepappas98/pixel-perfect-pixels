@@ -158,7 +158,7 @@ function AboutPage() {
           <p>
             Imagine you have a <strong>super-smart robot</strong> that watches the
             crypto market 24/7. It never sleeps, never gets tired, never forgets.
-            Every 10 minutes it wakes up, gathers 4 different kinds of evidence,
+            Every 15 minutes it wakes up, gathers 4 different kinds of evidence,
             votes on what to do, opens or closes trades, and writes down what it
             learned.
           </p>
@@ -794,6 +794,71 @@ function AboutPage() {
               optional context, get a 3-point risk summary: key risks,
               volatility outlook, actionable takeaway. Powered by Groq.
             </FeatureCard>
+
+            <FeatureCard emoji="🎛️" name="Strategy" tag="advanced">
+              The active strategy preset and its evidence weights. Shows how
+              strongly whale flow, technicals, prediction markets, and the AI
+              council influence each composite signal.
+              <ProNote>
+                <p>
+                  <strong>Presets:</strong> conservative, balanced, aggressive,
+                  momentum, contrarian, and whale-following variants can be
+                  compared without changing the underlying risk limits.
+                </p>
+                <p>
+                  <strong>Safety:</strong> strategy selection changes signal
+                  scoring, not position sizing, stop-loss, take-profit, or the
+                  paper-mode guardrails.
+                </p>
+              </ProNote>
+            </FeatureCard>
+
+            <FeatureCard emoji="🌡️" name="Market Regime" tag="advanced">
+              A fast read of the market environment: bullish, bearish, or
+              neutral technical signals across the tracked universe. The panel
+              also shows the data window used when the freshest candles are
+              unavailable.
+              <ProNote>
+                <p>
+                  <strong>Resilient windows:</strong> technicals try 4h data from
+                  the last 6h, then 24h, then 7 days instead of silently showing
+                  an empty regime.
+                </p>
+              </ProNote>
+            </FeatureCard>
+
+            <FeatureCard emoji="🏁" name="Variant Performance" tag="pro">
+              Compares the six strategy presets in shadow mode. Each variant
+              receives the same market snapshot, so you can see which approach
+              would have produced the strongest signals before promoting it.
+              <ProNote>
+                <p>
+                  <strong>Shadow testing:</strong> variants are evaluated without
+                  opening trades or changing the live preset. Results are kept
+                  separate for transparent comparison and learning.
+                </p>
+              </ProNote>
+            </FeatureCard>
+
+            <FeatureCard emoji="🚨" name="Trade Alerts" tag="core">
+              A compact feed of important trade events: entries, exits, stale
+              or expired positions, stop-loss and take-profit outcomes, and
+              rotations. It gives the latest action context without opening the
+              full positions history.
+            </FeatureCard>
+
+            <FeatureCard emoji="🧪" name="Diagnostic" tag="advanced">
+              The system's inspection window for recent pipeline runs, cleanup
+              configuration, shadow conflicts, and serialized errors. Use it to
+              verify what the bot decided and why when a signal looks unusual.
+              <ProNote>
+                <p>
+                  <strong>Read-only:</strong> diagnostics expose audit data and
+                  do not trigger a pipeline run, change a strategy, or modify a
+                  trade.
+                </p>
+              </ProNote>
+            </FeatureCard>
           </div>
         </Section>
 
@@ -879,7 +944,7 @@ function AboutPage() {
           <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
             <Stat label="Exchanges" value="2" hint="Binance · Hyperliquid" />
             <Stat label="Data feeds" value="4" hint="spot · perps · prediction · AI" />
-            <Stat label="Watchlist" value="95+" hint="coins tracked" />
+            <Stat label="Watchlist" value="97" hint="coins tracked" />
             <Stat label="Cycle time" value="~60s" hint="full pipeline" />
           </div>
 
@@ -992,7 +1057,7 @@ function AboutPage() {
         <SupportDeveloper />
 
         <p className="pb-4 text-center text-[11px] text-muted-foreground">
-          Made with 🤖 + ❤️ · Trading Command Center · v2.0
+          Made with 🤖 + ❤️ · Trading Command Center · v2.1
         </p>
 
         <div className="flex justify-center pt-2">
