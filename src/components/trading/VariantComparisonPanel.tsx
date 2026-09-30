@@ -4,16 +4,14 @@ import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Loader2, GitCompare, Info } from "lucide-react";
 
-interface VariantRow {
+interface VariantPerfRow {
   strategy_name: string;
-  symbol: string;
-  recommendation: string | null;
-  confidence: number | null;
-  entry_price: number | null;
-  exit_price: number | null;
-  outcome: string | null;
-  pnl_pct: number | null;
-  created_at: string;
+  wins: number;
+  losses: number;
+  expired: number;
+  open_count: number;
+  resolved: number;
+  total_pnl_pct: number;
 }
 
 const PRESET_ORDER = [
@@ -46,26 +44,19 @@ interface StrategyStats {
 const POSITION_SIZE_USD = 1000;
 
 export function VariantComparisonPanel() {
-  const { data, isLoading, error } = useQuery<VariantRow[]>({
+  const { data, isLoading, error } = useQuery<VariantPerfRow[]>({
     queryKey: ["strategy-variants-perf"],
     queryFn: async () => {
-      const since = new Date(
-        Date.now() - 7 * 24 * 60 * 60 * 1000,
-      ).toISOString();
-      const { data, error } = await supabase
-        .from("strategy_variant_signals")
-        .select(
-          "strategy_name, symbol, recommendation, confidence, entry_price, exit_price, outcome, pnl_pct, created_at",
-        )
-        .gte("created_at", since)
-        .order("created_at", { ascending: false })
-        .limit(5000);
+      const { data, error } = await supabase.rpc("get_variant_performance", {
+        days: 7,
+      });
       if (error) throw error;
-      return (data ?? []) as VariantRow[];
+      return (data ?? []) as VariantPerfRow[];
     },
     refetchInterval: 60_000,
     staleTime: 30_000,
   });
+
 
   if (isLoading) {
     return (
