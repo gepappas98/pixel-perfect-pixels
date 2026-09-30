@@ -462,6 +462,24 @@ function bollinger(closes: number[], period = 20, mult = 2) {
   return { upper: mean + mult * sd, lower: mean - mult * sd };
 }
 
+function computeVwap(
+  highs: number[],
+  lows: number[],
+  closes: number[],
+  volumes: number[],
+): number {
+  let cumVol = 0;
+  let cumTypVol = 0;
+  const start = Math.max(0, closes.length - 24);
+  for (let i = start; i < closes.length; i++) {
+    const typPrice = (highs[i]! + lows[i]! + closes[i]!) / 3;
+    const volume = volumes[i]!;
+    cumTypVol += typPrice * volume;
+    cumVol += volume;
+  }
+  return cumVol > 0 ? cumTypVol / cumVol : closes[closes.length - 1]!;
+}
+
 function aroon(highs: number[], lows: number[], period = 25) {
   if (highs.length < period + 1 || lows.length < period + 1) {
     return { up: 50, down: 50, osc: 0 };
@@ -513,17 +531,20 @@ async function fetchIndicatorForTimeframe(
     const highs = raw.map((r) => parseFloat(String(r[2])));
     const lows = raw.map((r) => parseFloat(String(r[3])));
     const closes = raw.map((r) => parseFloat(String(r[4])));
+    const volumes = raw.map((r) => parseFloat(String(r[5])));
     if (
       closes.length < 30 ||
       closes.some((c) => !Number.isFinite(c)) ||
       highs.some((v) => !Number.isFinite(v)) ||
-      lows.some((v) => !Number.isFinite(v))
+      lows.some((v) => !Number.isFinite(v)) ||
+      volumes.some((v) => !Number.isFinite(v) || v < 0)
     )
       return null;
     const r = rsi(closes);
     const { macd: m, signal: s } = macd(closes);
     const bb = bollinger(closes);
     const trend = aroon(highs, lows);
+    const vwap = computeVwap(highs, lows, closes, volumes);
     const candleCloseTime = new Date(
       Number(raw[raw.length - 1]?.[6]),
     ).toISOString();
@@ -543,6 +564,7 @@ async function fetchIndicatorForTimeframe(
         candle_close_time: candleCloseTime,
         aroon: trend,
         bollinger: { upper: bb.upper, lower: bb.lower },
+        vwap,
       },
     };
   } catch (e) {
@@ -745,8 +767,16 @@ interface MultiTfResult {
 
 function evaluateMultiTimeframe(tf: MultiTfInput): MultiTfResult {
   const p = (tf.primary?.["signal"] as SignalDir | undefined) ?? "neutral";
-  const f = (tf.fast?.["signal"] as SignalDir | undefined) ?? "neutral";
+  let f = (tf.fast?.["signal"] as SignalDir | undefined) ?? "neutral";
   const t = (tf.trend?.["signal"] as SignalDir | undefined) ?? "neutral";
+
+  const fastPrice = Number(tf.fast?.["price"] ?? 0);
+  const fastVwap = Number((tf.fast?.["raw"] as Row)?.["vwap"] ?? 0);
+  const fastRsi = Number(tf.fast?.["rsi"] ?? 50);
+  if (fastPrice > 0 && fastVwap > 0) {
+    if (fastRsi >= 60 && fastPrice > fastVwap) f = "bullish";
+    else if (fastRsi <= 40 && fastPrice < fastVwap) f = "bearish";
+  }
 
   const label = (s: SignalDir) =>
     s === "bullish" ? "bull" : s === "bearish" ? "bear" : "neu";
@@ -1564,6 +1594,16 @@ export async function combineSignals(): Promise<number> {
       const confirmed =
         (altResult.recommendation === "buy" && osc >= 20) ||
         (altResult.recommendation === "sell" && osc <= -20);
+      if (!confirmed) continue;
+    }
+    if (presetName === "vwap-momentum") {
+      const fastRaw = mtfRaw.fast?.["raw"] as Row;
+      const fastPrice = Number(mtfRaw.fast?.["price"] ?? 0);
+      const fastVwap = Number(fastRaw?.["vwap"] ?? 0);
+      const fastRsi = Number(mtfRaw.fast?.["rsi"] ?? 50);
+      const confirmed =
+        (altResult.recommendation === "buy" && fastRsi >= 60 && fastPrice > fastVwap) ||
+        (altResult.recommendation === "sell" && fastRsi <= 40 && fastPrice < fastVwap);
       if (!confirmed) continue;
     }
     if (
