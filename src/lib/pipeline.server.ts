@@ -499,90 +499,61 @@ function aroon(highs: number[], lows: number[], period = 25) {
 
 interface SmcResult {
   choch: "bearish" | "bullish" | "none";
-  fvg: {
-    type: "bearish" | "bullish" | "none";
-    top: number;
-    bottom: number;
-    retesting: boolean;
-  };
+  bos: "bearish" | "bullish" | "none";
+  fvg: { type: "bearish" | "bullish" | "none"; top: number; bottom: number; retesting: boolean };
+  fibRetest: { inGoldenPocket: boolean; fib618: number; fib786: number; range: number };
   lastSwingHigh: number | null;
   lastSwingLow: number | null;
-  signal: "bearish_reversal" | "bullish_reversal" | "neutral";
+  signal:
+    | "bearish_continuation"
+    | "bearish_reversal"
+    | "bullish_continuation"
+    | "bullish_reversal"
+    | "neutral";
 }
 
-function detectSmc(
-  highs: number[],
-  lows: number[],
-  closes: number[],
-): SmcResult {
-  const len = closes.length;
+function detectSmc(highs: number[], lows: number[], closes: number[]): SmcResult {
   const empty: SmcResult = {
-    choch: "none",
+    choch: "none", bos: "none",
     fvg: { type: "none", top: 0, bottom: 0, retesting: false },
-    lastSwingHigh: null,
-    lastSwingLow: null,
-    signal: "neutral",
+    fibRetest: { inGoldenPocket: false, fib618: 0, fib786: 0, range: 0 },
+    lastSwingHigh: null, lastSwingLow: null, signal: "neutral",
   };
-  if (len < 10) return empty;
+  const len = closes.length;
+  if (len < 12) return empty;
 
-  let lastSwingHigh: number | null = null;
-  let lastSwingLow: number | null = null;
+  let lastSwingHigh: number | null = null, prevSwingHigh: number | null = null;
+  let lastSwingLow: number | null = null, prevSwingLow: number | null = null;
   for (let i = len - 3; i >= 2; i--) {
-    if (
-      lastSwingLow === null &&
-      lows[i]! < lows[i - 1]! && lows[i]! < lows[i - 2]! &&
-      lows[i]! < lows[i + 1]! && lows[i]! < lows[i + 2]!
-    ) lastSwingLow = lows[i]!;
-    if (
-      lastSwingHigh === null &&
-      highs[i]! > highs[i - 1]! && highs[i]! > highs[i - 2]! &&
-      highs[i]! > highs[i + 1]! && highs[i]! > highs[i + 2]!
-    ) lastSwingHigh = highs[i]!;
-    if (lastSwingLow !== null && lastSwingHigh !== null) break;
+    if (lows[i]! < lows[i - 1]! && lows[i]! < lows[i - 2]! && lows[i]! < lows[i + 1]! && lows[i]! < lows[i + 2]!) {
+      if (lastSwingLow === null) lastSwingLow = lows[i]!;
+      else if (prevSwingLow === null) prevSwingLow = lows[i]!;
+    }
+    if (highs[i]! > highs[i - 1]! && highs[i]! > highs[i - 2]! && highs[i]! > highs[i + 1]! && highs[i]! > highs[i + 2]!) {
+      if (lastSwingHigh === null) lastSwingHigh = highs[i]!;
+      else if (prevSwingHigh === null) prevSwingHigh = highs[i]!;
+    }
+    if (lastSwingLow !== null && prevSwingLow !== null && lastSwingHigh !== null && prevSwingHigh !== null) break;
   }
 
   const currentPrice = closes[len - 1]!;
-  const choch =
-    lastSwingLow !== null && currentPrice < lastSwingLow
-      ? "bearish"
-      : lastSwingHigh !== null && currentPrice > lastSwingHigh
-        ? "bullish"
-        : "none";
+  const bosBearish = prevSwingLow !== null && lastSwingLow !== null && lastSwingLow < prevSwingLow && currentPrice < prevSwingLow;
+  const bosBullish = prevSwingHigh !== null && lastSwingHigh !== null && lastSwingHigh > prevSwingHigh && currentPrice > prevSwingHigh;
+  const bos: SmcResult["bos"] = bosBearish ? "bearish" : bosBullish ? "bullish" : "none";
+  const choch: SmcResult["choch"] = lastSwingLow !== null && currentPrice < lastSwingLow ? "bearish" : lastSwingHigh !== null && currentPrice > lastSwingHigh ? "bullish" : "none";
 
-  let fvgType: SmcResult["fvg"]["type"] = "none";
-  let fvgTop = 0;
-  let fvgBottom = 0;
-  let retesting = false;
+  const range = lastSwingHigh !== null && lastSwingLow !== null && lastSwingHigh > lastSwingLow ? lastSwingHigh - lastSwingLow : 0;
+  const fib618 = range ? lastSwingLow! + range * 0.618 : 0;
+  const fib786 = range ? lastSwingLow! + range * 0.786 : 0;
+  const inGoldenPocket = range > 0 && currentPrice >= fib618 && currentPrice <= fib786 * 1.003;
+
+  let fvgType: SmcResult["fvg"]["type"] = "none", fvgTop = 0, fvgBottom = 0, retesting = false;
   for (let i = len - 1; i >= Math.max(2, len - 6); i--) {
-    if (lows[i - 2]! > highs[i]!) {
-      fvgType = "bearish";
-      fvgTop = lows[i - 2]!;
-      fvgBottom = highs[i]!;
-      retesting = currentPrice >= fvgBottom && currentPrice <= fvgTop * 1.002;
-      break;
-    }
-    if (highs[i - 2]! < lows[i]!) {
-      fvgType = "bullish";
-      fvgBottom = highs[i - 2]!;
-      fvgTop = lows[i]!;
-      retesting = currentPrice <= fvgTop && currentPrice >= fvgBottom * 0.998;
-      break;
-    }
+    if (lows[i - 2]! > highs[i]!) { fvgType = "bearish"; fvgTop = lows[i - 2]!; fvgBottom = highs[i]!; retesting = currentPrice >= fvgBottom && currentPrice <= fvgTop * 1.002; break; }
+    if (highs[i - 2]! < lows[i]!) { fvgType = "bullish"; fvgBottom = highs[i - 2]!; fvgTop = lows[i]!; retesting = currentPrice <= fvgTop && currentPrice >= fvgBottom * 0.998; break; }
   }
-
-  const signal =
-    choch === "bearish" && fvgType === "bearish"
-      ? "bearish_reversal"
-      : choch === "bullish" && fvgType === "bullish"
-        ? "bullish_reversal"
-        : "neutral";
-  return {
-    choch,
-    fvg: { type: fvgType, top: fvgTop, bottom: fvgBottom, retesting },
-    lastSwingHigh,
-    lastSwingLow,
-    signal,
-  };
+  const signal: SmcResult["signal"] = bos === "bearish" && inGoldenPocket ? "bearish_continuation" : choch === "bearish" && (fvgType === "bearish" || retesting) ? "bearish_reversal" : bos === "bullish" && range > 0 && currentPrice <= lastSwingLow! + range * 0.382 ? "bullish_continuation" : choch === "bullish" && (fvgType === "bullish" || retesting) ? "bullish_reversal" : "neutral";
+  return { choch, bos, fvg: { type: fvgType, top: fvgTop, bottom: fvgBottom, retesting }, fibRetest: { inGoldenPocket, fib618, fib786, range }, lastSwingHigh, lastSwingLow, signal };
 }
 
 function classify(
@@ -594,7 +565,7 @@ function classify(
   trend: { up: number; down: number; osc: number },
   smc?: SmcResult,
 ): "bullish" | "bearish" | "neutral" {
-  if (smc?.signal === "bearish_reversal") {
+  if (smc?.signal === "bearish_continuation" || smc?.signal === "bearish_reversal") {
     const momentum = m - s;
     if (momentum <= 0 || r >= 45) return "bearish";
     return "neutral";
@@ -1693,12 +1664,14 @@ export async function combineSignals(): Promise<number> {
         (altResult.recommendation === "sell" && osc <= -20);
       if (!confirmed) continue;
     }
-    if (presetName === "smc-reversal") {
+    if (presetName === "smc-reversal" || presetName === "smc-structure") {
       const primaryRaw = mtfRaw.primary?.["raw"] as Row;
       const smc = primaryRaw?.["smc"] as SmcResult | undefined;
       const confirmed =
-        (altResult.recommendation === "sell" && smc?.signal === "bearish_reversal") ||
-        (altResult.recommendation === "buy" && smc?.signal === "bullish_reversal");
+        (altResult.recommendation === "sell" &&
+          (smc?.signal === "bearish_continuation" || smc?.signal === "bearish_reversal")) ||
+        (altResult.recommendation === "buy" &&
+          (smc?.signal === "bullish_continuation" || smc?.signal === "bullish_reversal"));
       if (!confirmed) continue;
     }
     if (presetName === "vwap-momentum") {
