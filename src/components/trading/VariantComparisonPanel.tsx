@@ -14,6 +14,11 @@ interface VariantPerfRow {
   total_pnl_pct: number;
 }
 
+/**
+ * Πλήρης λίστα preset keys σε order εμφάνισης.
+ * ΠΡΕΠΕΙ να είναι σε sync με το STRATEGY_PRESETS στο strategy.presets.ts.
+ * Οτιδήποτε λείπει από εδώ δεν θα εμφανίζεται στο panel.
+ */
 const PRESET_ORDER = [
   "balanced",
   "whale-focused",
@@ -47,6 +52,16 @@ interface StrategyStats {
   totalPnlPct: number;
 }
 
+/** Zero-value stats για presets χωρίς signals ακόμη. */
+const ZERO_STATS: StrategyStats = {
+  wins: 0,
+  losses: 0,
+  expired: 0,
+  open: 0,
+  resolved: 0,
+  totalPnlPct: 0,
+};
+
 const POSITION_SIZE_USD = 1000;
 
 export function VariantComparisonPanel() {
@@ -62,7 +77,6 @@ export function VariantComparisonPanel() {
     refetchInterval: 60_000,
     staleTime: 30_000,
   });
-
 
   if (isLoading) {
     return (
@@ -88,6 +102,7 @@ export function VariantComparisonPanel() {
 
   const rows = data ?? [];
 
+  // Build aggregation map από τα πραγματικά rows
   const agg = new Map<string, StrategyStats>();
   for (const r of rows) {
     agg.set(r.strategy_name, {
@@ -100,22 +115,22 @@ export function VariantComparisonPanel() {
     });
   }
 
+  // ✅ FIX: Δείχνουμε ΟΛΑ τα presets από το PRESET_ORDER,
+  //    ακόμη και αυτά που δεν έχουν ακόμη signals.
+  //    (Πριν: .filter((s) => agg.has(s)) έκρυβε τα νέα presets.)
+  const strategies = PRESET_ORDER;
 
-  const strategies = PRESET_ORDER.filter((s) => agg.has(s));
   const totalResolved = strategies.reduce(
     (sum, s) => sum + (agg.get(s)?.resolved ?? 0),
     0,
   );
 
-  // Find best strategy by total PnL
+  // Find best strategy by total PnL (μόνο με adequate sample)
   let bestStrategy: { name: string; pnl: number } | null = null;
   for (const s of strategies) {
-    const a = agg.get(s)!;
+    const a = agg.get(s) ?? ZERO_STATS;
     const pnlUsd = a.totalPnlPct * (POSITION_SIZE_USD / 100);
-    if (
-      a.resolved >= 5 &&
-      (!bestStrategy || pnlUsd > bestStrategy.pnl)
-    ) {
+    if (a.resolved >= 5 && (!bestStrategy || pnlUsd > bestStrategy.pnl)) {
       bestStrategy = { name: s, pnl: pnlUsd };
     }
   }
@@ -155,7 +170,7 @@ export function VariantComparisonPanel() {
         </p>
       </div>
 
-      {strategies.length === 0 || totalResolved === 0 ? (
+      {totalResolved === 0 ? (
         <p className="text-sm text-muted-foreground">
           No resolved variant signals yet — will populate as signals hit their
           TP/SL thresholds.
@@ -179,7 +194,7 @@ export function VariantComparisonPanel() {
             </thead>
             <tbody>
               {strategies.map((s) => {
-                const a = agg.get(s)!;
+                const a = agg.get(s) ?? ZERO_STATS;
                 const decided = a.wins + a.losses;
                 const winRate =
                   decided > 0 ? (a.wins / decided) * 100 : 0;
@@ -189,12 +204,17 @@ export function VariantComparisonPanel() {
                   a.totalPnlPct * (POSITION_SIZE_USD / 100);
                 const pnlPositive = totalPnlUsd >= 0;
                 const isBest = bestStrategy?.name === s;
+                const hasData = a.resolved > 0 || a.open > 0;
 
                 return (
                   <tr
                     key={s}
                     className={`border-t border-border font-mono text-xs ${
-                      isBest ? "bg-bull/5" : ""
+                      isBest
+                        ? "bg-bull/5"
+                        : !hasData
+                          ? "opacity-50"
+                          : ""
                     }`}
                   >
                     <td className="py-1.5 pr-3 font-semibold">
@@ -204,18 +224,31 @@ export function VariantComparisonPanel() {
                           BEST
                         </span>
                       )}
+                      {!hasData && (
+                        <span className="ml-1.5 rounded border border-border/70 px-1 py-0.5 text-[9px] font-normal text-muted-foreground">
+                          awaiting
+                        </span>
+                      )}
                     </td>
                     <td className="py-1.5 pr-3 text-muted-foreground">
                       {a.resolved}
                     </td>
-                    <td className="py-1.5 pr-3 text-bull">{a.wins}</td>
-                    <td className="py-1.5 pr-3 text-bear">{a.losses}</td>
+                    <td className="py-1.5 pr-3 text-bull">
+                      {hasData ? a.wins : "—"}
+                    </td>
+                    <td className="py-1.5 pr-3 text-bear">
+                      {hasData ? a.losses : "—"}
+                    </td>
                     <td className="py-1.5 pr-3">
                       {decided > 0 ? `${winRate.toFixed(0)}%` : "—"}
                     </td>
                     <td
                       className={`py-1.5 pr-3 ${
-                        avgPnl >= 0 ? "text-bull" : "text-bear"
+                        hasData && avgPnl >= 0
+                          ? "text-bull"
+                          : hasData
+                            ? "text-bear"
+                            : ""
                       }`}
                     >
                       {a.resolved > 0
@@ -224,7 +257,11 @@ export function VariantComparisonPanel() {
                     </td>
                     <td
                       className={`py-1.5 pr-3 font-semibold ${
-                        pnlPositive ? "text-bull" : "text-bear"
+                        hasData && pnlPositive
+                          ? "text-bull"
+                          : hasData
+                            ? "text-bear"
+                            : ""
                       }`}
                     >
                       {a.resolved > 0
