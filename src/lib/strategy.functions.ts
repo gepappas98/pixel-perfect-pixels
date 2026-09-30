@@ -148,6 +148,12 @@ export const updateStrategyConfig = createServerFn({ method: "POST" })
 
 const AUTO_SWITCH_MIN_COOLDOWN_MIN = 30;
 
+/**
+ * Minimum resolved signals για να εμπιστευτούμε το win rate ενός preset.
+ * Κάτω από αυτό το όριο, το preset θεωρείται "insufficient data".
+ */
+const VARIANT_MIN_TRUSTWORTHY_SAMPLE = 20;
+
 interface MarketSnapshot {
   whale: { buy_usd: number; sell_usd: number; net_pct: number; sample: number };
   technicals: { bull: number; bear: number; neu: number; breadth: number };
@@ -155,6 +161,29 @@ interface MarketSnapshot {
   council: { buy: number; sell: number; hold: number; avoid: number };
   regime_score: number;
 }
+
+interface VariantPerformanceRow {
+  strategy_name: string;
+  wins: number;
+  losses: number;
+  expired: number;
+  open_count: number;
+  resolved: number;
+  total_pnl_pct: number;
+}
+
+interface VariantPerformance {
+  strategy_name: string;
+  wins: number;
+  losses: number;
+  resolved: number;
+  win_rate_pct: number | null;
+  total_pnl_pct: number;
+  avg_pnl_pct: number | null;
+  trustworthy: boolean;
+}
+
+/* ───────────── Market snapshot ───────────── */
 
 async function gatherSnapshot(): Promise<MarketSnapshot> {
   const { supabaseAdmin: db } = await import(
@@ -187,15 +216,26 @@ async function gatherSnapshot(): Promise<MarketSnapshot> {
       .gte("source_created_at", thirtyMinAgo),
   ]);
 
-  // Explicit error logging — δεν χάνουμε failures σιωπηλά
   if (whalesRes.error)
-    console.error("[AUTO_SWITCH] whales query:", serializeError(whalesRes.error));
+    console.error(
+      "[AUTO_SWITCH] whales query:",
+      serializeError(whalesRes.error),
+    );
   if (techsRes.error)
-    console.error("[AUTO_SWITCH] technicals query:", serializeError(techsRes.error));
+    console.error(
+      "[AUTO_SWITCH] technicals query:",
+      serializeError(techsRes.error),
+    );
   if (predsRes.error)
-    console.error("[AUTO_SWITCH] predictions query:", serializeError(predsRes.error));
+    console.error(
+      "[AUTO_SWITCH] predictions query:",
+      serializeError(predsRes.error),
+    );
   if (councilRes.error)
-    console.error("[AUTO_SWITCH] council query:", serializeError(councilRes.error));
+    console.error(
+      "[AUTO_SWITCH] council query:",
+      serializeError(councilRes.error),
+    );
 
   console.log(
     `[AUTO_SWITCH] snapshot rows: whales=${whalesRes.data?.length ?? 0} techs=${techsRes.data?.length ?? 0} preds=${predsRes.data?.length ?? 0} council=${councilRes.data?.length ?? 0}`,
@@ -284,7 +324,8 @@ async function gatherSnapshot(): Promise<MarketSnapshot> {
   }
 
   const councilTotal = cBuy + cSell + cHold + cAvoid;
-  const councilConsensus = councilTotal > 0 ? (cBuy - cSell) / councilTotal : 0;
+  const councilConsensus =
+    councilTotal > 0 ? (cBuy - cSell) / councilTotal : 0;
 
   const regime_score =
     whaleNet * 0.3 +
@@ -311,6 +352,60 @@ async function gatherSnapshot(): Promise<MarketSnapshot> {
   };
 }
 
+/* ───────────── Variant performance ───────────── */
+
+/**
+ * Φορτώνει shadow performance για όλα τα presets από το RPC
+ * get_variant_performance(days). Επιστρέφει normalized rows.
+ *
+ * Non-fatal: αν αποτύχει, επιστρέφει empty array και το prompt
+ * θα τρέξει χωρίς historical performance.
+ */
+async function fetchVariantPerformance(
+  days = 7,
+): Promise<VariantPerformance[]> {
+  try {
+    const { supabaseAdmin: db } = await import(
+      "@/integrations/supabase/client.server"
+    );
+    const { data, error } = await (db.rpc as any)("get_variant_performance", {
+      days,
+    });
+    if (error) throw error;
+
+    const rows = (data ?? []) as VariantPerformanceRow[];
+
+    return rows.map((r) => {
+      const resolved = Number(r.resolved ?? 0);
+      const wins = Number(r.wins ?? 0);
+      const losses = Number(r.losses ?? 0);
+      const decided = wins + losses;
+      const total_pnl_pct = Number(r.total_pnl_pct ?? 0);
+
+      return {
+        strategy_name: r.strategy_name,
+        wins,
+        losses,
+        resolved,
+        win_rate_pct:
+          decided > 0 ? Math.round((wins / decided) * 1000) / 10 : null,
+        total_pnl_pct,
+        avg_pnl_pct:
+          resolved > 0
+            ? Math.round((total_pnl_pct / resolved) * 100) / 100
+            : null,
+        trustworthy: decided >= VARIANT_MIN_TRUSTWORTHY_SAMPLE,
+      };
+    });
+  } catch (e) {
+    console.error(
+      "[AUTO_SWITCH] fetchVariantPerformance failed:",
+      serializeError(e),
+    );
+    return [];
+  }
+}
+
 /* ───────────── Groq call — discriminated result ───────────── */
 
 type AskResult =
@@ -320,6 +415,7 @@ type AskResult =
 async function askGroqForPreset(
   snapshot: MarketSnapshot,
   currentPreset: string | null,
+  performance: VariantPerformance[],
 ): Promise<AskResult> {
   const apiKey = process.env["GROQ_API_KEY"];
   if (!apiKey) {
@@ -327,19 +423,30 @@ async function askGroqForPreset(
   }
 
   const presetList = Object.keys(STRATEGY_PRESETS).join(", ");
+
   const systemPrompt = [
     "You are a senior trading strategist choosing the best bot strategy preset.",
-    "You receive a full market snapshot across 4 evidence sources.",
+    "",
+    "You receive TWO sources of information:",
+    "1. CURRENT MARKET SNAPSHOT — whale flow, technicals, prediction markets, council consensus",
+    "2. HISTORICAL SHADOW PERFORMANCE — last 7 days of hypothetical results per preset",
+    "",
+    "Decision policy:",
+    "- Weigh BOTH current market regime AND historical performance.",
+    "- Strongly prefer presets with proven positive expectancy (win_rate >= 55% and total_pnl_pct > 0).",
+    "- Strongly avoid presets with proven negative expectancy (win_rate < 45% with meaningful sample) UNLESS current market strongly favors their thesis.",
+    "- When historical sample is insufficient (trustworthy=false), rely more on the market snapshot.",
+    "- When multiple presets have identical or near-identical performance (e.g. balanced, conservative, ai-driven), prefer the one that best matches the current market regime.",
+    "",
     "Respond with ONLY a minified JSON object. No markdown. No code fences.",
-    'Shape: {"preset":"<name>","reasoning":"<one concise sentence>"}',
+    'Shape: {"preset":"<name>","reasoning":"<one concise sentence that references BOTH regime AND performance>"}',
     `Allowed presets: ${presetList}.`,
-    "Choose the preset that best fits the CURRENT market state.",
     "If the current preset is already appropriate, return it unchanged.",
   ].join("\n");
 
   const userPrompt = JSON.stringify({
     current_preset: currentPreset ?? "balanced",
-    snapshot: {
+    current_market: {
       whale_net_pct: Math.round(snapshot.whale.net_pct * 100),
       whale_buy_usd: Math.round(snapshot.whale.buy_usd),
       whale_sell_usd: Math.round(snapshot.whale.sell_usd),
@@ -358,6 +465,16 @@ async function askGroqForPreset(
       council_avoid: snapshot.council.avoid,
       regime_score: Number(snapshot.regime_score.toFixed(3)),
     },
+    historical_performance_7d: performance.map((p) => ({
+      preset: p.strategy_name,
+      resolved: p.resolved,
+      wins: p.wins,
+      losses: p.losses,
+      win_rate_pct: p.win_rate_pct,
+      avg_pnl_pct: p.avg_pnl_pct,
+      total_pnl_pct: p.total_pnl_pct,
+      trustworthy: p.trustworthy,
+    })),
   });
 
   let res: Response;
@@ -375,12 +492,9 @@ async function askGroqForPreset(
           { role: "user", content: userPrompt },
         ],
         temperature: 0.15,
-        // gpt-oss-20b είναι reasoning model: χρειάζεται headroom για
-        // internal reasoning tokens πριν παραγάγει το τελικό JSON.
-        max_tokens: 1500,
-        ...( /gpt-oss/i.test(process.env["GROQ_MODEL"] ?? "openai/gpt-oss-20b")
-          ? { reasoning_effort: "low" }
-          : {}),
+        // gpt-oss-20b reasoning model: χρειάζεται headroom για internal
+        // reasoning tokens πριν το τελικό JSON.
+        max_tokens: 800,
       }),
       signal: AbortSignal.timeout(20_000),
     });
@@ -467,13 +581,14 @@ async function askGroqForPreset(
 async function askGroqWithRetry(
   snapshot: MarketSnapshot,
   currentPreset: string | null,
+  performance: VariantPerformance[],
   maxRetries: number,
   baseBackoffMs: number,
 ): Promise<{ result: AskResult; attempts: number; history: string[] }> {
   const history: string[] = [];
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    const r = await askGroqForPreset(snapshot, currentPreset);
+    const r = await askGroqForPreset(snapshot, currentPreset, performance);
 
     if (r.kind === "success") {
       return { result: r, attempts: attempt, history };
@@ -515,6 +630,7 @@ export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
       reasoning?: string;
       reason: string;
       detail?: string;
+      performance_snapshot?: VariantPerformance[];
     }> => {
       const { supabaseAdmin: db } = await import(
         "@/integrations/supabase/client.server"
@@ -548,17 +664,22 @@ export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
       const lastAt = lastAtRaw ? new Date(String(lastAtRaw)).getTime() : 0;
       const elapsedMs = Date.now() - lastAt;
       if (lastAt > 0 && elapsedMs < minCooldownMs) {
-        const hoursRemaining = (
-          (minCooldownMs - elapsedMs) /
-          3_600_000
-        ).toFixed(1);
+        const hoursRemaining = ((minCooldownMs - elapsedMs) / 3_600_000).toFixed(
+          1,
+        );
         return { switched: false, reason: `cooldown_${hoursRemaining}h` };
       }
 
-      // 4. Gather snapshot
+      // 4. Gather market snapshot
       const snapshot = await gatherSnapshot();
 
-      // 5. Load cleanup config (retry feature flag)
+      // 5. Gather historical performance (shadow variants)
+      const performance = await fetchVariantPerformance(7);
+      console.log(
+        `[AUTO_SWITCH] variant performance loaded: ${performance.length} presets`,
+      );
+
+      // 6. Load cleanup config (retry feature flag)
       const cleanupCfg = await fetchCleanupConfig();
       const retryCfg = cleanupCfg.auto_switch_retry;
       const maxRetries = retryCfg.enabled
@@ -568,7 +689,7 @@ export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
         ? Math.max(500, retryCfg.backoff_ms)
         : 0;
 
-      // 6. Call Groq με retry
+      // 7. Call Groq με retry (πλέον με performance context)
       const currentPreset = (row["preset_name"] as string | null) ?? null;
       const {
         result: decision,
@@ -577,6 +698,7 @@ export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
       } = await askGroqWithRetry(
         snapshot,
         currentPreset,
+        performance,
         maxRetries,
         backoffMs,
       );
@@ -596,10 +718,15 @@ export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
           })
           .eq("id", 1);
 
-        return { switched: false, reason: "groq_failed", detail };
+        return {
+          switched: false,
+          reason: "groq_failed",
+          detail,
+          performance_snapshot: performance,
+        };
       }
 
-      // 7. Same preset → just log
+      // 8. Same preset → just log
       if (decision.preset === currentPreset) {
         await db
           .from("strategy_config")
@@ -613,10 +740,11 @@ export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
           reason: "no_change",
           preset: decision.preset,
           reasoning: decision.reasoning,
+          performance_snapshot: performance,
         };
       }
 
-      // 8. Apply new preset
+      // 9. Apply new preset
       const preset = STRATEGY_PRESETS[decision.preset];
       if (!preset) {
         return { switched: false, reason: "invalid_preset" };
@@ -652,6 +780,7 @@ export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
         preset: decision.preset,
         reasoning: decision.reasoning,
         reason: "switched",
+        performance_snapshot: performance,
       };
     },
   );
