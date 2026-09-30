@@ -71,6 +71,13 @@ export const STRATEGY_PRESETS: Record<
     council_weight: 1.0,
     preset_name: "volatility-timing",
   },
+  "vwap-momentum": {
+    whale_weight: 0.5,
+    technicals_weight: 2.2,
+    prediction_weight: 0.5,
+    council_weight: 0.8,
+    preset_name: "vwap-momentum",
+  },
 };
 
 export const PRESET_LABELS: Record<string, string> = {
@@ -81,5 +88,6 @@ export const PRESET_LABELS: Record<string, string> = {
   "ai-driven": "AI-Driven",
   conservative: "Conservative",
   "volatility-timing": "BB + Aroon Timing",
+  "vwap-momentum": "VWAP + RSI Intraday",
   custom: "Custom",
 };
