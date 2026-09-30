@@ -462,12 +462,36 @@ function bollinger(closes: number[], period = 20, mult = 2) {
   return { upper: mean + mult * sd, lower: mean - mult * sd };
 }
 
+function aroon(highs: number[], lows: number[], period = 25) {
+  if (highs.length < period + 1 || lows.length < period + 1) {
+    return { up: 50, down: 50, osc: 0 };
+  }
+  const hSlice = highs.slice(-(period + 1));
+  const lSlice = lows.slice(-(period + 1));
+  let highestIdx = 0;
+  let lowestIdx = 0;
+  for (let i = 1; i <= period; i++) {
+    if (hSlice[i]! >= hSlice[highestIdx]!) highestIdx = i;
+    if (lSlice[i]! <= lSlice[lowestIdx]!) lowestIdx = i;
+  }
+  const up = (highestIdx / period) * 100;
+  const down = (lowestIdx / period) * 100;
+  return { up, down, osc: up - down };
+}
+
 function classify(
   r: number,
   m: number,
   s: number,
+  price: number,
+  bb: { upper: number; lower: number },
+  trend: { up: number; down: number; osc: number },
 ): "bullish" | "bearish" | "neutral" {
   const momentum = m - s;
+  const nearLowerBand = price <= bb.lower * 1.01;
+  const nearUpperBand = price >= bb.upper * 0.99;
+  if (nearLowerBand && trend.osc >= 20 && momentum >= 0) return "bullish";
+  if (nearUpperBand && trend.osc <= -20 && momentum <= 0) return "bearish";
   if ((r <= 45 && momentum > 0) || (r < 55 && momentum > 0.001 * Math.abs(m)))
     return "bullish";
   if ((r >= 55 && momentum < 0) || (r > 45 && momentum < -0.001 * Math.abs(m)))
@@ -486,12 +510,20 @@ async function fetchIndicatorForTimeframe(
     );
     if (!res.ok) return null;
     const raw = (await res.json()) as unknown[][];
+    const highs = raw.map((r) => parseFloat(String(r[2])));
+    const lows = raw.map((r) => parseFloat(String(r[3])));
     const closes = raw.map((r) => parseFloat(String(r[4])));
-    if (closes.length < 30 || closes.some((c) => !Number.isFinite(c)))
+    if (
+      closes.length < 30 ||
+      closes.some((c) => !Number.isFinite(c)) ||
+      highs.some((v) => !Number.isFinite(v)) ||
+      lows.some((v) => !Number.isFinite(v))
+    )
       return null;
     const r = rsi(closes);
     const { macd: m, signal: s } = macd(closes);
     const bb = bollinger(closes);
+    const trend = aroon(highs, lows);
     const candleCloseTime = new Date(
       Number(raw[raw.length - 1]?.[6]),
     ).toISOString();
@@ -504,9 +536,14 @@ async function fetchIndicatorForTimeframe(
       bb_upper: bb.upper,
       bb_lower: bb.lower,
       price: closes[closes.length - 1]!,
-      signal: classify(r, m, s),
+      signal: classify(r, m, s, closes[closes.length - 1]!, bb, trend),
       created_at: new Date().toISOString(),
-      raw: { closes_tail: closes.slice(-5), candle_close_time: candleCloseTime },
+      raw: {
+        closes_tail: closes.slice(-5),
+        candle_close_time: candleCloseTime,
+        aroon: trend,
+        bollinger: { upper: bb.upper, lower: bb.lower },
+      },
     };
   } catch (e) {
     console.error(
@@ -1516,14 +1553,23 @@ export async function combineSignals(): Promise<number> {
     for (const [presetName, presetWeights] of Object.entries(
       STRATEGY_PRESETS,
     )) {
-      const altResult = ruleBased(whale, mtf, prediction, council, {
-        ...presetWeights,
-        updated_at: nowIso,
-      });
-      if (
-        altResult.recommendation !== "buy" &&
-        altResult.recommendation !== "sell"
-      )
+    const altResult = ruleBased(whale, mtf, prediction, council, {
+      ...presetWeights,
+      updated_at: nowIso,
+    });
+    if (presetName === "volatility-timing") {
+      const primaryRaw = mtfRaw.primary?.["raw"] as Row;
+      const aroonData = primaryRaw?.["aroon"] as Row;
+      const osc = Number(aroonData?.["osc"] ?? 0);
+      const confirmed =
+        (altResult.recommendation === "buy" && osc >= 20) ||
+        (altResult.recommendation === "sell" && osc <= -20);
+      if (!confirmed) continue;
+    }
+    if (
+      altResult.recommendation !== "buy" &&
+      altResult.recommendation !== "sell"
+    )
         continue;
       if (mtfPrice == null || mtfPrice <= 0) continue;
       variantRows.push({
