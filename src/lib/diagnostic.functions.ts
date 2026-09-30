@@ -195,7 +195,7 @@ export const getShadowConflicts = createServerFn({ method: "GET" }).handler(
     }
 
     /* ── 3. Recent composite signals (last 30 min) ── */
-    let recent_composites: unknown[] = [];
+    let recent_composites: Json[] = [];
     let composites_error: string | null = null;
     try {
       const { data, error } = await supabaseAdmin
@@ -224,7 +224,7 @@ export const getShadowConflicts = createServerFn({ method: "GET" }).handler(
     }
 
     /* ── 4. Recent pipeline runs ── */
-    let recent_runs: unknown[] = [];
+    let recent_runs: Json[] = [];
     try {
       const { data } = await supabaseAdmin
         .from("pipeline_runs")
@@ -237,7 +237,7 @@ export const getShadowConflicts = createServerFn({ method: "GET" }).handler(
     }
 
     /* ── 5. Current strategy weights ── */
-    let strategy: unknown = null;
+    let strategy: Json = null;
     try {
       const { data } = await supabaseAdmin
         .from("strategy_config")
