@@ -17,7 +17,6 @@ export type Database = {
       composite_signals: {
         Row: {
           confidence: number | null
-          price_at: number | null
           council_signal_id: string | null
           created_at: string
           fingerprint: string | null
@@ -32,7 +31,6 @@ export type Database = {
         }
         Insert: {
           confidence?: number | null
-          price_at?: number | null
           council_signal_id?: string | null
           created_at?: string
           fingerprint?: string | null
@@ -47,7 +45,6 @@ export type Database = {
         }
         Update: {
           confidence?: number | null
-          price_at?: number | null
           council_signal_id?: string | null
           created_at?: string
           fingerprint?: string | null
