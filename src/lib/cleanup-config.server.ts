@@ -14,6 +14,11 @@ export interface CleanupConfig {
     backoff_ms: number;
   };
   error_serialization: { enabled: boolean };
+  mtf_confirmation_gate: {
+    enabled: boolean;
+    shadow_mode: boolean;
+    min_timeframes: number;
+  };
 }
 
 export const DEFAULT_CLEANUP_CONFIG: CleanupConfig = {
@@ -21,6 +26,11 @@ export const DEFAULT_CLEANUP_CONFIG: CleanupConfig = {
   regime_panel_fix: { enabled: false, shadow_mode: true },
   auto_switch_retry: { enabled: false, max_retries: 3, backoff_ms: 2000 },
   error_serialization: { enabled: true },
+  mtf_confirmation_gate: {
+    enabled: false,
+    shadow_mode: true,
+    min_timeframes: 2,
+  },
 };
 
 let cache: { config: CleanupConfig; ts: number } | null = null;
@@ -42,7 +52,7 @@ export async function fetchCleanupConfig(): Promise<CleanupConfig> {
 
     const config: CleanupConfig = {
       ...DEFAULT_CLEANUP_CONFIG,
-      ...(((data as any)?.cleanup_config as Partial<CleanupConfig>) ?? {}),
+      ...((data?.cleanup_config as Partial<CleanupConfig>) ?? {}),
     };
 
     cache = { config, ts: now };
