@@ -78,6 +78,13 @@ export const STRATEGY_PRESETS: Record<
     council_weight: 0.8,
     preset_name: "vwap-momentum",
   },
+  "smc-reversal": {
+    whale_weight: 0.4,
+    technicals_weight: 2.5,
+    prediction_weight: 0.4,
+    council_weight: 0.8,
+    preset_name: "smc-reversal",
+  },
 };
 
 export const PRESET_LABELS: Record<string, string> = {

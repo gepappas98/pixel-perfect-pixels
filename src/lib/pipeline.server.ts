@@ -497,6 +497,94 @@ function aroon(highs: number[], lows: number[], period = 25) {
   return { up, down, osc: up - down };
 }
 
+interface SmcResult {
+  choch: "bearish" | "bullish" | "none";
+  fvg: {
+    type: "bearish" | "bullish" | "none";
+    top: number;
+    bottom: number;
+    retesting: boolean;
+  };
+  lastSwingHigh: number | null;
+  lastSwingLow: number | null;
+  signal: "bearish_reversal" | "bullish_reversal" | "neutral";
+}
+
+function detectSmc(
+  highs: number[],
+  lows: number[],
+  closes: number[],
+): SmcResult {
+  const len = closes.length;
+  const empty: SmcResult = {
+    choch: "none",
+    fvg: { type: "none", top: 0, bottom: 0, retesting: false },
+    lastSwingHigh: null,
+    lastSwingLow: null,
+    signal: "neutral",
+  };
+  if (len < 10) return empty;
+
+  let lastSwingHigh: number | null = null;
+  let lastSwingLow: number | null = null;
+  for (let i = len - 3; i >= 2; i--) {
+    if (
+      lastSwingLow === null &&
+      lows[i]! < lows[i - 1]! && lows[i]! < lows[i - 2]! &&
+      lows[i]! < lows[i + 1]! && lows[i]! < lows[i + 2]!
+    ) lastSwingLow = lows[i]!;
+    if (
+      lastSwingHigh === null &&
+      highs[i]! > highs[i - 1]! && highs[i]! > highs[i - 2]! &&
+      highs[i]! > highs[i + 1]! && highs[i]! > highs[i + 2]!
+    ) lastSwingHigh = highs[i]!;
+    if (lastSwingLow !== null && lastSwingHigh !== null) break;
+  }
+
+  const currentPrice = closes[len - 1]!;
+  const choch =
+    lastSwingLow !== null && currentPrice < lastSwingLow
+      ? "bearish"
+      : lastSwingHigh !== null && currentPrice > lastSwingHigh
+        ? "bullish"
+        : "none";
+
+  let fvgType: SmcResult["fvg"]["type"] = "none";
+  let fvgTop = 0;
+  let fvgBottom = 0;
+  let retesting = false;
+  for (let i = len - 1; i >= Math.max(2, len - 6); i--) {
+    if (lows[i - 2]! > highs[i]!) {
+      fvgType = "bearish";
+      fvgTop = lows[i - 2]!;
+      fvgBottom = highs[i]!;
+      retesting = currentPrice >= fvgBottom && currentPrice <= fvgTop * 1.002;
+      break;
+    }
+    if (highs[i - 2]! < lows[i]!) {
+      fvgType = "bullish";
+      fvgBottom = highs[i - 2]!;
+      fvgTop = lows[i]!;
+      retesting = currentPrice <= fvgTop && currentPrice >= fvgBottom * 0.998;
+      break;
+    }
+  }
+
+  const signal =
+    choch === "bearish" && fvgType === "bearish"
+      ? "bearish_reversal"
+      : choch === "bullish" && fvgType === "bullish"
+        ? "bullish_reversal"
+        : "neutral";
+  return {
+    choch,
+    fvg: { type: fvgType, top: fvgTop, bottom: fvgBottom, retesting },
+    lastSwingHigh,
+    lastSwingLow,
+    signal,
+  };
+}
+
 function classify(
   r: number,
   m: number,
@@ -504,7 +592,14 @@ function classify(
   price: number,
   bb: { upper: number; lower: number },
   trend: { up: number; down: number; osc: number },
+  smc?: SmcResult,
 ): "bullish" | "bearish" | "neutral" {
+  if (smc?.signal === "bearish_reversal") {
+    const momentum = m - s;
+    if (momentum <= 0 || r >= 45) return "bearish";
+    return "neutral";
+  }
+
   const momentum = m - s;
   const nearLowerBand = price <= bb.lower * 1.01;
   const nearUpperBand = price >= bb.upper * 0.99;
@@ -545,6 +640,7 @@ async function fetchIndicatorForTimeframe(
     const bb = bollinger(closes);
     const trend = aroon(highs, lows);
     const vwap = computeVwap(highs, lows, closes, volumes);
+    const smc = detectSmc(highs, lows, closes);
     const candleCloseTime = new Date(
       Number(raw[raw.length - 1]?.[6]),
     ).toISOString();
@@ -557,7 +653,7 @@ async function fetchIndicatorForTimeframe(
       bb_upper: bb.upper,
       bb_lower: bb.lower,
       price: closes[closes.length - 1]!,
-      signal: classify(r, m, s, closes[closes.length - 1]!, bb, trend),
+      signal: classify(r, m, s, closes[closes.length - 1]!, bb, trend, smc),
       created_at: new Date().toISOString(),
       raw: {
         closes_tail: closes.slice(-5),
@@ -565,6 +661,7 @@ async function fetchIndicatorForTimeframe(
         aroon: trend,
         bollinger: { upper: bb.upper, lower: bb.lower },
         vwap,
+        smc,
       },
     };
   } catch (e) {
@@ -1594,6 +1691,14 @@ export async function combineSignals(): Promise<number> {
       const confirmed =
         (altResult.recommendation === "buy" && osc >= 20) ||
         (altResult.recommendation === "sell" && osc <= -20);
+      if (!confirmed) continue;
+    }
+    if (presetName === "smc-reversal") {
+      const primaryRaw = mtfRaw.primary?.["raw"] as Row;
+      const smc = primaryRaw?.["smc"] as SmcResult | undefined;
+      const confirmed =
+        (altResult.recommendation === "sell" && smc?.signal === "bearish_reversal") ||
+        (altResult.recommendation === "buy" && smc?.signal === "bullish_reversal");
       if (!confirmed) continue;
     }
     if (presetName === "vwap-momentum") {
