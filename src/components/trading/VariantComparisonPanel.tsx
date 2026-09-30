@@ -30,7 +30,7 @@ const PRESET_LABEL: Record<string, string> = {
   balanced: "Balanced",
   "whale-focused": "Whale",
   "chart-trader": "Chart",
-  "smc-reversal": "SMC ChoCh",
+  "smc-reversal": "SMC Pro",
   "volatility-timing": "BB + Aroon",
   "vwap-momentum": "VWAP+RSI",
   "sentiment-first": "Sentiment",

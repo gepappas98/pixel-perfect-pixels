@@ -96,5 +96,6 @@ export const PRESET_LABELS: Record<string, string> = {
   conservative: "Conservative",
   "volatility-timing": "BB + Aroon Timing",
   "vwap-momentum": "VWAP + RSI Intraday",
+  "smc-reversal": "SMC Pro (BOS + ChoCh)",
   custom: "Custom",
 };
