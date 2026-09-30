@@ -78,7 +78,17 @@ export function IndicatorPanel() {
             const price = i.price != null ? Number(i.price) : null;
             const sig = String(i.signal ?? "neutral").toLowerCase();
             const raw = (i as IndicatorSnapshot & { raw?: unknown }).raw as
-              | { aroon?: { up?: number; down?: number; osc?: number }; bollinger?: { upper?: number; lower?: number } }
+              | {
+                  aroon?: { up?: number; down?: number; osc?: number };
+                  bollinger?: { upper?: number; lower?: number };
+                  smc?: {
+                    signal?: string;
+                    sweepTrap?: {
+                      detected?: boolean;
+                      type?: "bsl_sweep" | "ssl_sweep" | "none";
+                    };
+                  };
+                }
               | undefined;
             const aroonOsc = Number(raw?.aroon?.osc ?? 0);
             const upper = Number(raw?.bollinger?.upper ?? NaN);
@@ -97,6 +107,12 @@ export function IndicatorPanel() {
             const technicalTag = bandState
               ? `${bandState} · ${aroonOsc >= 20 ? "A↑" : aroonOsc <= -20 ? "A↓" : "A·"}`
               : null;
+            const smcSignal = raw?.smc?.signal;
+            const smcTag = smcSignal === "bsl_sweep_trap"
+              ? "SMC · BSL sweep trap"
+              : smcSignal === "ssl_sweep_trap"
+                ? "SMC · SSL sweep trap"
+                : null;
 
             return (
               <tr key={i.id} className="border-t border-border">
@@ -112,6 +128,11 @@ export function IndicatorPanel() {
                   {technicalTag && (
                     <div className="text-[9px] text-muted-foreground">
                       {technicalTag}
+                    </div>
+                  )}
+                  {smcTag && (
+                    <div className={`text-[9px] ${smcSignal === "ssl_sweep_trap" ? "text-bull" : "text-bear"}`}>
+                      {smcTag}
                     </div>
                   )}
                 </td>
