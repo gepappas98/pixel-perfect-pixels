@@ -96,8 +96,19 @@ export interface TradeAlert {
 }
 
 /**
+ * Snapshot του composite signal που πυροδότησε το trade.
+ * Χρησιμοποιείται από το TradeAlertsPanel για expandable row.
+ */
+export interface CompositeSignalSnapshot {
+  reasoning: string | null;
+  confidence: number | null;
+  created_at: string;
+}
+
+/**
  * A closed trade with the extra fields written by closeTriggeredTrades().
  * Used by TradeAlertsPanel to display both open and close timestamps.
+ * Πλέον περιλαμβάνει και το composite_signal snapshot για expandable reasoning.
  */
 export interface ClosedTrade {
   id: string;
@@ -107,9 +118,11 @@ export interface ClosedTrade {
   entry_price: number;
   exit_price: number | null;
   pnl: number | null; // net realized PnL (after fees)
-  close_reason: string | null; // "stop_loss" | "take_profit" | other
-  created_at: string; // when the trade was opened
-  closed_at: string | null; // when the trade was closed
+  close_reason: string | null;
+  created_at: string;
+  closed_at: string | null;
+  composite_signal_id?: string | null;
+  composite_signal?: CompositeSignalSnapshot | null;
 }
 
 export interface CouncilLesson {
