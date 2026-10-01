@@ -285,16 +285,19 @@ export type Database = {
       }
       pipeline_settings: {
         Row: {
+          cleanup_config: Json
           id: number
           interval_minutes: number
           updated_at: string
         }
         Insert: {
+          cleanup_config?: Json
           id?: number
           interval_minutes?: number
           updated_at?: string
         }
         Update: {
+          cleanup_config?: Json
           id?: number
           interval_minutes?: number
           updated_at?: string
@@ -337,6 +340,84 @@ export type Database = {
           updated_at?: string
           volume_24h?: number | null
           yes_price?: number | null
+        }
+        Relationships: []
+      }
+      shadow_conflicts: {
+        Row: {
+          confidence: number | null
+          current_recommendation: string
+          detected_at: string
+          id: string
+          reasoning: string | null
+          score: number | null
+          symbol: string
+          would_be_recommendation: string
+        }
+        Insert: {
+          confidence?: number | null
+          current_recommendation: string
+          detected_at?: string
+          id?: string
+          reasoning?: string | null
+          score?: number | null
+          symbol: string
+          would_be_recommendation: string
+        }
+        Update: {
+          confidence?: number | null
+          current_recommendation?: string
+          detected_at?: string
+          id?: string
+          reasoning?: string | null
+          score?: number | null
+          symbol?: string
+          would_be_recommendation?: string
+        }
+        Relationships: []
+      }
+      shadow_mtf_gates: {
+        Row: {
+          confidence: number | null
+          detected_at: string
+          gated_recommendation: string
+          id: string
+          mtf_bear_count: number
+          mtf_bull_count: number
+          mtf_neutral_count: number
+          original_recommendation: string
+          reasoning: string | null
+          score: number | null
+          side: string
+          symbol: string
+        }
+        Insert: {
+          confidence?: number | null
+          detected_at?: string
+          gated_recommendation: string
+          id?: string
+          mtf_bear_count: number
+          mtf_bull_count: number
+          mtf_neutral_count: number
+          original_recommendation: string
+          reasoning?: string | null
+          score?: number | null
+          side: string
+          symbol: string
+        }
+        Update: {
+          confidence?: number | null
+          detected_at?: string
+          gated_recommendation?: string
+          id?: string
+          mtf_bear_count?: number
+          mtf_bull_count?: number
+          mtf_neutral_count?: number
+          original_recommendation?: string
+          reasoning?: string | null
+          score?: number | null
+          side?: string
+          symbol?: string
         }
         Relationships: []
       }
