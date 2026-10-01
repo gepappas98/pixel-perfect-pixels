@@ -1,4 +1,4 @@
-import type { SignalDir } from "./trading-types";
+export type SignalDir = "bullish" | "bearish" | "neutral";
 
 /**
  * MTF Confirmation Gate
