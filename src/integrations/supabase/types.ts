@@ -26,6 +26,7 @@ export type Database = {
           prediction_snapshot_id: string | null
           reasoning: string | null
           recommendation: string | null
+          regime_label: string | null
           symbol: string
           whale_alert_id: string | null
         }
@@ -40,6 +41,7 @@ export type Database = {
           prediction_snapshot_id?: string | null
           reasoning?: string | null
           recommendation?: string | null
+          regime_label?: string | null
           symbol: string
           whale_alert_id?: string | null
         }
@@ -54,6 +56,7 @@ export type Database = {
           prediction_snapshot_id?: string | null
           reasoning?: string | null
           recommendation?: string | null
+          regime_label?: string | null
           symbol?: string
           whale_alert_id?: string | null
         }
@@ -501,6 +504,7 @@ export type Database = {
           pnl_pct: number | null
           reasoning: string | null
           recommendation: string | null
+          regime_label: string | null
           resolved_at: string | null
           score: number | null
           strategy_name: string
@@ -516,6 +520,7 @@ export type Database = {
           pnl_pct?: number | null
           reasoning?: string | null
           recommendation?: string | null
+          regime_label?: string | null
           resolved_at?: string | null
           score?: number | null
           strategy_name: string
@@ -531,6 +536,7 @@ export type Database = {
           pnl_pct?: number | null
           reasoning?: string | null
           recommendation?: string | null
+          regime_label?: string | null
           resolved_at?: string | null
           score?: number | null
           strategy_name?: string
@@ -603,6 +609,7 @@ export type Database = {
           pnl: number | null
           post_mortem_generated: boolean | null
           quantity: number
+          regime_label: string | null
           side: string
           status: string
           stop_loss: number | null
@@ -627,6 +634,7 @@ export type Database = {
           pnl?: number | null
           post_mortem_generated?: boolean | null
           quantity: number
+          regime_label?: string | null
           side: string
           status?: string
           stop_loss?: number | null
@@ -651,6 +659,7 @@ export type Database = {
           pnl?: number | null
           post_mortem_generated?: boolean | null
           quantity?: number
+          regime_label?: string | null
           side?: string
           status?: string
           stop_loss?: number | null
