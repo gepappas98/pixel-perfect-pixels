@@ -585,11 +585,9 @@ export async function collectWhaleAlerts(): Promise<number> {
           : "hyperliquid-top-mover";
 
         // Top movers (εκτός watchlist): πιο χαλαρό floor.
-        // Το ×2 multiplier έχει νόημα για watchlist (institutional filters),
-        // αλλά για small-cap movers κάνει το source πρακτικά ανενεργό.
         const floor = base.has(coin)
-          ? hlWhaleFloor(coin)     // watchlist: ×2 (αυστηρό)
-          : whaleFloor(coin);      // top movers: ×1 (χαλαρό)
+          ? hlWhaleFloor(coin)
+          : whaleFloor(coin);
 
         for (const t of trades) {
           const usd = parseFloat(t.px) * parseFloat(t.sz);
@@ -750,7 +748,6 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
   const rows = perCoinRows.flat();
   const elapsed = Date.now() - startedAt;
 
-  // ── Aggregate logging ──
   console.log(
     `[WHALE_COLLECTOR] binance_ok=${binanceSuccessCount} binance_fail=${binanceFailCount} bybit_fallback=${bybitFallbackCount} bybit_fail=${bybitFailCount} total_candidates=${rows.length} in ${elapsed}ms`,
   );
@@ -768,7 +765,6 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
     return 0;
   }
 
-  // ── Insert ──
   const { data, error } = await db
     .from("whale_alerts")
     .upsert(rows as never, {
@@ -2393,7 +2389,7 @@ export async function combineSignals(): Promise<number> {
   return created;
 }
 
-/* ───────────── Resolve variant signal outcomes ───────────── */
+/* ───────────── Resolve variant signal outcomes (per-strategy batch) ───────────── */
 
 interface VariantCandle {
   open: number;
@@ -2443,23 +2439,59 @@ async function fetch4hCandles(
 async function resolveVariantOutcomes(): Promise<number> {
   const db = await admin();
 
-  const { data: openVariants, error } = await db
-    .from("strategy_variant_signals")
-    .select("id, symbol, recommendation, entry_price, created_at")
-    .eq("outcome", "open")
-    .not("entry_price", "is", null)
-    .in("recommendation", ["buy", "sell"])
-    .order("created_at", { ascending: true })
-    .limit(VARIANT_RESOLVE_BATCH);
+  // Only resolve signals that are at least 1h old — 4h candles haven't
+  // closed for younger signals, so resolution would be premature.
+  const minAgeMs = 60 * 60 * 1000;
+  const maxAgeIso = new Date(Date.now() - minAgeMs).toISOString();
 
-  if (error) {
-    console.error("[VARIANTS] resolve fetch failed:", error);
+  // Per-strategy batch: prevents new presets from being starved by
+  // the massive backlog from older presets. 300 per preset × 9 presets = 2700.
+  const PER_PRESET_BATCH = 300;
+  const PRESETS = Object.keys(STRATEGY_PRESETS);
+
+  const openVariants: {
+    id: string;
+    symbol: string;
+    recommendation: string | null;
+    entry_price: number | null;
+    created_at: string;
+  }[] = [];
+
+  const presetFetchResults = await Promise.all(
+    PRESETS.map(async (preset) => {
+      const { data, error } = await db
+        .from("strategy_variant_signals")
+        .select("id, symbol, recommendation, entry_price, created_at")
+        .eq("strategy_name", preset)
+        .eq("outcome", "open")
+        .not("entry_price", "is", null)
+        .in("recommendation", ["buy", "sell"])
+        .lte("created_at", maxAgeIso)
+        .order("created_at", { ascending: true })
+        .limit(PER_PRESET_BATCH);
+
+      if (error) {
+        console.error(`[VARIANTS] fetch failed for preset ${preset}:`, error);
+        return [] as typeof openVariants;
+      }
+      return (data ?? []) as typeof openVariants;
+    }),
+  );
+
+  for (const batch of presetFetchResults) {
+    openVariants.push(...batch);
+  }
+
+  if (openVariants.length === 0) {
+    console.log(
+      `[VARIANTS] No eligible open variants (per_preset_batch=${PER_PRESET_BATCH}, presets=${PRESETS.length}, age≥1h)`,
+    );
     return 0;
   }
 
-  if (!openVariants || openVariants.length === 0) {
-    return 0;
-  }
+  console.log(
+    `[VARIANTS] Processing ${openVariants.length} variants across ${PRESETS.length} presets (${PER_PRESET_BATCH} max each)`,
+  );
 
   const bySymbol = new Map<
     string,
@@ -2471,13 +2503,7 @@ async function resolveVariantOutcomes(): Promise<number> {
     }[]
   >();
 
-  for (const raw of openVariants as {
-    id: string;
-    symbol: string;
-    recommendation: string | null;
-    entry_price: number | null;
-    created_at: string;
-  }[]) {
+  for (const raw of openVariants) {
     const entry = Number(raw.entry_price);
     const rec = String(raw.recommendation ?? "").toLowerCase();
 
