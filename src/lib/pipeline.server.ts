@@ -2955,4 +2955,332 @@ async function attemptRotation(
   } as never);
 
   console.log(
-    `[ROTATION] closed ${weakest.symbol} (PnL ${weakest.pnlPct.toFixed(2)}%, orig ${(weakest.originalConfidence * 100).toFixed(0)}%) → room for ${newSignal.symbol}`
+    `[ROTATION] closed ${weakest.symbol} (PnL ${weakest.pnlPct.toFixed(2)}%, orig ${(weakest.originalConfidence * 100).toFixed(0)}%) → room for ${newSignal.symbol}`,
+  );
+  return weakest.symbol;
+}
+
+export async function executeTrades(): Promise<number> {
+  const db = await admin();
+  const mode = tradingMode();
+  await closeTriggeredTrades();
+  const since = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+  const cooldownSince = new Date(
+    Date.now() - SYMBOL_COOLDOWN_MINUTES * 60 * 1000,
+  ).toISOString();
+
+  const [signalsRes, openTradesRes, recentlyClosedRes] = await Promise.all([
+    db
+      .from("composite_signals")
+      .select("*")
+      .gte("created_at", since)
+      .gte("confidence", MIN_CONFIDENCE)
+      .in("recommendation", ["buy", "sell"])
+      .order("confidence", { ascending: false }),
+    db
+      .from("trades")
+      .select(
+        "id, symbol, side, quantity, entry_price, mode, composite_signal_id, created_at",
+      )
+      .eq("status", "open"),
+    db
+      .from("trades")
+      .select("symbol")
+      .eq("status", "closed")
+      .gte("closed_at", cooldownSince),
+  ]);
+  if (signalsRes.error) throw signalsRes.error;
+  if (openTradesRes.error) throw openTradesRes.error;
+  if (recentlyClosedRes.error) throw recentlyClosedRes.error;
+
+  const openTrades = (openTradesRes.data ?? []) as OpenTradeForRotation[];
+  const openSymbols = new Set(openTrades.map((t) => t.symbol));
+  const cooldownSymbols = new Set(
+    ((recentlyClosedRes.data ?? []) as { symbol: string }[]).map(
+      (t) => t.symbol,
+    ),
+  );
+
+  const openSignalIds = openTrades
+    .map((t) => t.composite_signal_id)
+    .filter((id): id is string => id != null);
+  const openConfidenceMap = new Map<string, number>();
+  if (openSignalIds.length > 0) {
+    const { data: openSignals } = await db
+      .from("composite_signals")
+      .select("id, confidence")
+      .in("id", openSignalIds);
+    for (const s of (openSignals ?? []) as {
+      id: string;
+      confidence: number;
+    }[]) {
+      openConfidenceMap.set(s.id, Number(s.confidence));
+    }
+  }
+
+  let prices: Map<string, number>;
+  try {
+    prices = await allBinancePrices();
+  } catch (e) {
+    console.error("batch price fetch failed in executeTrades", e);
+    return 0;
+  }
+
+  let opened = 0;
+  let rotationAttempted = false;
+
+  for (const signal of (signalsRes.data ?? []) as {
+    id: string;
+    symbol: string;
+    recommendation: string;
+    confidence: number;
+    price_at?: number | null;
+    created_at?: string | null;
+  }[]) {
+    if (openSymbols.has(signal.symbol)) continue;
+    if (cooldownSymbols.has(signal.symbol)) continue;
+
+    const { data: existing } = await db
+      .from("trades")
+      .select("id")
+      .eq("composite_signal_id", signal.id)
+      .limit(1);
+    if (existing && existing.length > 0) continue;
+
+    const price = prices.get(binanceSymbol(signal.symbol));
+    if (price == null) {
+      console.error(`no price for ${signal.symbol}`);
+      continue;
+    }
+
+    const signalPrice = Number(signal.price_at);
+    if (
+      Number.isFinite(signalPrice) &&
+      signalPrice > 0 &&
+      Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT
+    )
+      continue;
+
+    const side = signal.recommendation as "buy" | "sell";
+    const stopLoss =
+      side === "buy"
+        ? price * (1 - STOP_LOSS_PCT)
+        : price * (1 + STOP_LOSS_PCT);
+    const takeProfit =
+      side === "buy"
+        ? price * (1 + TAKE_PROFIT_PCT)
+        : price * (1 - TAKE_PROFIT_PCT);
+
+    if (signal.created_at && !isFresh(signal.created_at, 15 * 60 * 1000))
+      continue;
+
+    let risk = await canOpenTrade(db as any, {
+      symbol: signal.symbol,
+      side,
+      entryPrice: price,
+      stopLoss,
+      currentPrices: prices,
+    });
+
+    if (
+      !risk.allowed &&
+      (risk.reason === "max_positions" ||
+        risk.reason === "portfolio_risk_limit") &&
+      !rotationAttempted &&
+      signal.confidence >= ROTATION_MIN_NEW_CONFIDENCE
+    ) {
+      rotationAttempted = true;
+      const rotatedSymbol = await attemptRotation(
+        db,
+        { symbol: signal.symbol, confidence: signal.confidence },
+        prices,
+        openTrades,
+        openConfidenceMap,
+      );
+
+      if (rotatedSymbol) {
+        openSymbols.delete(rotatedSymbol);
+        cooldownSymbols.add(rotatedSymbol);
+        risk = await canOpenTrade(db as any, {
+          symbol: signal.symbol,
+          side,
+          entryPrice: price,
+          stopLoss,
+          currentPrices: prices,
+        });
+      }
+    }
+
+    if (!risk.allowed) {
+      console.log(`[RISK_REJECTED] ${signal.symbol} ${side}: ${risk.reason}`);
+      continue;
+    }
+    if (!Number.isFinite(risk.quantity) || risk.quantity <= 0) continue;
+    console.log(
+      `[RISK_APPROVED] ${signal.symbol} ${side} | qty=${risk.quantity.toFixed(6)}`,
+    );
+    const quantity = risk.quantity;
+    let exchangeOrderId: string | null = null;
+    if (mode === "live") {
+      try {
+        exchangeOrderId = await placeLiveOrder(signal.symbol, side, quantity);
+      } catch (e) {
+        console.error("live order failed", e);
+        continue;
+      }
+    }
+    const entryFee = price * quantity * TRADING_FEE_RATE;
+    const { error: tradeErr } = await db.from("trades").insert({
+      composite_signal_id: signal.id,
+      symbol: signal.symbol,
+      side,
+      quantity,
+      entry_price: price,
+      stop_loss: stopLoss,
+      take_profit: takeProfit,
+      mode,
+      status: "open",
+      exchange_order_id: exchangeOrderId,
+      entry_fee: entryFee,
+      regime_label: currentRegimeLabel,
+    } as never);
+    if (tradeErr) {
+      if ((tradeErr as { code?: string }).code === "23505") continue;
+      throw tradeErr;
+    }
+    openSymbols.add(signal.symbol);
+    opened += 1;
+  }
+  return opened;
+}
+
+/* ───────────── Full pipeline ───────────── */
+
+export async function runFullPipeline() {
+  const db = await admin();
+  const startedAt = new Date();
+  const { data: runRow, error: insertError } = await db
+    .from("pipeline_runs")
+    .insert({
+      job_name: "runFullPipeline",
+      started_at: startedAt.toISOString(),
+      status: "running",
+    } as never)
+    .select("id")
+    .single();
+
+  if (insertError) {
+    const code = (insertError as { code?: string }).code;
+    if (code === "23505") {
+      console.log("[PIPELINE_LOCK] another run is already active");
+      return { skipped: true, reason: "pipeline_locked" };
+    }
+    throw new Error(`pipeline start/lock failed: ${insertError.message}`);
+  }
+  const runId = (runRow as { id: string }).id;
+
+  let step = "init";
+  try {
+    step = "whales";
+    const [hlWhales, exWhales] = await Promise.all([
+      collectWhaleAlerts(),
+      collectExchangeWhaleAlerts(),
+    ]);
+    const whales = hlWhales + exWhales;
+
+    step = "indicators";
+    const indicators = await collectIndicators();
+
+    step = "predictions";
+    const predictions = await collectPredictions();
+
+    step = "council";
+    const council = await collectCouncilSignals();
+
+    step = "auto-strategy";
+    try {
+      const autoSwitch = await maybeAutoSwitchStrategy();
+      if (autoSwitch.switched) {
+        console.log(
+          `[AUTO_SWITCH] Applied ${autoSwitch.preset}: ${autoSwitch.reasoning}`,
+        );
+        invalidateStrategyCache();
+      } else {
+        console.log(`[AUTO_SWITCH] Skipped: ${autoSwitch.reason}`);
+      }
+    } catch (e) {
+      console.error("[AUTO_SWITCH] non-fatal error:", e);
+    }
+
+    step = "signals";
+    const signals = await combineSignals();
+
+    step = "resolve-variants";
+    const resolvedVariants = await resolveVariantOutcomes();
+    if (resolvedVariants > 0) {
+      console.log(`[VARIANTS] Resolved ${resolvedVariants} variant outcomes`);
+    }
+
+    step = "trades";
+    const trades = await executeTrades();
+    const mode = tradingMode();
+
+    step = "post-mortem";
+    const learning = await generatePostMortems();
+    if (learning.generated > 0) {
+      console.log(`[LESSON] Generated ${learning.generated} new lessons`);
+    }
+    if (learning.status !== "ok") {
+      console.warn(
+        `[LESSON] AI status: ${learning.status} — ${learning.error ?? "unknown"}`,
+      );
+    }
+
+    const completedAt = new Date();
+    const summary = {
+      completed_at: completedAt.toISOString(),
+      duration_ms: completedAt.getTime() - startedAt.getTime(),
+      status: "success",
+      whales,
+      indicators,
+      predictions,
+      council,
+      signals,
+      trades,
+      variants_resolved: resolvedVariants,
+      mode,
+      error_message: null,
+      ai_status: learning.status,
+      ai_error: learning.error,
+      ai_lessons_generated: learning.generated,
+    };
+    if (runId) {
+      const { error: updateError } = await db
+        .from("pipeline_runs")
+        .update(summary as never)
+        .eq("id", runId);
+      if (updateError)
+        console.error("failed to update pipeline run", updateError);
+    }
+    return { whales, indicators, predictions, council, signals, trades, mode };
+  } catch (e) {
+    const raw = serializeError(e);
+    const message = `[step: ${step}] ${raw}`;
+    const completedAt = new Date();
+    console.error(`[PIPELINE_FAILED] ${message}`);
+    if (runId) {
+      const { error: updateError } = await db
+        .from("pipeline_runs")
+        .update({
+          completed_at: completedAt.toISOString(),
+          duration_ms: completedAt.getTime() - startedAt.getTime(),
+          status: "error",
+          error_message: message,
+        } as never)
+        .eq("id", runId);
+      if (updateError)
+        console.error("failed to record pipeline error", updateError);
+    }
+    throw new Error(message);
+  }
+}
