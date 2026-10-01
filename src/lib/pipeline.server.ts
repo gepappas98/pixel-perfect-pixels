@@ -17,7 +17,7 @@ import {
   type MtfGateConfig,
 } from "./mtf-gate";
 
-/* ───────────── Shared types (declared first) ───────────── */
+/* ───────────── Shared types ───────────── */
 
 type Row = Record<string, unknown> | null;
 type CouncilVerdict = "BUY" | "SELL" | "HOLD" | "AVOID";
@@ -124,7 +124,6 @@ const COUNCIL_MAX_AGE_MS = 30 * 60 * 1000;
 
 const STRATEGY_CACHE_TTL_MS = 60_000;
 
-// Variant outcome tracking
 const VARIANT_TP_PCT = 0.04;
 const VARIANT_SL_PCT = 0.03;
 const VARIANT_MAX_HOURS = 168;
@@ -151,26 +150,224 @@ async function fetchWithTimeout(input: string, init?: RequestInit) {
   });
 }
 
+/* ───────────── Multi-exchange market data (3-tier fallback) ───────────── */
+
 const BINANCE_MARKET_HOSTS = [
   "https://api.binance.com",
   "https://data-api.binance.vision",
 ] as const;
+
+const BYBIT_HOST = "https://api.bybit.com";
+
 let preferredMarketHost: (typeof BINANCE_MARKET_HOSTS)[number] | null = null;
+
+// ── Bybit interval mapping ──
+function toBybitInterval(timeframe: string): string | null {
+  switch (timeframe) {
+    case "1m": return "1";
+    case "5m": return "5";
+    case "15m": return "15";
+    case "30m": return "30";
+    case "1h": return "60";
+    case "4h": return "240";
+    case "1d": return "D";
+    case "1w": return "W";
+    default: return null;
+  }
+}
+
+/* ───────────── Binance (Tier 1 + 2) ───────────── */
 
 async function binancePublicGet(pathAndQuery: string): Promise<Response> {
   const hosts = preferredMarketHost
     ? [preferredMarketHost, ...BINANCE_MARKET_HOSTS.filter((host) => host !== preferredMarketHost)]
     : [...BINANCE_MARKET_HOSTS];
+
   let lastResponse: Response | null = null;
+  const attempts: string[] = [];
+
   for (const host of hosts) {
-    const response = await fetchWithTimeout(`${host}${pathAndQuery}`);
-    lastResponse = response;
-    if (response.ok || (![403, 418, 429, 451].includes(response.status) && response.status < 500)) {
-      if (response.ok) preferredMarketHost = host;
-      return response;
+    const t0 = Date.now();
+    try {
+      const response = await fetchWithTimeout(`${host}${pathAndQuery}`);
+      const ms = Date.now() - t0;
+      attempts.push(`${host}→${response.status}(${ms}ms)`);
+
+      if (response.ok) {
+        if (preferredMarketHost !== host) {
+          console.log(`[BINANCE_GET] preferred host set to ${host}`);
+        }
+        preferredMarketHost = host;
+        return response;
+      }
+
+      if (![403, 418, 429, 451].includes(response.status) && response.status < 500) {
+        return response;
+      }
+
+      console.warn(
+        `[BINANCE_GET] ${host} returned ${response.status}, trying next host`,
+      );
+      lastResponse = response;
+    } catch (e) {
+      const ms = Date.now() - t0;
+      const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+      attempts.push(`${host}→THREW(${ms}ms:${msg.slice(0, 60)})`);
+      console.error(
+        `[BINANCE_GET] ${host} threw after ${ms}ms: ${msg}`,
+      );
     }
   }
-  return lastResponse ?? new Response(null, { status: 503 });
+
+  const summary = attempts.join(" | ");
+  console.error(`[BINANCE_GET] ALL HOSTS FAILED for ${pathAndQuery} — ${summary}`);
+
+  return (
+    lastResponse ??
+    new Response(
+      JSON.stringify({ error: "all hosts failed", attempts }),
+      { status: 503, headers: { "Content-Type": "application/json" } },
+    )
+  );
+}
+
+/* ───────────── Bybit (Tier 3) ───────────── */
+
+interface BybitKlineResult {
+  retCode: number;
+  retMsg: string;
+  result?: {
+    category: string;
+    symbol: string;
+    list: string[][];  // reverse sorted: newest first
+  };
+}
+
+async function bybitPublicGet(
+  symbol: string,
+  interval: string,
+  limit: number,
+): Promise<unknown[][] | null> {
+  const url = new URL(`${BYBIT_HOST}/v5/market/kline`);
+  url.searchParams.set("category", "spot");
+  url.searchParams.set("symbol", symbol);
+  url.searchParams.set("interval", interval);
+  url.searchParams.set("limit", String(Math.min(limit, 1000)));
+
+  const t0 = Date.now();
+  try {
+    const res = await fetchWithTimeout(url.toString());
+    const ms = Date.now() - t0;
+
+    if (!res.ok) {
+      console.warn(`[BYBIT_GET] ${symbol} ${interval} → HTTP ${res.status} (${ms}ms)`);
+      return null;
+    }
+
+    const json = (await res.json()) as BybitKlineResult;
+
+    if (json.retCode !== 0) {
+      console.warn(
+        `[BYBIT_GET] ${symbol} ${interval} → retCode=${json.retCode} msg=${json.retMsg}`,
+      );
+      return null;
+    }
+
+    const list = json.result?.list;
+    if (!Array.isArray(list) || list.length === 0) {
+      console.warn(`[BYBIT_GET] ${symbol} ${interval} → empty list`);
+      return null;
+    }
+
+    console.log(
+      `[BYBIT_GET] ${symbol} ${interval} → ${list.length} candles (${ms}ms)`,
+    );
+
+    // Bybit returns newest first — reverse to match Binance (oldest first)
+    const chronological = [...list].reverse();
+
+    // Convert Bybit format to Binance-compatible:
+    // Bybit:   [startTimeMs, open, high, low, close, volume, turnover]
+    // Binance: [openTimeMs, open, high, low, close, volume, closeTimeMs, ...]
+    const intervalMs = parseBybitIntervalMs(interval);
+
+    return chronological.map((k) => {
+      const startMs = Number(k[0]);
+      return [
+        k[0],                        // open time
+        k[1],                        // open
+        k[2],                        // high
+        k[3],                        // low
+        k[4],                        // close
+        k[5],                        // volume
+        String(startMs + intervalMs), // close time (computed)
+      ];
+    });
+  } catch (e) {
+    const ms = Date.now() - t0;
+    const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+    console.error(`[BYBIT_GET] ${symbol} ${interval} threw after ${ms}ms: ${msg}`);
+    return null;
+  }
+}
+
+function parseBybitIntervalMs(interval: string): number {
+  // "1", "5", "15", "30", "60", "240" → minutes
+  // "D" → 1 day, "W" → 1 week
+  if (interval === "D") return 24 * 60 * 60 * 1000;
+  if (interval === "W") return 7 * 24 * 60 * 60 * 1000;
+  if (interval === "M") return 30 * 24 * 60 * 60 * 1000;
+  const minutes = parseInt(interval, 10);
+  return Number.isFinite(minutes) ? minutes * 60 * 1000 : 60 * 60 * 1000;
+}
+
+/* ───────────── Unified fetcher ───────────── */
+
+type CandleSource = "binance" | "bybit";
+
+async function fetchCandlesUnified(
+  coin: string,
+  timeframe: string,
+): Promise<{ source: CandleSource; candles: unknown[][] } | null> {
+  const binanceSym = binanceSymbol(coin);
+
+  // ── Tier 1 + 2: Binance native + mirror ──
+  const binancePath = `/api/v3/klines?symbol=${binanceSym}&interval=${timeframe}&limit=${KLINE_LIMIT}`;
+  const binanceRes = await binancePublicGet(binancePath);
+
+  if (binanceRes.ok) {
+    try {
+      const data = (await binanceRes.json()) as unknown[][];
+      if (Array.isArray(data) && data.length > 0) {
+        return { source: "binance", candles: data };
+      }
+    } catch {
+      // fall through to Bybit
+    }
+  }
+
+  // ── Tier 3: Bybit ──
+  const bybitInterval = toBybitInterval(timeframe);
+  if (!bybitInterval) {
+    console.error(
+      `[FALLBACK] ${coin} ${timeframe} — unsupported Bybit interval`,
+    );
+    return null;
+  }
+
+  const bybitCandles = await bybitPublicGet(
+    binanceSym,  // Bybit uses same format as Binance: BTCUSDT
+    bybitInterval,
+    KLINE_LIMIT,
+  );
+
+  if (bybitCandles && bybitCandles.length > 0) {
+    console.log(`[FALLBACK] ${coin} ${timeframe} → Bybit (${bybitCandles.length} candles)`);
+    return { source: "bybit", candles: bybitCandles };
+  }
+
+  console.error(`[FALLBACK] ${coin} ${timeframe} — ALL SOURCES FAILED`);
+  return null;
 }
 
 type Admin = Awaited<
@@ -692,16 +889,22 @@ async function fetchIndicatorForTimeframe(
 ): Promise<Record<string, unknown> | null> {
   const symbol = binanceSymbol(coin);
   try {
-    const res = await binancePublicGet(
-      `/api/v3/klines?symbol=${symbol}&interval=${timeframe}&limit=${KLINE_LIMIT}`,
-    );
-    if (!res.ok) return null;
-    const raw = (await res.json()) as unknown[][];
+    const result = await fetchCandlesUnified(coin, timeframe);
+    if (!result) {
+      console.error(
+        `[INDICATOR_FETCH] ${symbol} ${timeframe} → no source returned candles`,
+      );
+      return null;
+    }
+
+    const raw = result.candles;
+
     const opens = raw.map((r) => parseFloat(String(r[1])));
     const highs = raw.map((r) => parseFloat(String(r[2])));
     const lows = raw.map((r) => parseFloat(String(r[3])));
     const closes = raw.map((r) => parseFloat(String(r[4])));
     const volumes = raw.map((r) => parseFloat(String(r[5])));
+
     if (
       closes.length < 30 ||
       closes.some((c) => !Number.isFinite(c)) ||
@@ -709,8 +912,13 @@ async function fetchIndicatorForTimeframe(
       highs.some((v) => !Number.isFinite(v)) ||
       lows.some((v) => !Number.isFinite(v)) ||
       volumes.some((v) => !Number.isFinite(v) || v < 0)
-    )
+    ) {
+      console.warn(
+        `[INDICATOR_FETCH] ${symbol} ${timeframe} (${result.source}) → invalid data`,
+      );
       return null;
+    }
+
     const r = rsi(closes);
     const { macd: m, signal: s } = macd(closes);
     const bb = bollinger(closes);
@@ -718,8 +926,9 @@ async function fetchIndicatorForTimeframe(
     const vwap = computeVwap(highs, lows, closes, volumes);
     const smc = detectSmc(opens, highs, lows, closes);
     const candleCloseTime = new Date(
-      Number(raw[raw.length - 1]?.[6]),
+      Number(raw[raw.length - 1]?.[6]) || Date.now(),
     ).toISOString();
+
     return {
       symbol,
       timeframe,
@@ -738,13 +947,12 @@ async function fetchIndicatorForTimeframe(
         bollinger: { upper: bb.upper, lower: bb.lower },
         vwap,
         smc,
+        source: result.source,
       },
     };
   } catch (e) {
-    console.error(
-      `[BINANCE] indicator fetch failed for ${symbol} ${timeframe}`,
-      e,
-    );
+    const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+    console.error(`[INDICATOR_FETCH] ${symbol} ${timeframe} threw: ${msg}`);
     return null;
   }
 }
@@ -761,6 +969,11 @@ export async function collectIndicators(): Promise<number> {
     }
   }
 
+  const startedAt = Date.now();
+  console.log(
+    `[INDICATORS] Starting collection for ${coins.length} coins × ${TIMEFRAMES.length} timeframes = ${tasks.length} tasks`,
+  );
+
   const results = await pMap(
     tasks,
     async ({ coin, timeframe }) => {
@@ -772,7 +985,29 @@ export async function collectIndicators(): Promise<number> {
   const rows = results.filter(
     (r): r is Record<string, unknown> => r != null,
   );
-  if (rows.length === 0) return 0;
+
+  const elapsed = Date.now() - startedAt;
+  const successRate =
+    tasks.length > 0 ? ((rows.length / tasks.length) * 100).toFixed(1) : "0.0";
+
+  console.log(
+    `[INDICATORS] Collected ${rows.length}/${tasks.length} (${successRate}%) in ${elapsed}ms`,
+  );
+
+  if (rows.length === 0) {
+    console.error(
+      `[INDICATORS] CRITICAL: 0/${tasks.length} fetches succeeded. Check [BINANCE_GET], [BYBIT_GET], and [INDICATOR_FETCH] logs above.`,
+    );
+    return 0;
+  }
+
+  const bySource = rows.reduce<Record<string, number>>((acc, r) => {
+    const src = String((r["raw"] as Record<string, unknown>)?.["source"] ?? "unknown");
+    acc[src] = (acc[src] ?? 0) + 1;
+    return acc;
+  }, {});
+  console.log(`[INDICATORS] Sources: ${JSON.stringify(bySource)}`);
+
   const { data, error } = await db
     .from("indicator_snapshots")
     .upsert(rows as never, {
@@ -780,8 +1015,14 @@ export async function collectIndicators(): Promise<number> {
       ignoreDuplicates: false,
     })
     .select("id");
-  if (error) throw error;
-  return data?.length ?? 0;
+  if (error) {
+    console.error(`[INDICATORS] Upsert failed:`, error);
+    throw error;
+  }
+
+  const written = data?.length ?? 0;
+  console.log(`[INDICATORS] Wrote ${written} rows to indicator_snapshots`);
+  return written;
 }
 
 /* ───────────── Prediction markets ───────────── */
@@ -936,7 +1177,6 @@ interface MultiTfResult {
   aligned: boolean;
   conflict: boolean;
   detail: string;
-  // MTF gate counts — πόσα timeframes συμφωνούν
   bullCount: number;
   bearCount: number;
   neuCount: number;
@@ -1471,7 +1711,6 @@ function ruleBased(
   const reasons: string[] = [];
   let aiAvoid = false;
 
-  // Hard conflict detection: whale & prediction αντίθετα, no technicals
   const predDir = predictionDirection(prediction);
   const conflict = detectHardConflict(whale, mtf.direction, predDir);
 
@@ -1530,8 +1769,6 @@ function ruleBased(
     }
   }
 
-  // ── Recommendation logic ──
-  // Default = hold (ρητά, όχι fallthrough)
   let recommendation: "buy" | "sell" | "hold" | "watch" = "hold";
   let mtfGateDecision: ReturnType<typeof checkMtfGate> | null = null;
 
@@ -1549,8 +1786,6 @@ function ruleBased(
     if (aiAvoid) recommendation = "watch";
   }
 
-  // ── MTF Confirmation Gate ──
-  // Αν το score πέρασε threshold για buy/sell, αλλά το MTF δεν συμφωνεί → hold
   if (
     options?.mtfGateConfig &&
     (recommendation === "buy" || recommendation === "sell")
@@ -1568,11 +1803,9 @@ function ruleBased(
 
     if (!mtfGateDecision.passed) {
       if (options.mtfGateConfig.enabled) {
-        // Enable mode: reject πραγματικά
         reasons.push(`MTF gate REJECTED: ${mtfGateDecision.rejectReason}`);
         recommendation = "hold";
       } else if (options.mtfGateConfig.shadow_mode) {
-        // Shadow mode: log only, μην αλλάξεις
         reasons.push(
           `MTF gate SHADOW (would reject): ${mtfGateDecision.rejectReason}`,
         );
@@ -1733,13 +1966,8 @@ export async function combineSignals(): Promise<number> {
   let created = 0;
   const nowIso = new Date().toISOString();
 
-  // Shadow variant buffer (observability only)
   const variantRows: Record<string, unknown>[] = [];
-
-  // Shadow conflict buffer — watch_conflict_fix observability
   const shadowConflictBuffer: Record<string, unknown>[] = [];
-
-  // Shadow MTF gate buffer — mtf_confirmation_gate observability
   const shadowMtfGateBuffer: Record<string, unknown>[] = [];
 
   for (const symbol of symbols) {
@@ -1790,7 +2018,6 @@ export async function combineSignals(): Promise<number> {
       symbol,
     });
 
-    // Shadow mode: log + persist τι θα γινόταν με το fix ενεργό
     if (conflictShadowMode && !conflictFixEnabled) {
       const shadow = ruleBased(whale, mtf, prediction, council, weights, {
         conflictFixEnabled: true,
@@ -1811,7 +2038,6 @@ export async function combineSignals(): Promise<number> {
       }
     }
 
-    // Shadow MTF gate logging — αν το gate δεν είναι enabled
     if (
       mtfGateConfig &&
       !mtfGateConfig.enabled &&
@@ -1845,7 +2071,6 @@ export async function combineSignals(): Promise<number> {
       }
     }
 
-    // ── Shadow evaluation across all presets (buy/sell only) ──
     const mtfPrice =
       typeof mtfRaw.primary?.["price"] === "number"
         ? (mtfRaw.primary["price"] as number)
@@ -1963,7 +2188,6 @@ export async function combineSignals(): Promise<number> {
     if (data?.length) created += 1;
   }
 
-  // ── Batch insert shadow variant signals (non-fatal) ──
   if (variantRows.length > 0) {
     const { error: variantErr } = await db
       .from("strategy_variant_signals")
@@ -1977,7 +2201,6 @@ export async function combineSignals(): Promise<number> {
     }
   }
 
-  // ── Batch insert shadow conflicts (non-fatal) ──
   if (shadowConflictBuffer.length > 0) {
     const { error: shadowErr } = await db
       .from("shadow_conflicts" as never)
@@ -1991,7 +2214,6 @@ export async function combineSignals(): Promise<number> {
     }
   }
 
-  // ── Batch insert shadow MTF gates (non-fatal) ──
   if (shadowMtfGateBuffer.length > 0) {
     const { error: mtfErr } = await db
       .from("shadow_mtf_gates" as never)
@@ -2008,7 +2230,7 @@ export async function combineSignals(): Promise<number> {
   return created;
 }
 
-/* ───────────── Resolve variant signal outcomes (4h candle-based) ───────────── */
+/* ───────────── Resolve variant signal outcomes ───────────── */
 
 interface VariantCandle {
   open: number;
@@ -2025,18 +2247,13 @@ async function fetch4hCandles(
   const symbol = binanceSymbol(coin);
 
   try {
-    const res = await binancePublicGet(
-      `/api/v3/klines?symbol=${symbol}&interval=4h&limit=${limit}`,
-    );
-
-    if (!res.ok) {
-      console.error(`[VARIANTS] klines HTTP ${res.status} for ${symbol}`);
+    const result = await fetchCandlesUnified(coin, "4h");
+    if (!result) {
+      console.error(`[VARIANTS] no candles for ${symbol}`);
       return [];
     }
 
-    const raw = (await res.json()) as unknown[][];
-
-    if (!Array.isArray(raw)) return [];
+    const raw = result.candles.slice(-limit);
 
     return raw
       .map((r) => ({
@@ -2063,13 +2280,6 @@ async function fetch4hCandles(
 async function resolveVariantOutcomes(): Promise<number> {
   const db = await admin();
 
-  /*
-   * IMPORTANT:
-   * Do not filter open variants by created_at here.
-   *
-   * Older open variants must remain eligible so they can be resolved
-   * as expired after the 168h maximum lifetime.
-   */
   const { data: openVariants, error } = await db
     .from("strategy_variant_signals")
     .select("id, symbol, recommendation, entry_price, created_at")
@@ -2123,12 +2333,6 @@ async function resolveVariantOutcomes(): Promise<number> {
     bySymbol.set(raw.symbol, list);
   }
 
-  /*
-   * Fetch one 4h candle series per symbol, concurrently but bounded.
-   *
-   * The old implementation fetched symbols serially, which could make
-   * this resolver take many minutes with a ~100-symbol watchlist.
-   */
   const symbolResults = await pMap(
     [...bySymbol.entries()],
     async ([symbol, variants]) => ({
@@ -2164,10 +2368,6 @@ async function resolveVariantOutcomes(): Promise<number> {
           ? entry * (1 - VARIANT_SL_PCT)
           : entry * (1 + VARIANT_SL_PCT);
 
-      /*
-       * Use only fully closed 4h candles whose close happened after
-       * the signal creation time.
-       */
       const relevantCandles = candles.filter(
         (c) => c.closeTimeMs > entryMs && c.closeTimeMs <= nowMs,
       );
@@ -2175,10 +2375,6 @@ async function resolveVariantOutcomes(): Promise<number> {
       let outcome: "win" | "loss" | "expired" | null = null;
       let exitPrice: number | null = null;
 
-      /*
-       * If TP and SL are both touched inside the same 4h candle,
-       * resolve as SL first because intrabar ordering is unknown.
-       */
       for (const candle of relevantCandles) {
         const hitTP =
           rec === "buy" ? candle.high >= tpPrice : candle.low <= tpPrice;
@@ -2199,11 +2395,6 @@ async function resolveVariantOutcomes(): Promise<number> {
         }
       }
 
-      /*
-       * Expiry is evaluated only after TP/SL.
-       * At 168h, resolve using the latest fully closed 4h candle
-       * available to the resolver.
-       */
       if (!outcome) {
         const ageHours = (nowMs - entryMs) / 3_600_000;
 
@@ -2223,13 +2414,6 @@ async function resolveVariantOutcomes(): Promise<number> {
       const rawPnlPct = ((exitPrice - entry) / entry) * 100;
       const pnlPct = rec === "buy" ? rawPnlPct : -rawPnlPct;
 
-      /*
-       * Atomic/idempotent update:
-       * only an untouched "open" row is allowed to transition.
-       *
-       * Selecting the updated id prevents counting a concurrent resolver
-       * as successfully resolved when the row was already closed.
-       */
       const { data: updatedRows, error: updateErr } = await db
         .from("strategy_variant_signals")
         .update({
