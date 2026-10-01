@@ -126,7 +126,7 @@ export function TradeAlertsPanel() {
       // ── 4. Merge ──
       return (trades ?? []).map((t) => {
         const raw = t as Record<string, unknown>;
-        const signalId = raw.composite_signal_id as string | null;
+        const signalId = raw["composite_signal_id"] as string | null;
         const signal = signalId ? signalsById.get(signalId) ?? null : null;
         return {
           ...raw,

@@ -796,7 +796,7 @@ function detectSmc(
           detected: true,
           type: "bsl_sweep",
           liquidityLevel: targetBsl,
-          sweepWickHigh: highs[i],
+          sweepWickHigh: highs[i]!,
           fvgConfirmed: fvgType === "bearish" || retesting,
         };
         break;
@@ -821,7 +821,7 @@ function detectSmc(
           detected: true,
           type: "ssl_sweep",
           liquidityLevel: targetSsl,
-          sweepWickLow: lows[i],
+          sweepWickLow: lows[i]!,
           fvgConfirmed: fvgType === "bullish" || retesting,
         };
         break;
