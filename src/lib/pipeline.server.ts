@@ -154,7 +154,7 @@ async function fetchWithTimeout(input: string, init?: RequestInit) {
   });
 }
 
-/* ───────────── Multi-exchange market data (3-tier fallback) ───────────── */
+/* ───────────── Multi-exchange market data ───────────── */
 
 const BINANCE_MARKET_HOSTS = [
   "https://api.binance.com",
@@ -165,7 +165,7 @@ const BYBIT_HOST = "https://api.bybit.com";
 
 let preferredMarketHost: (typeof BINANCE_MARKET_HOSTS)[number] | null = null;
 
-// ── Bybit interval mapping ──
+// ── Bybit interval mapping (για candles fallback) ──
 function toBybitInterval(timeframe: string): string | null {
   switch (timeframe) {
     case "1m": return "1";
@@ -235,7 +235,7 @@ async function binancePublicGet(pathAndQuery: string): Promise<Response> {
   );
 }
 
-/* ───────────── Bybit (Tier 3) ───────────── */
+/* ───────────── Bybit (candles fallback) ───────────── */
 
 interface BybitKlineResult {
   retCode: number;
@@ -317,78 +317,6 @@ function parseBybitIntervalMs(interval: string): number {
   if (interval === "M") return 30 * 24 * 60 * 60 * 1000;
   const minutes = parseInt(interval, 10);
   return Number.isFinite(minutes) ? minutes * 60 * 1000 : 60 * 60 * 1000;
-}
-
-/* ───────────── Bybit recent trades (whale fallback) ───────────── */
-
-interface BybitTrade {
-  execId: string;
-  symbol: string;
-  price: string;
-  size: string;
-  side: "Buy" | "Sell";
-  time: string;
-  isBlockTrade?: boolean;
-}
-
-/**
- * Fetch recent trades από Bybit v5 **linear (USDT perps)** endpoint.
- *
- * Γιατί linear αντί spot:
- *  - Το Bybit spot recent-trade έχει hard limit 60 trades (~δευτερόλεπτα)
- *  - Τα spot trades είναι μικρά ($1K-$7K) — δεν φτάνουν τα whale floors
- *  - Το linear (perps) επιστρέφει 500 trades με πραγματικά μεγάλα sizes ($50K-$500K)
- *
- * Επιστρέφει null αν αποτύχει — caller αποφασίζει fallback.
- */
-async function bybitRecentTrades(
-  symbol: string,
-  limit = 500,
-): Promise<BybitTrade[] | null> {
-  const url = new URL(`${BYBIT_HOST}/v5/market/recent-trade`);
-  url.searchParams.set("category", "linear");
-  url.searchParams.set("symbol", symbol);
-  url.searchParams.set("limit", String(Math.min(limit, 500)));
-
-  const t0 = Date.now();
-  try {
-    const res = await fetchWithTimeout(url.toString());
-    const ms = Date.now() - t0;
-
-    if (!res.ok) {
-      console.warn(`[BYBIT_TRADES] ${symbol} → HTTP ${res.status} (${ms}ms)`);
-      return null;
-    }
-
-    const json = (await res.json()) as {
-      retCode: number;
-      retMsg: string;
-      result?: { list?: BybitTrade[] };
-    };
-
-    if (json.retCode !== 0) {
-      console.warn(
-        `[BYBIT_TRADES] ${symbol} → retCode=${json.retCode} msg=${json.retMsg}`,
-      );
-      return null;
-    }
-
-    const list = json.result?.list;
-    if (!Array.isArray(list)) {
-      console.warn(`[BYBIT_TRADES] ${symbol} → empty result`);
-      return null;
-    }
-
-    console.log(
-      `[BYBIT_TRADES] ${symbol} → ${list.length} linear trades (${ms}ms)`,
-    );
-    return list;
-  } catch (e) {
-    const ms = Date.now() - t0;
-    const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-    console.error(`[BYBIT_TRADES] ${symbol} threw after ${ms}ms: ${msg}`);
-    return null;
-  }
 }
 
 /* ───────────── Unified fetcher ───────────── */
@@ -591,7 +519,6 @@ export async function collectWhaleAlerts(): Promise<number> {
           ? "hyperliquid-recent-trades"
           : "hyperliquid-top-mover";
 
-        // Top movers (εκτός watchlist): πιο χαλαρό floor.
         const floor = base.has(coin)
           ? hlWhaleFloor(coin)
           : whaleFloor(coin);
@@ -631,7 +558,18 @@ export async function collectWhaleAlerts(): Promise<number> {
   return data?.length ?? 0;
 }
 
-/* ───────────── Whale alerts — Binance spot + Bybit linear fallback ───────────── */
+/* ───────────── Whale alerts — Binance spot only ─────────────
+ *
+ * NOTE: Bybit linear perps whales were REMOVED intentionally.
+ * Reason: perps "Buy" trades can be either long openings OR short
+ * closings — the direction is ambiguous and produced noise. Only
+ * Binance spot aggTrades (which reflect real cash-market buying
+ * and selling) are used for exchange whale alerts.
+ *
+ * Binance whale data has been returning HTTP 403 from the serverless
+ * environment since 30/09. If Binance remains blocked, exchange
+ * whale alerts will be empty — only Hyperliquid whales will fire.
+ * ───────────────────────────────────────────────────────────── */
 
 const BINANCE_SYMBOL_MAP: Record<string, string> = {
   MATIC: "POL",
@@ -654,8 +592,6 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
   const startedAt = Date.now();
   let binanceSuccessCount = 0;
   let binanceFailCount = 0;
-  let bybitFallbackCount = 0;
-  let bybitFailCount = 0;
 
   const perCoinRows = await pMap(
     WATCHLIST,
@@ -664,40 +600,31 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
       const symbol = binanceSymbol(coin);
       const floor = whaleFloor(coin);
 
-      // ── Tier 1: Binance aggTrades ──
-      let binanceTrades: BinanceAggTrade[] | null = null;
-
       try {
         const res = await binancePublicGet(
           `/api/v3/aggTrades?symbol=${symbol}&limit=1000`,
         );
 
-        if (res.ok) {
-          const parsed = (await res.json()) as BinanceAggTrade[];
-          if (Array.isArray(parsed)) {
-            binanceTrades = parsed;
-            binanceSuccessCount++;
-          } else {
-            binanceFailCount++;
-            console.warn(
-              `[WHALE_BINANCE] ${symbol} → invalid response format`,
-            );
-          }
-        } else {
+        if (!res.ok) {
           binanceFailCount++;
           console.warn(
-            `[WHALE_BINANCE] ${symbol} → HTTP ${res.status}, will try Bybit fallback`,
+            `[WHALE_BINANCE] ${symbol} → HTTP ${res.status}, skipping (no fallback)`,
           );
+          return out;
         }
-      } catch (e) {
-        binanceFailCount++;
-        const msg = e instanceof Error ? e.message : String(e);
-        console.warn(`[WHALE_BINANCE] ${symbol} threw: ${msg}`);
-      }
 
-      // ── Normal Binance path ──
-      if (binanceTrades) {
-        for (const t of binanceTrades) {
+        const parsed = (await res.json()) as BinanceAggTrade[];
+        if (!Array.isArray(parsed)) {
+          binanceFailCount++;
+          console.warn(
+            `[WHALE_BINANCE] ${symbol} → invalid response format`,
+          );
+          return out;
+        }
+
+        binanceSuccessCount++;
+
+        for (const t of parsed) {
           const usd = parseFloat(t.p) * parseFloat(t.q);
           if (!Number.isFinite(usd) || usd < floor) continue;
           out.push({
@@ -711,40 +638,10 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
             raw: t as unknown as Record<string, unknown>,
           });
         }
-        return out;
-      }
-
-      // ── Tier 2: Bybit recent-trade fallback (linear perps) ──
-      const bybitTrades = await bybitRecentTrades(symbol, 500);
-
-      if (!bybitTrades || bybitTrades.length === 0) {
-        bybitFailCount++;
-        console.warn(
-          `[WHALE_FALLBACK] ${symbol} → Binance failed AND Bybit returned nothing`,
-        );
-        return out;
-      }
-
-      bybitFallbackCount++;
-      console.log(
-        `[WHALE_BYBIT] ${symbol} → ${bybitTrades.length} linear trades (fallback from Binance)`,
-      );
-
-      for (const t of bybitTrades) {
-        const price = parseFloat(t.price);
-        const size = parseFloat(t.size);
-        const usd = price * size;
-        if (!Number.isFinite(usd) || usd < floor) continue;
-        out.push({
-          symbol: coin,
-          chain: "bybit-perp",
-          direction: t.side === "Buy" ? "accumulation" : "distribution",
-          usd_value: usd,
-          tx_hash: t.execId,
-          source: "bybit-linear-trades",
-          created_at: new Date(Number(t.time)).toISOString(),
-          raw: t as unknown as Record<string, unknown>,
-        });
+      } catch (e) {
+        binanceFailCount++;
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(`[WHALE_BINANCE] ${symbol} threw: ${msg}`);
       }
 
       return out;
@@ -756,18 +653,18 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
   const elapsed = Date.now() - startedAt;
 
   console.log(
-    `[WHALE_COLLECTOR] binance_ok=${binanceSuccessCount} binance_fail=${binanceFailCount} bybit_fallback=${bybitFallbackCount} bybit_fail=${bybitFailCount} total_candidates=${rows.length} in ${elapsed}ms`,
+    `[WHALE_BINANCE_COLLECTOR] ok=${binanceSuccessCount} fail=${binanceFailCount} candidates=${rows.length} in ${elapsed}ms`,
   );
 
   if (binanceSuccessCount === 0 && binanceFailCount > 0) {
     console.error(
-      `[WHALE_COLLECTOR] CRITICAL: Binance whales completely failed (${binanceFailCount} coins). Bybit fallback used for ${bybitFallbackCount} coins, failed for ${bybitFailCount}.`,
+      `[WHALE_BINANCE_COLLECTOR] CRITICAL: Binance whales completely failed (${binanceFailCount} coins). Bybit perps fallback was intentionally removed — only Hyperliquid whales will fire.`,
     );
   }
 
   if (rows.length === 0) {
     console.warn(
-      `[WHALE_COLLECTOR] Zero candidates after filtering — no whales above floor`,
+      `[WHALE_BINANCE_COLLECTOR] Zero candidates after filtering`,
     );
     return 0;
   }
@@ -783,7 +680,7 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
 
   const written = data?.length ?? 0;
   console.log(
-    `[WHALE_COLLECTOR] Wrote ${written} new whale rows (from ${rows.length} candidates)`,
+    `[WHALE_BINANCE_COLLECTOR] Wrote ${written} new whale rows (from ${rows.length} candidates)`,
   );
   return written;
 }
@@ -863,6 +760,42 @@ function aroon(highs: number[], lows: number[], period = 25) {
   const up = (highestIdx / period) * 100;
   const down = (lowestIdx / period) * 100;
   return { up, down, osc: up - down };
+}
+
+/**
+ * Average True Range — 14-period, Wilder smoothing.
+ * Επιστρέφει ATR ως % του current price.
+ */
+function computeAtrPct(
+  highs: number[],
+  lows: number[],
+  closes: number[],
+  period = 14,
+): number {
+  if (closes.length < period + 1) return 0;
+
+  const tr: number[] = [];
+  for (let i = 1; i < closes.length; i++) {
+    const h = highs[i]!;
+    const l = lows[i]!;
+    const cPrev = closes[i - 1]!;
+    const trueRange = Math.max(
+      h - l,
+      Math.abs(h - cPrev),
+      Math.abs(l - cPrev),
+    );
+    tr.push(trueRange);
+  }
+
+  if (tr.length < period) return 0;
+
+  let atr = tr.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < tr.length; i++) {
+    atr = (atr * (period - 1) + tr[i]!) / period;
+  }
+
+  const currentPrice = closes[closes.length - 1]!;
+  return currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
 }
 
 interface SmcResult {
@@ -1113,6 +1046,7 @@ async function fetchIndicatorForTimeframe(
         bollinger: { upper: bb.upper, lower: bb.lower },
         vwap,
         smc,
+        atr_pct: computeAtrPct(highs, lows, closes, 14),
         source: result.source,
       },
     };
@@ -1162,7 +1096,7 @@ export async function collectIndicators(): Promise<number> {
 
   if (rows.length === 0) {
     console.error(
-      `[INDICATORS] CRITICAL: 0/${tasks.length} fetches succeeded. Check [BINANCE_GET], [BYBIT_GET], and [INDICATOR_FETCH] logs above.`,
+      `[INDICATORS] CRITICAL: 0/${tasks.length} fetches succeeded.`,
     );
     return 0;
   }
@@ -2042,6 +1976,7 @@ export async function combineSignals(): Promise<number> {
   const conflictFixEnabled = cleanupCfg.watch_conflict_fix.enabled;
   const conflictShadowMode = cleanupCfg.watch_conflict_fix.shadow_mode;
   const mtfGateConfig = cleanupCfg.mtf_confirmation_gate;
+  const vwapGate = cleanupCfg.vwap_regime_gate;
 
   const { data: councilRows } = await db
     .from("council_signals")
@@ -2151,6 +2086,7 @@ export async function combineSignals(): Promise<number> {
   const variantRows: Record<string, unknown>[] = [];
   const shadowConflictBuffer: Record<string, unknown>[] = [];
   const shadowMtfGateBuffer: Record<string, unknown>[] = [];
+  const mtfRejectionBuffer: Record<string, unknown>[] = [];
 
   for (const symbol of symbols) {
     const whaleRows = whaleBySymbol.get(symbol) ?? [];
@@ -2199,6 +2135,29 @@ export async function combineSignals(): Promise<number> {
       mtfGateConfig,
       symbol,
     });
+
+    // ── MTF gate rejection logging (visible) ──
+    if (
+      mtfGateConfig?.enabled &&
+      result.mtfGateDecision &&
+      !result.mtfGateDecision.passed &&
+      result.recommendation === "hold"
+    ) {
+      const inferredSide: "buy" | "sell" =
+        result.score >= 0 ? "buy" : "sell";
+      mtfRejectionBuffer.push({
+        symbol,
+        side: inferredSide,
+        score: result.score,
+        confidence: result.confidence,
+        mtf_bull_count: mtf.bullCount,
+        mtf_bear_count: mtf.bearCount,
+        mtf_neutral_count: mtf.neuCount,
+        reject_reason: result.mtfGateDecision.rejectReason,
+        regime_label: regime.label,
+        detected_at: nowIso,
+      });
+    }
 
     if (conflictShadowMode && !conflictFixEnabled) {
       const shadow = ruleBased(whale, mtf, prediction, council, weights, {
@@ -2300,6 +2259,25 @@ export async function combineSignals(): Promise<number> {
             fastRsi <= 40 &&
             fastPrice < fastVwap);
         if (!confirmed) continue;
+
+        // ── VWAP regime gate: skip σε high-volatility regimes ──
+        if (vwapGate && (vwapGate.enabled || vwapGate.shadow_mode)) {
+          const primaryRaw = mtfRaw.primary?.["raw"] as Row;
+          const atrPct = Number(primaryRaw?.["atr_pct"] ?? 0);
+          const isHighVol =
+            Number.isFinite(atrPct) &&
+            atrPct > vwapGate.atr_pct_threshold;
+
+          if (isHighVol) {
+            if (vwapGate.enabled) {
+              continue;
+            } else {
+              console.log(
+                `[VWAP_GATE_SHADOW] ${symbol}: would skip (atr=${atrPct.toFixed(2)}% > ${vwapGate.atr_pct_threshold}%)`,
+              );
+            }
+          }
+        }
       }
       if (
         altResult.recommendation !== "buy" &&
@@ -2407,6 +2385,19 @@ export async function combineSignals(): Promise<number> {
     } else {
       console.log(
         `[SHADOW_MTF_GATES] Recorded ${shadowMtfGateBuffer.length} would-be rejects`,
+      );
+    }
+  }
+
+  if (mtfRejectionBuffer.length > 0) {
+    const { error: rejErr } = await db
+      .from("mtf_gate_rejections" as never)
+      .insert(mtfRejectionBuffer as never);
+    if (rejErr) {
+      console.error("[MTF_GATE_REJECTIONS] insert failed:", rejErr);
+    } else {
+      console.log(
+        `[MTF_GATE_REJECTIONS] Recorded ${mtfRejectionBuffer.length} real rejections`,
       );
     }
   }
@@ -2964,332 +2955,4 @@ async function attemptRotation(
   } as never);
 
   console.log(
-    `[ROTATION] closed ${weakest.symbol} (PnL ${weakest.pnlPct.toFixed(2)}%, orig ${(weakest.originalConfidence * 100).toFixed(0)}%) → room for ${newSignal.symbol}`,
-  );
-  return weakest.symbol;
-}
-
-export async function executeTrades(): Promise<number> {
-  const db = await admin();
-  const mode = tradingMode();
-  await closeTriggeredTrades();
-  const since = new Date(Date.now() - 15 * 60 * 1000).toISOString();
-  const cooldownSince = new Date(
-    Date.now() - SYMBOL_COOLDOWN_MINUTES * 60 * 1000,
-  ).toISOString();
-
-  const [signalsRes, openTradesRes, recentlyClosedRes] = await Promise.all([
-    db
-      .from("composite_signals")
-      .select("*")
-      .gte("created_at", since)
-      .gte("confidence", MIN_CONFIDENCE)
-      .in("recommendation", ["buy", "sell"])
-      .order("confidence", { ascending: false }),
-    db
-      .from("trades")
-      .select(
-        "id, symbol, side, quantity, entry_price, mode, composite_signal_id, created_at",
-      )
-      .eq("status", "open"),
-    db
-      .from("trades")
-      .select("symbol")
-      .eq("status", "closed")
-      .gte("closed_at", cooldownSince),
-  ]);
-  if (signalsRes.error) throw signalsRes.error;
-  if (openTradesRes.error) throw openTradesRes.error;
-  if (recentlyClosedRes.error) throw recentlyClosedRes.error;
-
-  const openTrades = (openTradesRes.data ?? []) as OpenTradeForRotation[];
-  const openSymbols = new Set(openTrades.map((t) => t.symbol));
-  const cooldownSymbols = new Set(
-    ((recentlyClosedRes.data ?? []) as { symbol: string }[]).map(
-      (t) => t.symbol,
-    ),
-  );
-
-  const openSignalIds = openTrades
-    .map((t) => t.composite_signal_id)
-    .filter((id): id is string => id != null);
-  const openConfidenceMap = new Map<string, number>();
-  if (openSignalIds.length > 0) {
-    const { data: openSignals } = await db
-      .from("composite_signals")
-      .select("id, confidence")
-      .in("id", openSignalIds);
-    for (const s of (openSignals ?? []) as {
-      id: string;
-      confidence: number;
-    }[]) {
-      openConfidenceMap.set(s.id, Number(s.confidence));
-    }
-  }
-
-  let prices: Map<string, number>;
-  try {
-    prices = await allBinancePrices();
-  } catch (e) {
-    console.error("batch price fetch failed in executeTrades", e);
-    return 0;
-  }
-
-  let opened = 0;
-  let rotationAttempted = false;
-
-  for (const signal of (signalsRes.data ?? []) as {
-    id: string;
-    symbol: string;
-    recommendation: string;
-    confidence: number;
-    price_at?: number | null;
-    created_at?: string | null;
-  }[]) {
-    if (openSymbols.has(signal.symbol)) continue;
-    if (cooldownSymbols.has(signal.symbol)) continue;
-
-    const { data: existing } = await db
-      .from("trades")
-      .select("id")
-      .eq("composite_signal_id", signal.id)
-      .limit(1);
-    if (existing && existing.length > 0) continue;
-
-    const price = prices.get(binanceSymbol(signal.symbol));
-    if (price == null) {
-      console.error(`no price for ${signal.symbol}`);
-      continue;
-    }
-
-    const signalPrice = Number(signal.price_at);
-    if (
-      Number.isFinite(signalPrice) &&
-      signalPrice > 0 &&
-      Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT
-    )
-      continue;
-
-    const side = signal.recommendation as "buy" | "sell";
-    const stopLoss =
-      side === "buy"
-        ? price * (1 - STOP_LOSS_PCT)
-        : price * (1 + STOP_LOSS_PCT);
-    const takeProfit =
-      side === "buy"
-        ? price * (1 + TAKE_PROFIT_PCT)
-        : price * (1 - TAKE_PROFIT_PCT);
-
-    if (signal.created_at && !isFresh(signal.created_at, 15 * 60 * 1000))
-      continue;
-
-    let risk = await canOpenTrade(db as any, {
-      symbol: signal.symbol,
-      side,
-      entryPrice: price,
-      stopLoss,
-      currentPrices: prices,
-    });
-
-    if (
-      !risk.allowed &&
-      (risk.reason === "max_positions" ||
-        risk.reason === "portfolio_risk_limit") &&
-      !rotationAttempted &&
-      signal.confidence >= ROTATION_MIN_NEW_CONFIDENCE
-    ) {
-      rotationAttempted = true;
-      const rotatedSymbol = await attemptRotation(
-        db,
-        { symbol: signal.symbol, confidence: signal.confidence },
-        prices,
-        openTrades,
-        openConfidenceMap,
-      );
-
-      if (rotatedSymbol) {
-        openSymbols.delete(rotatedSymbol);
-        cooldownSymbols.add(rotatedSymbol);
-        risk = await canOpenTrade(db as any, {
-          symbol: signal.symbol,
-          side,
-          entryPrice: price,
-          stopLoss,
-          currentPrices: prices,
-        });
-      }
-    }
-
-    if (!risk.allowed) {
-      console.log(`[RISK_REJECTED] ${signal.symbol} ${side}: ${risk.reason}`);
-      continue;
-    }
-    if (!Number.isFinite(risk.quantity) || risk.quantity <= 0) continue;
-    console.log(
-      `[RISK_APPROVED] ${signal.symbol} ${side} | qty=${risk.quantity.toFixed(6)}`,
-    );
-    const quantity = risk.quantity;
-    let exchangeOrderId: string | null = null;
-    if (mode === "live") {
-      try {
-        exchangeOrderId = await placeLiveOrder(signal.symbol, side, quantity);
-      } catch (e) {
-        console.error("live order failed", e);
-        continue;
-      }
-    }
-    const entryFee = price * quantity * TRADING_FEE_RATE;
-    const { error: tradeErr } = await db.from("trades").insert({
-      composite_signal_id: signal.id,
-      symbol: signal.symbol,
-      side,
-      quantity,
-      entry_price: price,
-      stop_loss: stopLoss,
-      take_profit: takeProfit,
-      mode,
-      status: "open",
-      exchange_order_id: exchangeOrderId,
-      entry_fee: entryFee,
-      regime_label: currentRegimeLabel,
-    } as never);
-    if (tradeErr) {
-      if ((tradeErr as { code?: string }).code === "23505") continue;
-      throw tradeErr;
-    }
-    openSymbols.add(signal.symbol);
-    opened += 1;
-  }
-  return opened;
-}
-
-/* ───────────── Full pipeline ───────────── */
-
-export async function runFullPipeline() {
-  const db = await admin();
-  const startedAt = new Date();
-  const { data: runRow, error: insertError } = await db
-    .from("pipeline_runs")
-    .insert({
-      job_name: "runFullPipeline",
-      started_at: startedAt.toISOString(),
-      status: "running",
-    } as never)
-    .select("id")
-    .single();
-
-  if (insertError) {
-    const code = (insertError as { code?: string }).code;
-    if (code === "23505") {
-      console.log("[PIPELINE_LOCK] another run is already active");
-      return { skipped: true, reason: "pipeline_locked" };
-    }
-    throw new Error(`pipeline start/lock failed: ${insertError.message}`);
-  }
-  const runId = (runRow as { id: string }).id;
-
-  let step = "init";
-  try {
-    step = "whales";
-    const [hlWhales, exWhales] = await Promise.all([
-      collectWhaleAlerts(),
-      collectExchangeWhaleAlerts(),
-    ]);
-    const whales = hlWhales + exWhales;
-
-    step = "indicators";
-    const indicators = await collectIndicators();
-
-    step = "predictions";
-    const predictions = await collectPredictions();
-
-    step = "council";
-    const council = await collectCouncilSignals();
-
-    step = "auto-strategy";
-    try {
-      const autoSwitch = await maybeAutoSwitchStrategy();
-      if (autoSwitch.switched) {
-        console.log(
-          `[AUTO_SWITCH] Applied ${autoSwitch.preset}: ${autoSwitch.reasoning}`,
-        );
-        invalidateStrategyCache();
-      } else {
-        console.log(`[AUTO_SWITCH] Skipped: ${autoSwitch.reason}`);
-      }
-    } catch (e) {
-      console.error("[AUTO_SWITCH] non-fatal error:", e);
-    }
-
-    step = "signals";
-    const signals = await combineSignals();
-
-    step = "resolve-variants";
-    const resolvedVariants = await resolveVariantOutcomes();
-    if (resolvedVariants > 0) {
-      console.log(`[VARIANTS] Resolved ${resolvedVariants} variant outcomes`);
-    }
-
-    step = "trades";
-    const trades = await executeTrades();
-    const mode = tradingMode();
-
-    step = "post-mortem";
-    const learning = await generatePostMortems();
-    if (learning.generated > 0) {
-      console.log(`[LESSON] Generated ${learning.generated} new lessons`);
-    }
-    if (learning.status !== "ok") {
-      console.warn(
-        `[LESSON] AI status: ${learning.status} — ${learning.error ?? "unknown"}`,
-      );
-    }
-
-    const completedAt = new Date();
-    const summary = {
-      completed_at: completedAt.toISOString(),
-      duration_ms: completedAt.getTime() - startedAt.getTime(),
-      status: "success",
-      whales,
-      indicators,
-      predictions,
-      council,
-      signals,
-      trades,
-      variants_resolved: resolvedVariants,
-      mode,
-      error_message: null,
-      ai_status: learning.status,
-      ai_error: learning.error,
-      ai_lessons_generated: learning.generated,
-    };
-    if (runId) {
-      const { error: updateError } = await db
-        .from("pipeline_runs")
-        .update(summary as never)
-        .eq("id", runId);
-      if (updateError)
-        console.error("failed to update pipeline run", updateError);
-    }
-    return { whales, indicators, predictions, council, signals, trades, mode };
-  } catch (e) {
-    const raw = serializeError(e);
-    const message = `[step: ${step}] ${raw}`;
-    const completedAt = new Date();
-    console.error(`[PIPELINE_FAILED] ${message}`);
-    if (runId) {
-      const { error: updateError } = await db
-        .from("pipeline_runs")
-        .update({
-          completed_at: completedAt.toISOString(),
-          duration_ms: completedAt.getTime() - startedAt.getTime(),
-          status: "error",
-          error_message: message,
-        } as never)
-        .eq("id", runId);
-      if (updateError)
-        console.error("failed to record pipeline error", updateError);
-    }
-    throw new Error(message);
-  }
-}
+    `[ROTATION] closed ${weakest.symbol} (PnL ${weakest.pnlPct.toFixed(2)}%, orig ${(weakest.originalConfidence * 100).toFixed(0)}%) → room for ${newSignal.symbol}`
