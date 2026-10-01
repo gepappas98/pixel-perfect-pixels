@@ -331,6 +331,16 @@ interface BybitTrade {
   isBlockTrade?: boolean;
 }
 
+/**
+ * Fetch recent trades από Bybit v5 **linear (USDT perps)** endpoint.
+ *
+ * Γιατί linear αντί spot:
+ *  - Το Bybit spot recent-trade έχει hard limit 60 trades (~δευτερόλεπτα)
+ *  - Τα spot trades είναι μικρά ($1K-$7K) — δεν φτάνουν τα whale floors
+ *  - Το linear (perps) επιστρέφει 500 trades με πραγματικά μεγάλα sizes ($50K-$500K)
+ *
+ * Επιστρέφει null αν αποτύχει — caller αποφασίζει fallback.
+ */
 async function bybitRecentTrades(
   symbol: string,
   limit = 500,
@@ -581,6 +591,7 @@ export async function collectWhaleAlerts(): Promise<number> {
           ? "hyperliquid-recent-trades"
           : "hyperliquid-top-mover";
 
+        // Top movers (εκτός watchlist): πιο χαλαρό floor.
         const floor = base.has(coin)
           ? hlWhaleFloor(coin)
           : whaleFloor(coin);
