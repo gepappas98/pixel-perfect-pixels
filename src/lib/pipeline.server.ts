@@ -239,7 +239,7 @@ interface BybitKlineResult {
   result?: {
     category: string;
     symbol: string;
-    list: string[][];  // reverse sorted: newest first
+    list: string[][];
   };
 }
 
@@ -283,24 +283,20 @@ async function bybitPublicGet(
       `[BYBIT_GET] ${symbol} ${interval} → ${list.length} candles (${ms}ms)`,
     );
 
-    // Bybit returns newest first — reverse to match Binance (oldest first)
     const chronological = [...list].reverse();
 
-    // Convert Bybit format to Binance-compatible:
-    // Bybit:   [startTimeMs, open, high, low, close, volume, turnover]
-    // Binance: [openTimeMs, open, high, low, close, volume, closeTimeMs, ...]
     const intervalMs = parseBybitIntervalMs(interval);
 
     return chronological.map((k) => {
       const startMs = Number(k[0]);
       return [
-        k[0],                        // open time
-        k[1],                        // open
-        k[2],                        // high
-        k[3],                        // low
-        k[4],                        // close
-        k[5],                        // volume
-        String(startMs + intervalMs), // close time (computed)
+        k[0],
+        k[1],
+        k[2],
+        k[3],
+        k[4],
+        k[5],
+        String(startMs + intervalMs),
       ];
     });
   } catch (e) {
@@ -312,13 +308,78 @@ async function bybitPublicGet(
 }
 
 function parseBybitIntervalMs(interval: string): number {
-  // "1", "5", "15", "30", "60", "240" → minutes
-  // "D" → 1 day, "W" → 1 week
   if (interval === "D") return 24 * 60 * 60 * 1000;
   if (interval === "W") return 7 * 24 * 60 * 60 * 1000;
   if (interval === "M") return 30 * 24 * 60 * 60 * 1000;
   const minutes = parseInt(interval, 10);
   return Number.isFinite(minutes) ? minutes * 60 * 1000 : 60 * 60 * 1000;
+}
+
+/* ───────────── Bybit recent trades (whale fallback) ───────────── */
+
+interface BybitTrade {
+  execId: string;
+  symbol: string;
+  price: string;
+  size: string;
+  side: "Buy" | "Sell";
+  time: string;
+  isBlockTrade?: boolean;
+}
+
+/**
+ * Fetch recent trades από Bybit v5 spot endpoint.
+ * Επιστρέφει null αν αποτύχει (network/HTTP/retCode error).
+ * Δεν πετάει exception — caller αποφασίζει fallback.
+ */
+async function bybitRecentTrades(
+  symbol: string,
+  limit = 500,
+): Promise<BybitTrade[] | null> {
+  const url = new URL(`${BYBIT_HOST}/v5/market/recent-trade`);
+  url.searchParams.set("category", "spot");
+  url.searchParams.set("symbol", symbol);
+  url.searchParams.set("limit", String(Math.min(limit, 500)));
+
+  const t0 = Date.now();
+  try {
+    const res = await fetchWithTimeout(url.toString());
+    const ms = Date.now() - t0;
+
+    if (!res.ok) {
+      console.warn(`[BYBIT_TRADES] ${symbol} → HTTP ${res.status} (${ms}ms)`);
+      return null;
+    }
+
+    const json = (await res.json()) as {
+      retCode: number;
+      retMsg: string;
+      result?: { list?: BybitTrade[] };
+    };
+
+    if (json.retCode !== 0) {
+      console.warn(
+        `[BYBIT_TRADES] ${symbol} → retCode=${json.retCode} msg=${json.retMsg}`,
+      );
+      return null;
+    }
+
+    const list = json.result?.list;
+    if (!Array.isArray(list)) {
+      console.warn(`[BYBIT_TRADES] ${symbol} → empty result`);
+      return null;
+    }
+
+    console.log(
+      `[BYBIT_TRADES] ${symbol} → ${list.length} trades (${ms}ms)`,
+    );
+    return list;
+  } catch (e) {
+    const ms = Date.now() - t0;
+    const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+    console.error(`[BYBIT_TRADES] ${symbol} threw after ${ms}ms: ${msg}`);
+    return null;
+  }
 }
 
 /* ───────────── Unified fetcher ───────────── */
@@ -331,7 +392,6 @@ async function fetchCandlesUnified(
 ): Promise<{ source: CandleSource; candles: unknown[][] } | null> {
   const binanceSym = binanceSymbol(coin);
 
-  // ── Tier 1 + 2: Binance native + mirror ──
   const binancePath = `/api/v3/klines?symbol=${binanceSym}&interval=${timeframe}&limit=${KLINE_LIMIT}`;
   const binanceRes = await binancePublicGet(binancePath);
 
@@ -346,7 +406,6 @@ async function fetchCandlesUnified(
     }
   }
 
-  // ── Tier 3: Bybit ──
   const bybitInterval = toBybitInterval(timeframe);
   if (!bybitInterval) {
     console.error(
@@ -356,7 +415,7 @@ async function fetchCandlesUnified(
   }
 
   const bybitCandles = await bybitPublicGet(
-    binanceSym,  // Bybit uses same format as Binance: BTCUSDT
+    binanceSym,
     bybitInterval,
     KLINE_LIMIT,
   );
@@ -575,19 +634,53 @@ interface BinanceAggTrade {
 export async function collectExchangeWhaleAlerts(): Promise<number> {
   const db = await admin();
 
+  const startedAt = Date.now();
+  let binanceSuccessCount = 0;
+  let binanceFailCount = 0;
+  let bybitFallbackCount = 0;
+  let bybitFailCount = 0;
+
   const perCoinRows = await pMap(
     WATCHLIST,
     async (coin) => {
       const out: Record<string, unknown>[] = [];
+      const symbol = binanceSymbol(coin);
+      const floor = whaleFloor(coin);
+
+      // ── Tier 1: Binance aggTrades ──
+      let binanceTrades: BinanceAggTrade[] | null = null;
+
       try {
         const res = await binancePublicGet(
-          `/api/v3/aggTrades?symbol=${binanceSymbol(coin)}&limit=1000`,
+          `/api/v3/aggTrades?symbol=${symbol}&limit=1000`,
         );
-        if (!res.ok) return out;
-        const trades = (await res.json()) as BinanceAggTrade[];
-        if (!Array.isArray(trades)) return out;
-        const floor = whaleFloor(coin);
-        for (const t of trades) {
+
+        if (res.ok) {
+          const parsed = (await res.json()) as BinanceAggTrade[];
+          if (Array.isArray(parsed)) {
+            binanceTrades = parsed;
+            binanceSuccessCount++;
+          } else {
+            binanceFailCount++;
+            console.warn(
+              `[WHALE_BINANCE] ${symbol} → invalid response format`,
+            );
+          }
+        } else {
+          binanceFailCount++;
+          console.warn(
+            `[WHALE_BINANCE] ${symbol} → HTTP ${res.status}, will try Bybit fallback`,
+          );
+        }
+      } catch (e) {
+        binanceFailCount++;
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(`[WHALE_BINANCE] ${symbol} threw: ${msg}`);
+      }
+
+      // ── Normal Binance path ──
+      if (binanceTrades) {
+        for (const t of binanceTrades) {
           const usd = parseFloat(t.p) * parseFloat(t.q);
           if (!Number.isFinite(usd) || usd < floor) continue;
           out.push({
@@ -601,16 +694,69 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
             raw: t as unknown as Record<string, unknown>,
           });
         }
-      } catch (e) {
-        console.error(`[BINANCE] whale fetch failed for ${coin}`, e);
+        return out;
       }
+
+      // ── Tier 2: Bybit recent-trade fallback ──
+      const bybitTrades = await bybitRecentTrades(symbol, 500);
+
+      if (!bybitTrades || bybitTrades.length === 0) {
+        bybitFailCount++;
+        console.warn(
+          `[WHALE_FALLBACK] ${symbol} → Binance failed AND Bybit returned nothing`,
+        );
+        return out;
+      }
+
+      bybitFallbackCount++;
+      console.log(
+        `[WHALE_BYBIT] ${symbol} → ${bybitTrades.length} trades (fallback from Binance)`,
+      );
+
+      for (const t of bybitTrades) {
+        const price = parseFloat(t.price);
+        const size = parseFloat(t.size);
+        const usd = price * size;
+        if (!Number.isFinite(usd) || usd < floor) continue;
+        out.push({
+          symbol: coin,
+          chain: "bybit-spot",
+          direction: t.side === "Buy" ? "accumulation" : "distribution",
+          usd_value: usd,
+          tx_hash: t.execId,
+          source: "bybit-recent-trades",
+          created_at: new Date(Number(t.time)).toISOString(),
+          raw: t as unknown as Record<string, unknown>,
+        });
+      }
+
       return out;
     },
     10,
   );
 
   const rows = perCoinRows.flat();
-  if (rows.length === 0) return 0;
+  const elapsed = Date.now() - startedAt;
+
+  // ── Aggregate logging ──
+  console.log(
+    `[WHALE_COLLECTOR] binance_ok=${binanceSuccessCount} binance_fail=${binanceFailCount} bybit_fallback=${bybitFallbackCount} bybit_fail=${bybitFailCount} total_candidates=${rows.length} in ${elapsed}ms`,
+  );
+
+  if (binanceSuccessCount === 0 && binanceFailCount > 0) {
+    console.error(
+      `[WHALE_COLLECTOR] CRITICAL: Binance whales completely failed (${binanceFailCount} coins). Bybit fallback used for ${bybitFallbackCount} coins, failed for ${bybitFailCount}.`,
+    );
+  }
+
+  if (rows.length === 0) {
+    console.warn(
+      `[WHALE_COLLECTOR] Zero candidates after filtering — no whales above floor`,
+    );
+    return 0;
+  }
+
+  // ── Insert ──
   const { data, error } = await db
     .from("whale_alerts")
     .upsert(rows as never, {
@@ -619,7 +765,12 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
     })
     .select("id");
   if (error) throw error;
-  return data?.length ?? 0;
+
+  const written = data?.length ?? 0;
+  console.log(
+    `[WHALE_COLLECTOR] Wrote ${written} new whale rows (from ${rows.length} candidates)`,
+  );
+  return written;
 }
 
 /* ───────────── Technical indicators ───────────── */
@@ -796,7 +947,7 @@ function detectSmc(
           detected: true,
           type: "bsl_sweep",
           liquidityLevel: targetBsl,
-          sweepWickHigh: highs[i]!,
+          sweepWickHigh: highs[i],
           fvgConfirmed: fvgType === "bearish" || retesting,
         };
         break;
@@ -821,7 +972,7 @@ function detectSmc(
           detected: true,
           type: "ssl_sweep",
           liquidityLevel: targetSsl,
-          sweepWickLow: lows[i]!,
+          sweepWickLow: lows[i],
           fvgConfirmed: fvgType === "bullish" || retesting,
         };
         break;
