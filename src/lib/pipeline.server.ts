@@ -328,16 +328,21 @@ interface BybitTrade {
 }
 
 /**
- * Fetch recent trades από Bybit v5 spot endpoint.
- * Επιστρέφει null αν αποτύχει (network/HTTP/retCode error).
- * Δεν πετάει exception — caller αποφασίζει fallback.
+ * Fetch recent trades από Bybit v5 **linear (USDT perps)** endpoint.
+ *
+ * Γιατί linear αντί spot:
+ *  - Το Bybit spot recent-trade έχει hard limit 60 trades (~δευτερόλεπτα)
+ *  - Τα spot trades είναι μικρά ($1K-$7K) — δεν φτάνουν τα whale floors
+ *  - Το linear (perps) επιστρέφει 500 trades με πραγματικά μεγάλα sizes ($50K-$500K)
+ *
+ * Επιστρέφει null αν αποτύχει — caller αποφασίζει fallback.
  */
 async function bybitRecentTrades(
   symbol: string,
   limit = 500,
 ): Promise<BybitTrade[] | null> {
   const url = new URL(`${BYBIT_HOST}/v5/market/recent-trade`);
-  url.searchParams.set("category", "spot");
+  url.searchParams.set("category", "linear");
   url.searchParams.set("symbol", symbol);
   url.searchParams.set("limit", String(Math.min(limit, 500)));
 
@@ -371,7 +376,7 @@ async function bybitRecentTrades(
     }
 
     console.log(
-      `[BYBIT_TRADES] ${symbol} → ${list.length} trades (${ms}ms)`,
+      `[BYBIT_TRADES] ${symbol} → ${list.length} linear trades (${ms}ms)`,
     );
     return list;
   } catch (e) {
@@ -578,7 +583,14 @@ export async function collectWhaleAlerts(): Promise<number> {
         const source = base.has(coin)
           ? "hyperliquid-recent-trades"
           : "hyperliquid-top-mover";
-        const floor = hlWhaleFloor(coin);
+
+        // Top movers (εκτός watchlist): πιο χαλαρό floor.
+        // Το ×2 multiplier έχει νόημα για watchlist (institutional filters),
+        // αλλά για small-cap movers κάνει το source πρακτικά ανενεργό.
+        const floor = base.has(coin)
+          ? hlWhaleFloor(coin)     // watchlist: ×2 (αυστηρό)
+          : whaleFloor(coin);      // top movers: ×1 (χαλαρό)
+
         for (const t of trades) {
           const usd = parseFloat(t.px) * parseFloat(t.sz);
           if (!Number.isFinite(usd) || usd < floor) continue;
@@ -614,7 +626,7 @@ export async function collectWhaleAlerts(): Promise<number> {
   return data?.length ?? 0;
 }
 
-/* ───────────── Whale alerts — Binance spot ───────────── */
+/* ───────────── Whale alerts — Binance spot + Bybit linear fallback ───────────── */
 
 const BINANCE_SYMBOL_MAP: Record<string, string> = {
   MATIC: "POL",
@@ -697,7 +709,7 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
         return out;
       }
 
-      // ── Tier 2: Bybit recent-trade fallback ──
+      // ── Tier 2: Bybit recent-trade fallback (linear perps) ──
       const bybitTrades = await bybitRecentTrades(symbol, 500);
 
       if (!bybitTrades || bybitTrades.length === 0) {
@@ -710,7 +722,7 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
 
       bybitFallbackCount++;
       console.log(
-        `[WHALE_BYBIT] ${symbol} → ${bybitTrades.length} trades (fallback from Binance)`,
+        `[WHALE_BYBIT] ${symbol} → ${bybitTrades.length} linear trades (fallback from Binance)`,
       );
 
       for (const t of bybitTrades) {
@@ -720,11 +732,11 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
         if (!Number.isFinite(usd) || usd < floor) continue;
         out.push({
           symbol: coin,
-          chain: "bybit-spot",
+          chain: "bybit-perp",
           direction: t.side === "Buy" ? "accumulation" : "distribution",
           usd_value: usd,
           tx_hash: t.execId,
-          source: "bybit-recent-trades",
+          source: "bybit-linear-trades",
           created_at: new Date(Number(t.time)).toISOString(),
           raw: t as unknown as Record<string, unknown>,
         });
