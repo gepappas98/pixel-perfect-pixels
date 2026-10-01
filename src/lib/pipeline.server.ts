@@ -16,6 +16,10 @@ import {
   type MtfCounts,
   type MtfGateConfig,
 } from "./mtf-gate";
+import {
+  computeRegimeSnapshot,
+  type RegimeSnapshot,
+} from "./regime-snapshot";
 
 /* ───────────── Shared types ───────────── */
 
@@ -327,16 +331,6 @@ interface BybitTrade {
   isBlockTrade?: boolean;
 }
 
-/**
- * Fetch recent trades από Bybit v5 **linear (USDT perps)** endpoint.
- *
- * Γιατί linear αντί spot:
- *  - Το Bybit spot recent-trade έχει hard limit 60 trades (~δευτερόλεπτα)
- *  - Τα spot trades είναι μικρά ($1K-$7K) — δεν φτάνουν τα whale floors
- *  - Το linear (perps) επιστρέφει 500 trades με πραγματικά μεγάλα sizes ($50K-$500K)
- *
- * Επιστρέφει null αν αποτύχει — caller αποφασίζει fallback.
- */
 async function bybitRecentTrades(
   symbol: string,
   limit = 500,
@@ -448,6 +442,9 @@ async function admin(): Promise<Admin> {
 /* ───────────── Strategy loader (cached) ───────────── */
 
 let strategyCache: { config: StrategyConfig; ts: number } | null = null;
+
+// Set once per pipeline run by combineSignals(), read by executeTrades().
+let currentRegimeLabel: string | null = null;
 
 async function fetchStrategy(): Promise<StrategyConfig> {
   const now = Date.now();
@@ -584,7 +581,6 @@ export async function collectWhaleAlerts(): Promise<number> {
           ? "hyperliquid-recent-trades"
           : "hyperliquid-top-mover";
 
-        // Top movers (εκτός watchlist): πιο χαλαρό floor.
         const floor = base.has(coin)
           ? hlWhaleFloor(coin)
           : whaleFloor(coin);
@@ -2080,6 +2076,22 @@ export async function combineSignals(): Promise<number> {
         .limit(1000),
     ]);
 
+  // ── Compute regime snapshot from raw data ──
+  const regime = computeRegimeSnapshot({
+    whales: (whalesRes.data ?? []) as Record<string, unknown>[],
+    indicators: (indicatorsRes.data ?? []) as Record<string, unknown>[],
+    predictions: (predictionsRes.data ?? []) as Record<string, unknown>[],
+    councils: (councilsRes.data ?? []) as Record<string, unknown>[],
+  });
+  currentRegimeLabel = regime.label;
+  console.log(
+    `[REGIME] label=${regime.label} score=${regime.score.toFixed(3)} ` +
+      `whale_net=${(regime.whaleNet * 100).toFixed(0)}% ` +
+      `tech_breadth=${(regime.techBreadth * 100).toFixed(0)}% ` +
+      `pred_consensus=${(regime.predConsensus * 100).toFixed(0)}% ` +
+      `council_consensus=${(regime.councilConsensus * 100).toFixed(0)}%`,
+  );
+
   const whaleBySymbol = new Map<string, Record<string, unknown>[]>();
   for (const w of (whalesRes.data ?? []) as Record<string, unknown>[]) {
     const s = w["symbol"] as string;
@@ -2293,6 +2305,7 @@ export async function combineSignals(): Promise<number> {
         score: altResult.score,
         entry_price: mtfPrice,
         outcome: "open",
+        regime_label: regime.label,
         created_at: nowIso,
       });
     }
@@ -2338,6 +2351,7 @@ export async function combineSignals(): Promise<number> {
           recommendation: result.recommendation,
           reasoning: result.reasoning,
           fingerprint,
+          regime_label: regime.label,
           created_at: nowIso,
         } as never,
         { onConflict: "fingerprint", ignoreDuplicates: false },
@@ -2355,7 +2369,7 @@ export async function combineSignals(): Promise<number> {
       console.error("[VARIANTS] insert failed:", variantErr);
     } else {
       console.log(
-        `[VARIANTS] Recorded ${variantRows.length} shadow signals across ${Object.keys(STRATEGY_PRESETS).length} presets`,
+        `[VARIANTS] Recorded ${variantRows.length} shadow signals across ${Object.keys(STRATEGY_PRESETS).length} presets (regime=${regime.label})`,
       );
     }
   }
@@ -2439,13 +2453,9 @@ async function fetch4hCandles(
 async function resolveVariantOutcomes(): Promise<number> {
   const db = await admin();
 
-  // Only resolve signals that are at least 1h old — 4h candles haven't
-  // closed for younger signals, so resolution would be premature.
   const minAgeMs = 60 * 60 * 1000;
   const maxAgeIso = new Date(Date.now() - minAgeMs).toISOString();
 
-  // Per-strategy batch: prevents new presets from being starved by
-  // the massive backlog from older presets. 300 per preset × 9 presets = 2700.
   const PER_PRESET_BATCH = 300;
   const PRESETS = Object.keys(STRATEGY_PRESETS);
 
@@ -3130,6 +3140,7 @@ export async function executeTrades(): Promise<number> {
       status: "open",
       exchange_order_id: exchangeOrderId,
       entry_fee: entryFee,
+      regime_label: currentRegimeLabel,
     } as never);
     if (tradeErr) {
       if ((tradeErr as { code?: string }).code === "23505") continue;
