@@ -1,4 +1,4 @@
-export type SignalDir = "bull" | "bear" | "neutral";
+export type SignalDir = "bullish" | "bearish" | "neutral";
 
 /**
  * MTF Confirmation Gate
