@@ -20,6 +20,11 @@ import {
   computeRegimeSnapshot,
   type RegimeSnapshot,
 } from "./regime-snapshot";
+import {
+  fetchCoinLobsterWhales,
+  normalizeCoinLobsterTrade,
+  type CoinLobsterTrade,
+} from "./coinlobster.server";
 
 /* ───────────── Shared types ───────────── */
 
@@ -154,7 +159,7 @@ async function fetchWithTimeout(input: string, init?: RequestInit) {
   });
 }
 
-/* ───────────── Multi-exchange market data ───────────── */
+/* ───────────── Multi-exchange market data (candles) ───────────── */
 
 const BINANCE_MARKET_HOSTS = [
   "https://api.binance.com",
@@ -165,7 +170,7 @@ const BYBIT_HOST = "https://api.bybit.com";
 
 let preferredMarketHost: (typeof BINANCE_MARKET_HOSTS)[number] | null = null;
 
-// ── Bybit interval mapping (για candles fallback) ──
+// ── Bybit interval mapping (για candle fallback μόνο) ──
 function toBybitInterval(timeframe: string): string | null {
   switch (timeframe) {
     case "1m": return "1";
@@ -217,9 +222,7 @@ async function binancePublicGet(pathAndQuery: string): Promise<Response> {
       const ms = Date.now() - t0;
       const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
       attempts.push(`${host}→THREW(${ms}ms:${msg.slice(0, 60)})`);
-      console.error(
-        `[BINANCE_GET] ${host} threw after ${ms}ms: ${msg}`,
-      );
+      console.error(`[BINANCE_GET] ${host} threw after ${ms}ms: ${msg}`);
     }
   }
 
@@ -235,7 +238,7 @@ async function binancePublicGet(pathAndQuery: string): Promise<Response> {
   );
 }
 
-/* ───────────── Bybit (candles fallback) ───────────── */
+/* ───────────── Bybit (candles fallback only) ───────────── */
 
 interface BybitKlineResult {
   retCode: number;
@@ -288,7 +291,6 @@ async function bybitPublicGet(
     );
 
     const chronological = [...list].reverse();
-
     const intervalMs = parseBybitIntervalMs(interval);
 
     return chronological.map((k) => {
@@ -319,7 +321,7 @@ function parseBybitIntervalMs(interval: string): number {
   return Number.isFinite(minutes) ? minutes * 60 * 1000 : 60 * 60 * 1000;
 }
 
-/* ───────────── Unified fetcher ───────────── */
+/* ───────────── Unified candle fetcher ───────────── */
 
 type CandleSource = "binance" | "bybit";
 
@@ -562,13 +564,11 @@ export async function collectWhaleAlerts(): Promise<number> {
  *
  * NOTE: Bybit linear perps whales were REMOVED intentionally.
  * Reason: perps "Buy" trades can be either long openings OR short
- * closings — the direction is ambiguous and produced noise. Only
- * Binance spot aggTrades (which reflect real cash-market buying
- * and selling) are used for exchange whale alerts.
+ * closings — the direction is ambiguous and produced noise.
  *
  * Binance whale data has been returning HTTP 403 from the serverless
  * environment since 30/09. If Binance remains blocked, exchange
- * whale alerts will be empty — only Hyperliquid whales will fire.
+ * whale alerts will be empty — Hyperliquid + CoinLobster cover the rest.
  * ───────────────────────────────────────────────────────────── */
 
 const BINANCE_SYMBOL_MAP: Record<string, string> = {
@@ -658,14 +658,12 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
 
   if (binanceSuccessCount === 0 && binanceFailCount > 0) {
     console.error(
-      `[WHALE_BINANCE_COLLECTOR] CRITICAL: Binance whales completely failed (${binanceFailCount} coins). Bybit perps fallback was intentionally removed — only Hyperliquid whales will fire.`,
+      `[WHALE_BINANCE_COLLECTOR] CRITICAL: Binance whales completely failed (${binanceFailCount} coins). Hyperliquid + CoinLobster cover the rest.`,
     );
   }
 
   if (rows.length === 0) {
-    console.warn(
-      `[WHALE_BINANCE_COLLECTOR] Zero candidates after filtering`,
-    );
+    console.warn(`[WHALE_BINANCE_COLLECTOR] Zero candidates after filtering`);
     return 0;
   }
 
@@ -681,6 +679,93 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
   const written = data?.length ?? 0;
   console.log(
     `[WHALE_BINANCE_COLLECTOR] Wrote ${written} new whale rows (from ${rows.length} candidates)`,
+  );
+  return written;
+}
+
+/* ───────────── Whale alerts — CoinLobster (keyless, 15 CEX + DEX) ───────────── */
+
+const COINLOBSTER_MIN_USD = 100_000;
+const COINLOBSTER_PRIORITY_COINS = ["BTC", "ETH", "SOL", "XRP", "DOGE"];
+const COINLOBSTER_WATCHLIST_FILTER = new Set(WATCHLIST);
+
+export async function collectCoinLobsterWhales(): Promise<number> {
+  const db = await admin();
+  const startedAt = Date.now();
+
+  // 1 global fetch (top 50 across all coins) + 5 priority fetches
+  const [globalTrades, ...coinBatches] = await Promise.all([
+    fetchCoinLobsterWhales(undefined, 50),
+    ...COINLOBSTER_PRIORITY_COINS.map((c) => fetchCoinLobsterWhales(c, 30)),
+  ]);
+
+  const allRaw: CoinLobsterTrade[] = [
+    ...(globalTrades ?? []),
+    ...coinBatches.flatMap((b) => b ?? []),
+  ];
+
+  console.log(
+    `[COINLOBSTER_COLLECTOR] Fetched ${allRaw.length} raw trades ` +
+      `(global=${globalTrades?.length ?? 0}, priority=${coinBatches.length} batches)`,
+  );
+
+  if (allRaw.length === 0) {
+    console.warn(`[COINLOBSTER_COLLECTOR] Zero raw trades retrieved`);
+    return 0;
+  }
+
+  const seenIds = new Set<string>();
+  const rows: Record<string, unknown>[] = [];
+  let skippedLowUsd = 0;
+  let skippedOffWatchlist = 0;
+
+  for (const raw of allRaw) {
+    const norm = normalizeCoinLobsterTrade(raw);
+    if (!norm) continue;
+    if (norm.usd_value < COINLOBSTER_MIN_USD) {
+      skippedLowUsd++;
+      continue;
+    }
+    if (!COINLOBSTER_WATCHLIST_FILTER.has(norm.symbol)) {
+      skippedOffWatchlist++;
+      continue;
+    }
+    if (seenIds.has(norm.tx_hash)) continue;
+    seenIds.add(norm.tx_hash);
+
+    rows.push({
+      symbol: norm.symbol,
+      chain: norm.chain,
+      direction: norm.direction,
+      usd_value: norm.usd_value,
+      tx_hash: norm.tx_hash,
+      source: norm.source,
+      created_at: norm.created_at,
+      raw: raw as unknown as Record<string, unknown>,
+    });
+  }
+
+  const elapsed = Date.now() - startedAt;
+
+  console.log(
+    `[COINLOBSTER_COLLECTOR] Filtered → ${rows.length} candidates ` +
+      `(skipped_low_usd=${skippedLowUsd}, skipped_off_watchlist=${skippedOffWatchlist}) in ${elapsed}ms`,
+  );
+
+  if (rows.length === 0) return 0;
+
+  const { data, error } = await db
+    .from("whale_alerts")
+    .upsert(rows as never, {
+      onConflict: "source,tx_hash",
+      ignoreDuplicates: true,
+    })
+    .select("id");
+  if (error) throw error;
+
+  const written = data?.length ?? 0;
+  console.log(
+    `[COINLOBSTER_COLLECTOR] Wrote ${written} new whale rows (from ${rows.length} candidates)`,
   );
   return written;
 }
@@ -1024,6 +1109,7 @@ async function fetchIndicatorForTimeframe(
     const trend = aroon(highs, lows);
     const vwap = computeVwap(highs, lows, closes, volumes);
     const smc = detectSmc(opens, highs, lows, closes);
+    const atrPct = computeAtrPct(highs, lows, closes, 14);
     const candleCloseTime = new Date(
       Number(raw[raw.length - 1]?.[6]) || Date.now(),
     ).toISOString();
@@ -1046,7 +1132,7 @@ async function fetchIndicatorForTimeframe(
         bollinger: { upper: bb.upper, lower: bb.lower },
         vwap,
         smc,
-        atr_pct: computeAtrPct(highs, lows, closes, 14),
+        atr_pct: atrPct,
         source: result.source,
       },
     };
@@ -2143,8 +2229,7 @@ export async function combineSignals(): Promise<number> {
       !result.mtfGateDecision.passed &&
       result.recommendation === "hold"
     ) {
-      const inferredSide: "buy" | "sell" =
-        result.score >= 0 ? "buy" : "sell";
+      const inferredSide: "buy" | "sell" = result.score >= 0 ? "buy" : "sell";
       mtfRejectionBuffer.push({
         symbol,
         side: inferredSide,
@@ -3182,11 +3267,15 @@ export async function runFullPipeline() {
   let step = "init";
   try {
     step = "whales";
-    const [hlWhales, exWhales] = await Promise.all([
+    const [hlWhales, exWhales, clWhales] = await Promise.all([
       collectWhaleAlerts(),
       collectExchangeWhaleAlerts(),
+      collectCoinLobsterWhales(),
     ]);
-    const whales = hlWhales + exWhales;
+    const whales = hlWhales + exWhales + clWhales;
+    console.log(
+      `[WHALES_TOTAL] hl=${hlWhales} binance=${exWhales} coinlobster=${clWhales} total=${whales}`,
+    );
 
     step = "indicators";
     const indicators = await collectIndicators();
