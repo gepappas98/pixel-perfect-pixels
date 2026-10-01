@@ -1,6 +1,5 @@
 /**
  * Cleanup Wave feature flags — cached read από pipeline_settings.cleanup_config.
- * Όλα τα fixes ξεκινούν OFF (εκτός από error_serialization).
  */
 
 const CACHE_TTL_MS = 60_000;
@@ -19,6 +18,11 @@ export interface CleanupConfig {
     shadow_mode: boolean;
     min_timeframes: number;
   };
+  vwap_regime_gate: {
+    enabled: boolean;
+    shadow_mode: boolean;
+    atr_pct_threshold: number;
+  };
 }
 
 export const DEFAULT_CLEANUP_CONFIG: CleanupConfig = {
@@ -27,9 +31,14 @@ export const DEFAULT_CLEANUP_CONFIG: CleanupConfig = {
   auto_switch_retry: { enabled: false, max_retries: 3, backoff_ms: 2000 },
   error_serialization: { enabled: true },
   mtf_confirmation_gate: {
+    enabled: true,
+    shadow_mode: false,
+    min_timeframes: 2,
+  },
+  vwap_regime_gate: {
     enabled: false,
     shadow_mode: true,
-    min_timeframes: 2,
+    atr_pct_threshold: 2.5,
   },
 };
 
