@@ -832,8 +832,8 @@ interface SmcResult {
     detected: boolean;
     type: "bsl_sweep" | "ssl_sweep" | "none";
     liquidityLevel: number;
-    sweepWickHigh?: number;
-    sweepWickLow?: number;
+    sweepWickHigh?: number | undefined;
+    sweepWickLow?: number | undefined;
     fvgConfirmed: boolean;
   };
   signal:
