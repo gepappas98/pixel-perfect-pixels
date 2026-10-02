@@ -135,7 +135,7 @@ export function normalizeCoinLobsterTrade(
 ): NormalizedCoinLobsterWhale | null {
   // ── Symbol extraction: "BTC/USD" → "BTC" ──
   const rawPair = String(raw.pair ?? fallbackCoin ?? "");
-  const symbol = (rawPair.includes("/") ? rawPair.split("/")[0] : rawPair)
+  const symbol = (rawPair.includes("/") ? (rawPair.split("/")[0] ?? "") : rawPair)
     .toUpperCase()
     .trim();
   if (!symbol) return null;
