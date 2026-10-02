@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
@@ -85,10 +88,23 @@
     "eslint-plugin-react-refresh": "^0.4.20",
     "globals": "^15.15.0",
     "nitro": "3.0.260603-beta",
+    "vitest": "^2.1.9",
+    "@vitest/coverage-v8": "^2.1.9"
     "postgres": "^3.4.9",
     "prettier": "^3.7.3",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.56.1",
     "vite": "8.1.5"
+  }
+}
+-----
+{
+  "scripts": {
+    // ...existing scripts (dev, build, preview, lint, format κλπ)
+    
+  },
+  "devDependencies": {
+    // ...existing devDependencies
+
   }
 }
