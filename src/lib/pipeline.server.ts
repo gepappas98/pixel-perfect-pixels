@@ -1380,9 +1380,9 @@ const AI_BATCH_MAX = 15;
 // consequential, so we refresh AI verdicts more aggressively. In calm /
 // sideways / choppy conditions we slow down to conserve tokens and stay
 // well below Groq's RPM/TPM limits.
-const AI_MIN_MINUTES_BETWEEN_BATCHES_DEFAULT = 25;
-const AI_MIN_MINUTES_BETWEEN_BATCHES_TRENDING = 15;
-const AI_MIN_MINUTES_BETWEEN_BATCHES_CALM = 40;
+const AI_MIN_MINUTES_BETWEEN_BATCHES_DEFAULT = 35;
+const AI_MIN_MINUTES_BETWEEN_BATCHES_TRENDING = 25;
+const AI_MIN_MINUTES_BETWEEN_BATCHES_CALM = 50;
 
 function aiBatchIntervalMinutes(): number {
   if (isTrendingRegime(currentRegimeLabel)) return AI_MIN_MINUTES_BETWEEN_BATCHES_TRENDING;
@@ -1480,7 +1480,7 @@ async function groqBatchCouncil(
         ],
         temperature: 0.2,
         ...( /gpt-oss/i.test(GROQ_MODEL) ? { reasoning_effort: "low" } : {}),
-        max_tokens: 2048,
+        max_tokens: 4096,
       }),
       signal: AbortSignal.timeout(GROQ_TIMEOUT_MS),
     });
