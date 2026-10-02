@@ -12,7 +12,7 @@ const LESSON_MODEL = process.env["GROQ_MODEL"] ?? "openai/gpt-oss-20b";
 const GROQ_TIMEOUT_MS = 20_000;
 const POST_MORTEM_BATCH_MAX = 5;
 const LESSONS_PER_SYMBOL = 5;
-const LESSON_MAX_TOKENS = 1200;
+const LESSON_MAX_TOKENS = 4096;
 
 interface TradeForPostMortem {
   id: string;
