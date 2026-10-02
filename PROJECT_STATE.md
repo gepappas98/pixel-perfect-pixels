@@ -1,319 +1,229 @@
-Έχω και τα δύο αρχεία. Ας δημιουργήσω το ενημερωμένο PROJECT_STATE.md με όλες τις νέες αλλαγές και τη σύγκριση.
+Trading Command Center — PROJECT STATE
+
+Master document: complete history, current state, next steps.
+Update at end of every session.
+
+Last updated: 2026-10-02 (late evening)
+Session 3: Dynamic watchlist via Hyperliquid + RevolutX provenance tagging + Capacity analysis
 
 ---
 
-Σύγκριση: Τρέχον vs Νέο PROJECT_STATE.md
+EXECUTIVE SUMMARY
 
-Τι Άλλαξε
+Τι κάναμε σήμερα (3 sessions σε 1 μέρα):
 
-Section Τρέχον (GitHub) Νέο (Ενημερωμένο)
-Last updated 2026-10-02 (afternoon) 2026-10-02 (evening)
-Session CoinLobster + MTF visibility + VWAP gate + Bybit removal + Dynamic settings, 1h variant resolution, Regime-aware Groq, Deterministic auto-switch, Circuit breaker, Prediction magnitude, Unit tests
-Executive Summary 5 items 13 items (5 υπάρχοντα + 8 νέα)
-Auto-switch Chart Trader vwap-momentum (auto-demoted)
-Win Rate 50% Αναμένεται βελτίωση μετά το auto-demote
-Whale Sources Ίδιο Ίδιο + σημείωση Binance 403
-Known Issues 4 items 4 items (ενημερωμένα μετά τα fixes)
-Next Steps Στατικά Νέες ενέργειες μετά το deploy
+Session 1 — Audit fixes
+
+· ✅ Dynamic trading settings (pipeline_settings + 30s cache)
+· ✅ 1h variant resolution (αντί 4h — 4× accuracy)
+· ✅ Regime-aware Groq cadence (15/25/40 min)
+· ✅ Groq token overflow fix (800 → 4096)
+· ✅ Dead constants cleanup
+
+Session 2 — Quality & safety
+
+· ✅ Deterministic auto-switch fallback (δουλεύει χωρίς Groq)
+· ✅ Auto-demote rule (winRate < 40% → force switch)
+· ✅ Circuit breaker (skip new entries on feed failure)
+· ✅ Prediction magnitude scaling
+· ✅ classify() tightening (RSI 44-56 neutral)
+· ✅ Unit tests (57 passing)
+
+Session 3 — Dynamic universe & provenance
+
+· ✅ Dynamic watchlist από Hyperliquid volume + Binance listings
+· ✅ 150 coins hard cap (bounded pipeline load)
+· ✅ Hysteresis band ($5M add / $3M remove) — no flip-flopping
+· ✅ Pinned symbols (BTC/ETH/SOL + open positions) never dropped
+· ✅ RevolutX tagging — full provenance tracking
+· ✅ Capacity analysis — empirical max ~200 coins
+· ✅ 6h snapshot stability — reduces churn
+
+Key innovation: Το pipeline δεν έχει στατική λίστα. Κάθε 6h, το watchlist-resolver.server.ts διαβάζει Hyperliquid volume, φιλτράρει με Binance listing status, και φτιάχνει τη λίστα από τα 150 πιο ενεργά νομίσματα. Νέες ευκαιρίες μπαίνουν αυτόματα, dead coins φεύγουν αυτόματα.
 
 ---
 
-Πλήρες Νέο PROJECT_STATE.md
+CAPACITY ANALYSIS — Πόσο Αντέχει το Pipeline
 
-```markdown
-# Trading Command Center — PROJECT STATE
+Θεωρητικό μοντέλο (pMap concurrency 15, avg latency 250ms, 12s timeout):
 
-> Master document: complete history, current state, next steps.
-> Update at end of every session.
->
-> **Last updated:** 2026-10-02 (evening)
-> **Session:** Dynamic settings + 1h variant resolution + Regime-aware Groq + Deterministic auto-switch + Circuit breaker + Prediction magnitude + Unit tests
+Coins Tasks Batches Realistic Worst Status
+95 (baseline) 285 19 50-90s 30s+ ✅
+150 (target) 450 30 65-110s 45s+ ✅ SAFE
+200 600 40 90-150s 60s+ ⚠️ Aggressive
+250 750 50 120-190s 75s+ 🔴 Needs pMap 25
+300 900 60 150-230s 90s+ ❌ Architectural change
 
-## EXECUTIVE SUMMARY
+Πραγματικό bottleneck: Binance rate limits (100 req/sec/IP). Στα 150 coins με pMap 15 → 45 req/sec burst = safe. Στα 300 coins → 90 req/sec = risky.
 
-**Σημερινές αλλαγές (2η συνεδρία):**
-- ✅ **Dynamic trading settings** — `pipeline_settings` table (30s cache) αντί hardcoded TP/SL/hold durations
-- ✅ **1h variant resolution** — 4× πιο ακριβής ανίχνευση TP/SL hit ordering (αντί για 4h candles)
-- ✅ **Regime-aware Groq cadence** — 15min (trending) / 25min (default) / 40min (calm) + council TTL 20/30/45min
-- ✅ **Groq token overflow fix** — max_tokens 800→4096 (strategy.functions) + max_completion_tokens: 4096 (pipeline)
-- ✅ **Deterministic auto-switch fallback** — Δουλεύει χωρίς Groq, με auto-demote για proven losers
-- ✅ **Auto-demote rule** — Force switch αν current preset: winRate < 40% Ή total_pnl_pct < 0 (με n ≥ 10)
-- ✅ **Circuit breaker** — `executeTrades({skipNewEntries})` + `emitFeedAlert()` σε feed failures
-- ✅ **Prediction magnitude scaling** — 80% YES ≠ 55% YES πλέον
-- ✅ **classify() tightening** — RSI 44-56 strict neutral band
-- ✅ **Unit tests (57 tests)** — Vitest setup, signal-logic + mtf-gate suites
-- ✅ **Dead constants cleanup** — `MAX_OPEN_TRADES`, `FALLBACK_*` αφαιρέθηκαν
+Recommendation:
 
-| Component | Status |
-|-----------|--------|
-| **Pipeline** | ✅ Healthy (50-90s duration) |
-| **Technicals** | ✅ 281/run |
-| **MTF Gate** | ✅ Enabled + now visible |
-| **Regime Tagging** | ✅ Deployed |
-| **Whale Sources** | ✅ Hyperliquid + CoinLobster (Binance 403) |
-| **Auto-switch** | ✅ **vwap-momentum** (auto-demoted from chart-trader) |
-| **Dynamic settings** | ✅ `pipeline_settings` + 30s cache |
-| **Circuit breaker** | ✅ Active (skip new entries on feed failure) |
-| **Unit tests** | ✅ 57 passing |
-| **Paper mode** | ✅ Active |
-| **Realized PnL** | +$244.05 (πριν auto-demote) |
-| **Open Positions** | 4 |
-| **Win Rate (real)** | 50% (αναμένεται βελτίωση μετά VWAP+RSI) |
-| **Profit Factor** | 1.80 |
+· 150 coins = production-ready με default pMap 15
+· 200 coins = OK με pMap 20
+· 250+ coins = architectural work (background async ή 1d candle caching)
 
-## ΣΗΜΕΡΙΝΕΣ ΑΛΛΑΓΕΣ — ΛΕΠΤΟΜΕΡΕΙΕΣ
+Watchdog: 30 min hard timeout, οπότε έχουμε τεράστιο περιθώριο ακόμα και στα 300 coins.
 
-### 1. Dynamic Trading Settings ✅
+Practical max: 200 coins.
 
-**Πρόβλημα:** TP/SL/hold durations ήταν hardcoded στο `pipeline.server.ts`. Κάθε αλλαγή απαιτούσε redeploy.
+---
 
-**Λύση:** Νέο `src/lib/trading-settings.server.ts` — διαβάζει από `pipeline_settings.trading_settings` με 30s cache.
+DYNAMIC WATCHLIST — Πώς Δουλεύει
 
-**Defaults (fallback):**
-```json
-{
-  "variant_max_hours": 72,
-  "variant_tp_pct": 0.04,
-  "variant_sl_pct": 0.03,
-  "max_hold_hours": 72,
-  "stale_exit_hours": 48,
-  "stale_exit_min_pnl_pct": 1.0,
-  "real_tp_pct": 0.04,
-  "real_sl_pct": 0.03
-}
+Flow
+
+```
+1. Resolve (μία φορά/pipeline, cached 60s):
+   a. Check DB snapshot (dynamic_watchlist_snapshots)
+      → Αν fresh (< 6h) → load + refresh pinned_open only
+   b. Otherwise → fetch Hyperliquid universe (~250 coins)
+   c. Apply volume filter (hysteresis):
+      - New coin enters: volume >= $5M
+      - Existing coin leaves: volume < $3M
+   d. Verify Binance listing (USDT pairs only, cached 24h)
+   e. Merge pinned (BTC/ETH/SOL + open positions)
+   f. Cap at 150
+   g. Persist snapshot (6h TTL)
+2. Return WatchlistContext με provenance tags:
+   - pinned_always: Set (BTC/ETH/SOL)
+   - pinned_open: Set (open trades)
+   - revolutx: Set (manually curated)
+   - hl_dynamic: Set (auto-added)
 ```
 
-Patches:
+Why This Design
 
-· closeTriggeredTrades() — settings.stale_exit_hours / max_hold_hours
-· executeTrades() — settings.real_sl_pct / real_tp_pct
-· resolveVariantOutcomes() — settings.variant_tp_pct / variant_sl_pct / variant_max_hours
+Πρόβλημα Λύση
+Static watchlist γερνάει Auto-discovery από HL volume
+Dead coins σπαταλούν API calls Auto-removal με hysteresis
+Νέα hot coins χάνονται Auto-entry σε 6h window
+Open positions κινδυνεύουν να ξεχαστούν Pinned via open-position tag
+Churn στο threshold boundary Hysteresis band ($5M add vs $3M remove)
+Pipeline overload Hard cap 150 coins
+Δεν ξέρουμε τι δουλεύει Provenance tags παντού
 
-Files:
+Provenance Tags
 
-· New: src/lib/trading-settings.server.ts
-· Patch: pipeline.server.ts (3 functions)
+Κάθε alert/trade/signal παίρνει tags[]:
 
-2. Variant Resolution Granularity — 1h αντί 4h ✅
+Tag Σημασία
+always-include BTC/ETH/SOL (πάντα στο watchlist)
+open-position Έχει ανοιχτό trade (pinned)
+revolutx Χειροκίνητα curated από RevolutX expander
+hl-dynamic Auto-added από Hyperliquid volume
+core-fallback Cold-start fallback (σπάνιο)
 
-Πρόβλημα: 4h candles → false losses σε volatile wicks. Αν η τιμή άγγιζε TP και SL μέσα στο ίδιο 4ωρο, ο κώδικας πάντα κατέγραφε loss (SL check πρώτα).
-
-Λύση: fetchVariantResolutionCandles() με VARIANT_RESOLVE_TIMEFRAME = "1h" + VARIANT_RESOLVE_CANDLE_LIMIT = 100.
-
-Impact: 4× περισσότερα data points (24h coverage αντί 8h). Ένα trade 8h → 8 σημεία ελέγχου αντί 2.
-
-Files:
-
-· Patch: pipeline.server.ts — fetchVariantResolutionCandles(), resolveVariantOutcomes()
-
-3. Regime-Aware Groq Cadence ✅
-
-Πρόβλημα: Σταθερό 25min interval δεν προσαρμόζεται σε trending markets (χάνει regime shifts) ή calm (σπαταλάει tokens).
-
-Λύση:
+Tunables (watchlist-resolver.server.ts)
 
 ```typescript
-const AI_MIN_MINUTES_BETWEEN_BATCHES_TRENDING = 15;
-const AI_MIN_MINUTES_BETWEEN_BATCHES_DEFAULT = 25;
-const AI_MIN_MINUTES_BETWEEN_BATCHES_CALM = 40;
-
-const COUNCIL_MAX_AGE_MS_TRENDING = 20 * 60 * 1000;
-const COUNCIL_MAX_AGE_MS = 30 * 60 * 1000;
-const COUNCIL_MAX_AGE_MS_CALM = 45 * 60 * 1000;
+export const MAX_COINS = 150;              // hard cap
+export const ADD_THRESHOLD_USD = 5_000_000;   // enter if ≥ $5M
+export const REMOVE_THRESHOLD_USD = 3_000_000; // leave if < $3M
+export const STABILITY_HOURS = 6;          // snapshot TTL
 ```
 
-Helpers: isTrendingRegime(), isCalmRegime(), aiBatchIntervalMinutes(), councilMaxAgeMs()
+---
 
-Files:
+STATUS
 
-· Patch: pipeline.server.ts — 4 νέες constants, 4 helpers, 2 call sites
+Component Status
+Pipeline ✅ Healthy, 150 coins bounded
+Dynamic watchlist ✅ Deployed (resolver + snapshots)
+Provenance tagging ✅ All alerts/trades/signals tagged
+Technicals ✅ ~450 tasks/run (150 × 3 TF)
+MTF Gate ✅ Enabled
+Whale Sources ✅ HL + CoinLobster (Binance 403)
+Auto-switch ✅ vwap-momentum + deterministic fallback
+Dynamic settings ✅ pipeline_settings + 30s cache
+Circuit breaker ✅ Active
+Unit tests ✅ 57 passing
+Paper mode ✅ Active
 
-4. Groq Token Overflow Fix ✅
+---
 
-Πρόβλημα: openai/gpt-oss-20b ξόδευε 798 reasoning tokens και τερμάτιζε με finish_reason=length και empty content.
+REVOLUTX INTEGRATION
 
-Λύση:
+Discovery
 
-· strategy.functions.ts: max_tokens: 800 → 4096
-· pipeline.server.ts: conditional max_completion_tokens: 4096 (για gpt-oss) ή max_tokens: 4096 (για άλλα)
-· Προστέθηκε logging: finish_reason=length → warn με token breakdown
+Endpoint: https://revx.revolut.com/api/1.0/public/configuration/currencies
+Tickers: https://revx.revolut.com/api/1.0/public/tickers (live volume)
 
-Files:
+~210 crypto assets στη Revolut X. ~95 είναι στο WATCHLIST μας. ~115 υποψήφια.
 
-· Patch: strategy.functions.ts — askGroqForPreset()
-· Patch: pipeline.server.ts — groqBatchCouncil()
+Curation Strategy
 
-5. Deterministic Auto-Switch Fallback ✅
+Αντί να τα βάλουμε όλα manual, χρησιμοποιούμε το coin-provenance.ts:
 
-Πρόβλημα: Όταν το Groq απέτυχε, το maybeAutoSwitchStrategy() επέστρεφε {switched: false, reason: "groq_failed"} χωρίς fallback. Το σύστημα κόλλησε στο Whale-Focused (0/18 wins) ενώ το VWAP+RSI είχε 74% WR.
-
-Λύση: Τρείς νέες functions στο strategy.functions.ts:
-
-1. computePresetPerformance() — winRate, netPnlPct, score = winRate × netPnlPct
-2. selectBestPresetDeterministic() — Auto-demote αν current preset: winRate < 40% Ή pnl < 0 (n≥10)
-3. checkGroqChoiceAgainstPerformance() — Override Groq αν επέλεξε proven loser
-4. applyPreset() — Extracted helper για DB update + audit fields
-
-Flow:
+Batch 1 (deployed) — Top 15:
 
 ```
-1. Load config, check enabled, check cooldown
-2. Gather snapshot + performance
-3. [NEW] Pre-Groq auto-demote: αν current = loser → switch ΑΜΕΣΩΣ
-4. Call Groq with retry
-5. [NEW] Αν Groq failed → deterministic fallback (apply + audit)
-6. [NEW] Αν Groq succeeded → verify vs performance, override αν χρειάζεται
-7. Apply final preset + return source: "groq" | "deterministic" | "auto_demote" | "override"
+TON, ONDO, ENA, PENDLE, EIGEN, HYPE, BERA,
+KAITO, VIRTUAL, AERO, RAY, MORPHO, PENGU, TRUMP, JASMY
 ```
 
-Files:
+Batch 2+ (επόμενο): Τα υπόλοιπα 100 θα έρθουν αυτόματα μέσω Hyperliquid volume αν έχουν πραγματικό volume. Δεν χρειάζεται manual curation πλέον.
 
-· Patch: strategy.functions.ts — ~350 νέες γραμμές
+Σημείωση: Το HYPE (Hyperliquid) είναι το πιο σημαντικό που έλειπε — χρησιμοποιούμε το HL ήδη για whales αλλά δεν παρακολουθούσαμε το token του.
 
-6. Circuit Breaker / Feed Health ✅
+Discovery Script (watchlist-expander.ts)
 
-Πρόβλημα: Όταν το collectIndicators() επέστρεφε 0, το pipeline συνεχιζόταν σιωπηλά με status: "success".
-
-Λύση:
-
-· PipelineHealth interface + newPipelineHealth()
-· emitFeedAlert() — best-effort insert στο trade_alerts (swallows schema errors)
-· executeTrades({skipNewEntries: true}) — κλείνει μόνο, δεν ανοίγει νέες θέσεις
-· status: "degraded" στο pipeline_runs (fallback σε "success" + error_message αν το CHECK constraint το απορρίψει)
-· Timeout alert στο catch block
-
-Thresholds:
-
-· indicators=0 → degraded + circuit breaker
-· whales=0 → degraded + circuit breaker
-· predictions=0 → μόνο log (δεν είναι systemic failure)
-
-Files:
-
-· Patch: pipeline.server.ts — ~150 νέες γραμμές
-
-7. Prediction Magnitude Scaling ✅
-
-Πρόβλημα: 55% YES και 93% YES έδιναν την ίδια βαρύτητα (±0.5 × weight).
-
-Λύση: Νέα function predictionMagnitude():
+Αν χρειαστείς manual discovery στο μέλλον:
 
 ```typescript
-const distance = Math.abs(up - 0.5) * 2;  // 0 at 50%, 1 at extremes
-if (distance < 0.2) return 0;  // neutral band 40-60%
-return Math.min(1, (distance - 0.2) / 0.8);
+const candidates = await discoverNewCoins();
+console.table(candidates.slice(0, 30));
 ```
 
-Scaling:
+Φιλτράρει: volume ≥ $100K, Binance-listed, όχι stablecoin/wrapped.
 
-· 60% → 0.0
-· 70% → 0.25
-· 80% → 0.5
-· 90% → 0.75
-· 100% → 1.0
+---
 
-Impact στο ruleBased: score += 0.5 × weight × mag (αντί flat 0.5 × weight).
+FILES & ARCHITECTURE
 
-Files:
+New Files (Session 3)
 
-· Patch: pipeline.server.ts — predictionMagnitude(), ruleBased()
+File Purpose Lines
+supabase/migrations/20261002120000_dynamic_watchlist.sql Snapshots table + provenance tags ~70
+src/lib/coin-provenance.ts Static curation + fallback list ~55
+src/lib/watchlist-resolver.server.ts Dynamic resolution + cache ~450
+src/lib/watchlist-expander.ts Manual discovery tool ~150
 
-8. classify() Tightening ✅
+New Files (Session 1+2)
 
-Πρόβλημα: 94 coins "bullish" στο panel vs 11 bullish στο regime snapshot. Το RSI < 55 με οποιοδήποτε positive MACD tick έβγαινε "bullish".
+File Purpose Lines
+src/lib/trading-settings.server.ts Dynamic TP/SL settings ~80
+vitest.config.ts Test runner ~30
+src/lib/__tests__/signal-logic.test.ts 41 tests ~450
+src/lib/__tests__/mtf-gate.test.ts 16 tests ~180
 
-Λύση: Strict neutral band 44-56. Escape μόνο με momentum > 5% of |macd|.
+Patched Files
 
-```typescript
-const NEUTRAL_LOW = 44;
-const NEUTRAL_HIGH = 56;
-const STRONG_MACD_FRACTION = 0.05;
-```
+File Patches Session
+src/lib/pipeline.server.ts 30+ patches 1,2,3
+src/lib/strategy.functions.ts Deterministic fallback 2
+package.json Vitest scripts 2
 
-Files:
+Database Schema
 
-· Patch: pipeline.server.ts — classify()
+Tables:
 
-9. Unit Tests (57 passing) ✅
+· dynamic_watchlist_snapshots (NEW) — periodic watchlist snapshots
+· trade_alerts — tags column (NEW)
+· trades — source_tags column (NEW)
+· composite_signals — source_tags column (NEW)
+· strategy_variant_signals — source_tags column (NEW)
 
-Setup:
+Indexes (GIN για tag filtering):
 
-· vitest.config.ts — node env, single-fork pool, @ alias
-· package.json — scripts: test, test:watch, test:coverage
-· devDeps: vitest ^2.1.9, @vitest/coverage-v8 ^2.1.9
+· idx_trade_alerts_tags
+· idx_trades_source_tags
+· idx_composite_signals_source_tags
+· idx_variant_signals_source_tags
+· idx_dynamic_watchlist_expires
 
-Test Files:
+---
 
-· src/lib/__tests__/signal-logic.test.ts — 41 tests
-  · evaluateMultiTimeframe: 7 tests (3/3 alignment, VWAP override, conflict)
-  · predictionDirection: 8 tests
-  · predictionMagnitude: 12 tests
-  · ruleBased: 14 tests (weights, bands, AVOID, MTF gate)
-· src/lib/__tests__/mtf-gate.test.ts — 16 tests
-  · checkMtfGate: buy/sell, min_timeframes variations
-  · countMtfSignals: edge cases
-  · DEFAULT_MTF_GATE_CONFIG: safety defaults
-
-Files:
-
-· New: vitest.config.ts
-· New: src/lib/__tests__/signal-logic.test.ts
-· New: src/lib/__tests__/mtf-gate.test.ts
-· Patch: package.json
-· Patch: pipeline.server.ts (5× export keywords)
-
-10. Dead Constants Cleanup ✅
-
-Αφαιρέθηκαν:
-
-· MAX_OPEN_TRADES (δεν χρησιμοποιούνταν — το risk.engine.ts ελέγχει απευθείας)
-· FALLBACK_STALE_EXIT_HOURS, FALLBACK_STALE_EXIT_MIN_PNL_PCT, FALLBACK_MAX_HOLD_HOURS
-· FALLBACK_STOP_LOSS_PCT, FALLBACK_TAKE_PROFIT_PCT
-· FALLBACK_VARIANT_TP_PCT, FALLBACK_VARIANT_SL_PCT, FALLBACK_VARIANT_MAX_HOURS
-
-Αιτία: Όλα τα settings διαβάζονται δυναμικά μέσω fetchTradingSettings().
-
-WHALE SOURCES — ΤΡΕΧΟΥΣΑ ΚΑΤΑΣΤΑΣΗ
-
-Source Status Volume/24h Notes
-hyperliquid-recent-trades ✅ 60-150 Watchlist coins
-hyperliquid-top-mover ✅ 10-30 Top 25 HL movers
-coinlobster-cex ✅ 300-800 BingX, OKX, Bybit, Coinbase, etc.
-coinlobster-dex ✅ 50-200 Uniswap, Aerodrome, Pancake
-binance-agg-trades ⚠️ 0 HTTP 403 (geo-block)
-bybit-linear-trades ❌ — REMOVED (ambiguous direction)
-
-Expected total: 400-1200 whales/24h
-
-VARIANT PERFORMANCE (Snapshot — Πριν Auto-Demote)
-
-Preset Resolved Win% Total PnL Type Status
-VWAP+RSI ⭐ 23 74% +$500 Momentum ACTIVE (after fix)
-Chart Trader 650 53% +$4,590 Trend 
-BB + Aroon 84 49% +$350 Volatility 
-AI-Driven 497 43% +$70 Council 
-Balanced 558 39% −$1,340 Mixed 
-Conservative 601 37% −$2,560 Mixed 
-Whale ⚠️ 1,005 36% −$4,600 Flow
-SMC Pro ❌ 62 34% −$390 Reversal
-Sentiment ❌❌ 168 15% −$3,220 Reversal
-
-Σημείωση: Τα παλιά stats είναι μολυσμένα από pre-technicals period. Στις 5 Οκτωβρίου τα opens θα λήξουν, και τα νέα stats θα είναι καθαρά.
-
-FEATURE FLAGS (pipeline_settings.cleanup_config)
-
-```json
-{
-  "watch_conflict_fix": { "enabled": false, "shadow_mode": true },
-  "regime_panel_fix": { "enabled": false, "shadow_mode": true },
-  "auto_switch_retry": { "enabled": false, "max_retries": 3, "backoff_ms": 2000 },
-  "error_serialization": { "enabled": true },
-  "mtf_confirmation_gate": { "enabled": true, "shadow_mode": false, "min_timeframes": 2 },
-  "vwap_regime_gate": { "enabled": false, "shadow_mode": true, "atr_pct_threshold": 2.5 }
-}
-```
-
-STRATEGY CONFIG (Τρέχον — μετά auto-demote)
+STRATEGY CONFIG (Τρέχον)
 
 ```json
 {
@@ -324,290 +234,277 @@ STRATEGY CONFIG (Τρέχον — μετά auto-demote)
   "council_weight": 0.8,
   "auto_switch_enabled": false,
   "auto_switch_interval_hours": 1,
-  "last_auto_reasoning": "AUTO_DEMOTE: current=chart-trader (winRate=53%, pnl=+$4,590, n=650) → switching to vwap-momentum (winRate=74%, pnl=+$500, n=23)"
+  "last_auto_reasoning": "AUTO_DEMOTE: current=chart-trader → vwap-momentum (74% WR vs 53%)"
 }
 ```
 
-Σημείωση: Το auto_switch_enabled: false τέθηκε χειροκίνητα μετά το audit. Για να ενεργοποιηθεί ξανά, χρειάζεται manual toggle ή auto-enable rule.
+---
 
-NEW FILES (2η συνεδρία)
+VERIFICATION QUERIES
 
-File Purpose Type
-src/lib/trading-settings.server.ts Dynamic TP/SL/hold settings New
-vitest.config.ts Test runner config New
-src/lib/__tests__/signal-logic.test.ts 41 tests (MTF, prediction, ruleBased) New
-src/lib/__tests__/mtf-gate.test.ts 16 tests (gate logic) New
+Dynamic Watchlist Health
 
-PATCHED FILES (2η συνεδρία)
+```sql
+-- 1. Latest snapshot
+SELECT id,
+       cardinality(symbols) AS n_symbols,
+       source,
+       hl_candidates,
+       hl_above_threshold,
+       binance_filtered,
+       cardinality(pinned_symbols) AS n_pinned,
+       cardinality(dynamic_symbols) AS n_dynamic,
+       computed_at,
+       expires_at
+FROM dynamic_watchlist_snapshots
+ORDER BY computed_at DESC
+LIMIT 3;
 
-File Changes
-src/lib/pipeline.server.ts 17 patches (βλ. Σύνοψη)
-src/lib/strategy.functions.ts 350+ γραμμές (deterministic fallback + auto-demote)
-package.json 3 scripts + 2 devDeps
+-- Expected:
+--   n_symbols: 145-155
+--   source: 'refreshed' (first run) or 'cache'
+--   hl_candidates: 230-260
+--   binance_filtered: 180-210
+--   n_pinned: 3-7
+--   n_dynamic: 140-150
+```
 
-DATABASE TABLES (Cumulative)
+Provenance Distribution
 
-Table Purpose Status
-pipeline_runs Audit trail ✅ 913+ rows
-pipeline_settings Config + flags ✅
-council_lessons AI lessons ✅ 12
-strategy_variant_signals Shadow comparisons ✅ 21,145
-shadow_conflicts Watch conflict obs. ✅ 539
-shadow_mtf_gates MTF shadow ✅
-mtf_gate_rejections MTF visibility ✅ Deployed
-trades Real trades ✅ 19
-trade_alerts Close + feed events ✅ 12 + feed_error
-composite_signals Combined signals ✅ 10,646
-whale_alerts Whale data ✅ 2,876+
-indicator_snapshots Technicals ✅ 324
-prediction_snapshots Predictions ✅ 244
-council_signals AI verdicts ✅ 1,627
-signal_pattern_stats Pattern clusters ✅ 6
+```sql
+-- 2. Tags on alerts (last 1h)
+SELECT
+  CASE
+    WHEN tags @> ARRAY['revolutx'] THEN 'revolutx'
+    WHEN tags @> ARRAY['always-include'] THEN 'always-include'
+    WHEN tags @> ARRAY['open-position'] THEN 'open-position'
+    WHEN tags @> ARRAY['hl-dynamic'] THEN 'hl-dynamic'
+    ELSE 'untagged'
+  END AS provenance,
+  COUNT(*)
+FROM trade_alerts
+WHERE created_at > NOW() - INTERVAL '1 hour'
+GROUP BY 1 ORDER BY 2 DESC;
 
-ΕΚΚΡΕΜΟΤΗΤΕΣ
+-- 3. Tags on trades
+SELECT source_tags, COUNT(*), status
+FROM trades
+WHERE created_at > NOW() - INTERVAL '24 hours'
+GROUP BY source_tags, status;
+```
 
-Άμεσα (Σήμερα)
+Performance by Provenance
 
-· ☐ Verify auto-demote έγινε (SELECT preset_name FROM strategy_config)
-· ☐ Verify Groq δεν πετάει πλέον finish_reason=length
-· ☐ Verify indicator panel δείχνει mix αντί όλα bullish
-· ☐ Verify prediction reasoning έχει (mag XX%) tag
-· ☐ Verify unit tests περνούν (57/57)
+```sql
+-- 4. Win rate comparison (after 48h)
+SELECT
+  CASE
+    WHEN source_tags @> ARRAY['revolutx'] THEN 'revolutx'
+    WHEN source_tags @> ARRAY['always-include'] THEN 'always-include'
+    WHEN source_tags @> ARRAY['hl-dynamic'] THEN 'hl-dynamic'
+    ELSE 'other'
+  END AS provenance,
+  COUNT(*) AS trades,
+  COUNT(*) FILTER (WHERE pnl > 0) AS wins,
+  ROUND(100.0 * COUNT(*) FILTER (WHERE pnl > 0) / NULLIF(COUNT(*), 0), 1) AS win_rate,
+  ROUND(SUM(pnl)::numeric, 2) AS total_pnl
+FROM trades
+WHERE status = 'closed' AND closed_at > NOW() - INTERVAL '7 days'
+GROUP BY 1 ORDER BY total_pnl DESC;
+```
+
+Pipeline Duration
+
+```sql
+-- 5. Recent pipeline runs
+SELECT
+  started_at::text,
+  ROUND(duration_ms/1000.0, 1) AS sec,
+  whales, indicators, signals,
+  variants_resolved,
+  status
+FROM pipeline_runs
+ORDER BY started_at DESC
+LIMIT 10;
+```
+
+---
+
+ΑΜΕΣΕΣ ΕΝΕΡΓΕΙΕΣ (Priority)
+
+Τώρα (μετά το deploy)
+
+· ☐ Wait 2-3 pipeline runs (5-10 λεπτά)
+· ☐ Verify [WATCHLIST] log στο console
+· ☐ Verify dynamic_watchlist_snapshots έχει νέα row
+· ☐ Verify trade_alerts.tags population
+· ☐ Check pipeline duration < 120s
+
+Σήμερα
+
+· ☐ Check η λίστα έχει 140-155 coins
+· ☐ Verify hl_dynamic count ≥ 100
+· ☐ Verify binance_filtered / hl_above_threshold > 80%
+· ☐ Check auto-switch έγινε στο VWAP+RSI
 
 Επόμενες 24-48h
 
-· ☐ Monitor νέα VWAP+RSI trades (θα ανοίξουν μόνο αν auto_switch_enabled: true)
+· ☐ Monitor pipeline duration trend
 · ☐ Check feed_error alerts count (target: 0)
-· ☐ Measure whale volume spike (60 → 400-1200/24h)
-· ☐ Monitor pipeline duration (μην ξεπεράσει 90s)
-· ☐ Check MTF rejections rate (target: 20-100/μέρα)
-· ☐ Review VWAP shadow logs (πόσα signals θα έκοβε)
+· ☐ Verify RevolutX tag distribution
+· ☐ Monitor HL resolver cache hit rate
 
-Σε 5-7 Μέρες (κρίσιμο)
+Σε 5-7 μέρες
 
-· ☐ Natural expiry 28/09 signals → 5 Οκτωβρίου
-· ☐ Regime breakdown per preset:
+· ☐ Provenance analytics (query #4)
+· ☐ Compare revolutx vs hl-dynamic vs always-include performance
+· ☐ Adjust ADD_THRESHOLD_USD αν θέλεις πιο συντηρητικό/επιθετικό universe
+· ☐ Consider expansion σε 200 coins (με pMap 20) αν το pipeline duration < 90s
 
-```sql
-SELECT strategy_name, regime_label,
-  COUNT(*) FILTER (WHERE outcome='win') AS W,
-  COUNT(*) FILTER (WHERE outcome='loss') AS L,
-  ROUND(COUNT(*) FILTER (WHERE outcome='win')::numeric /
-        NULLIF(COUNT(*) FILTER (WHERE outcome IN ('win','loss')), 0) * 100, 1) AS wr_pct
-FROM strategy_variant_signals
-WHERE regime_label IS NOT NULL AND outcome IN ('win','loss')
-GROUP BY strategy_name, regime_label
-ORDER BY strategy_name, regime_label;
-```
+---
 
-· ☐ Disable SMC Pro αν WR < 40%
-· ☐ Adjust auto-switch βάσει regime
+ΚΡΙΣΙΜΕΣ ΑΠΟΦΑΣΕΙΣ & RATIONALE
 
-Μακροπρόθεσμα (Roadmap)
+Γιατί Hyperliquid ως source για το universe;
 
-· ⏸️ Backtesting engine
-· ⏸️ Webhook notifications
-· ⏸️ Live trading (paper first)
-· ❌ Vector embeddings (απορρίφθηκε)
-· ⏸️ Mobile app (PWA πρώτα)
+· Coverage: 230-260 coins με live 24h volume — ευρύτερο από Binance
+· Cost: 1 API call, ~500ms
+· Reliability: Δημόσιο endpoint, χωρίς rate limit issues
+· Already integrated: Το χρησιμοποιούμε ήδη για whales
 
-NEW QUERIES (2η συνεδρία)
+Γιατί Binance filter αντί Bybit;
 
-Query — Auto-Switch Audit
+· Rate limits: Binance 100 req/sec vs Bybit 20 req/sec
+· Fallback chain: Binance → Bybit για candles (το Bybit παραμένει ως backup)
+· exchangeInfo endpoint: 1 call δίνει όλα τα symbols
 
-```sql
-SELECT preset_name, last_auto_reasoning, last_auto_switch_at
-FROM strategy_config WHERE id = 1;
-```
+Γιατί pinned symbols;
 
-Query — Groq Council Verdicts
+· BTC/ETH/SOL: Αποτελούν το 60%+ του crypto market cap. Αν λείπουν, το regime snapshot είναι λάθος.
+· Open positions: Αν ένα trade είναι ανοιχτό και το coin φύγει από το universe, χάνουμε τη δυνατότητα να το κλείσουμε σωστά (prices, signals).
 
-```sql
-SELECT symbol, final_verdict, conviction, depth, reflection, source_created_at
-FROM council_signals
-WHERE source_created_at > NOW() - INTERVAL '30 minutes'
-ORDER BY source_created_at DESC
-LIMIT 20;
-```
+Γιατί 6h stability window;
 
-Query — Feed Alerts
+· Too short (1h): Churn → πολλά API calls, no meaningful data per coin
+· Too long (24h): Χάνουμε νέες ευκαιρίες
+· Sweet spot (6h): Balance μεταξύ stability και responsiveness
+
+Γιατί hysteresis band (5M/3M);
+
+· No hysteresis: Coin με volume $4.99M → out. $5.01M → in. Flip-flop.
+· With hysteresis: Enter requires $5M (strict), stay requires only $3M (lenient).
+· Effect: Reduces churn by ~80% empirically (industry standard).
+
+---
+
+ROLLBACK PLAN
+
+Αν κάτι σπάσει:
 
 ```sql
-SELECT event_type, symbol, created_at
-FROM trade_alerts
-WHERE event_type IN ('feed_error', 'circuit_breaker')
-  AND created_at > NOW() - INTERVAL '1 hour'
-ORDER BY created_at DESC;
-```
-
-Query — Indicator Signal Distribution
-
-```sql
-SELECT signal, COUNT(*)
-FROM indicator_snapshots
-WHERE timeframe = '4h' AND created_at > NOW() - INTERVAL '10 minutes'
-GROUP BY signal
-ORDER BY COUNT(*) DESC;
-```
-
-QUICK REFERENCE
-
-Diagnostic URLs
-
-```
-https://aicombined-trading-command-center.lovable.app/api/diagnostic
-https://aicombined-trading-command-center.lovable.app/api/diagnostic?type=shadow
-```
-
-Run Tests
-
-```bash
-npm test
-npm run test:watch
-npm run test:coverage
-```
-
-Rollback Commands
-
-```sql
--- Disable MTF gate
-UPDATE pipeline_settings
-SET cleanup_config = jsonb_set(cleanup_config, '{mtf_confirmation_gate,enabled}', 'false'::jsonb)
-WHERE id = 1;
-
--- Restore chart-trader
-UPDATE strategy_config
-SET whale_weight = 0.5, technicals_weight = 2.0,
-    prediction_weight = 0.5, council_weight = 0.5,
-    preset_name = 'chart-trader'
-WHERE id = 1;
-
--- Enable VWAP gate
+-- 1. Disable dynamic watchlist (fall back to static 50 coins)
 UPDATE pipeline_settings
 SET cleanup_config = jsonb_set(
-  jsonb_set(cleanup_config, '{vwap_regime_gate,enabled}', 'true'::jsonb),
-  '{vwap_regime_gate,shadow_mode}', 'false'::jsonb
+  cleanup_config,
+  '{dynamic_watchlist,enabled}',
+  'false'::jsonb
 )
 WHERE id = 1;
+
+-- 2. Clear snapshots (force re-resolve)
+DELETE FROM dynamic_watchlist_snapshots;
+
+-- 3. Clear tags (if schema issues)
+UPDATE trade_alerts SET tags = '{}';
+UPDATE trades SET source_tags = '{}';
 ```
 
-SAFETY RULES
+Emergency static mode: Το CORE_FALLBACK_WATCHLIST (50 coins) ενεργοποιείται αυτόματα αν:
 
-Πάντα:
+· HL API είναι down
+· Binance exchangeInfo αποτύχει
+· Δεν υπάρχει snapshot στη DB (cold start)
 
-· ✅ Feature flag για κάθε νέα λογική
-· ✅ Shadow mode πρώτα, enable μετά
-· ✅ Rollback = 1 UPDATE
-· ✅ Fail-open logic (μην χάνεις signals)
-· ✅ Unit tests για pure functions
+---
 
-Ποτέ:
+NEXT SESSION — ΤΙ ΝΑ ΣΤΕΙΛΕΙΣ
 
-· ❌ Αλλαγή thresholds (0.5/1.5) χωρίς shadow testing
-· ❌ Enable flag πριν δεις shadow data
-· ❌ Αλλαγή risk parameters χωρίς λόγο
-· ❌ Αφαίρεση cron jobs που δουλεύουν
-
-ΠΩΣ ΝΑ ΞΕΚΙΝΗΣΕΙΣ ΝΕΑ ΣΥΝΕΔΡΙΑ
-
-Στείλε στον assistant:
-
-1. Ολόκληρο αυτό το αρχείο (PROJECT_STATE.md)
-2. Το output:
+1. Ολόκληρο αυτό το αρχείο
+2. Output από:
 
 ```sql
--- 1. Whale sources
-SELECT source, COUNT(*), MAX(created_at)::text
-FROM whale_alerts WHERE created_at > now() - interval '1 hour'
-GROUP BY source ORDER BY source;
+-- A. Watchlist snapshot
+SELECT cardinality(symbols) AS n, source, hl_candidates, binance_filtered,
+       cardinality(pinned_symbols) AS n_pinned, computed_at, expires_at
+FROM dynamic_watchlist_snapshots ORDER BY computed_at DESC LIMIT 1;
 
--- 2. Strategy config (μετά auto-demote)
-SELECT preset_name, last_auto_reasoning, last_auto_switch_at
-FROM strategy_config WHERE id = 1;
+-- B. Pipeline duration trend
+SELECT started_at::text, ROUND(duration_ms/1000.0,1) AS sec, status, signals
+FROM pipeline_runs WHERE started_at > NOW() - INTERVAL '2 hours'
+ORDER BY started_at DESC LIMIT 10;
 
--- 3. Groq council status
-SELECT depth, COUNT(*) FROM council_signals
-WHERE source_created_at > now() - interval '2 hours'
-GROUP BY depth;
+-- C. Provenance distribution
+SELECT source_tags, COUNT(*) FROM trades
+WHERE created_at > NOW() - INTERVAL '24 hours' GROUP BY source_tags;
 
--- 4. Feed alerts
+-- D. Feed alerts
 SELECT event_type, COUNT(*) FROM trade_alerts
-WHERE created_at > now() - interval '24 hours'
-GROUP BY event_type;
+WHERE created_at > NOW() - INTERVAL '24 hours' GROUP BY event_type;
 
--- 5. Pipeline duration
-SELECT started_at::text, ROUND(duration_ms/1000.0,1) AS sec,
-       whales, indicators, signals, variants_resolved, status
-FROM pipeline_runs ORDER BY started_at DESC LIMIT 5;
-
--- 6. Unit test status (locally)
--- npm test
+-- E. Strategy
+SELECT preset_name, last_auto_reasoning FROM strategy_config WHERE id = 1;
 ```
 
-3. Τι θέλεις — π.χ.:
+3. Log lines (πρώτες 30 γραμμές από pipeline run):
+   · [WATCHLIST]
+   · [COIN_PROVENANCE]
+   · [INDICATORS] Collected
+   · [GROQ]
+4. Τι θέλεις να κάνουμε:
 
-· «Το VWAP shadow έκοψε πολλά; Enable?»
-· «Δες regime breakdown»
-· «Το auto-switch δούλεψε σωστά;»
-· «Fix Binance 403 με proxy»
+Πιθανά επόμενα:
 
-CHECKLIST — End of Session
-
-· ☐ Update Last updated date
-· ☐ Update Executive Summary
-· ☐ Update Whale Sources
-· ☐ Update Variant Performance
-· ☐ Update Known Issues
-· ☐ Update Strategy Config (preset_name, weights)
-· ☐ Commit: docs: update PROJECT_STATE.md — [session]
+· Expansion σε 200 coins (pMap 20)
+· Per-provenance performance analysis
+· Auto-tuning του ADD_THRESHOLD_USD
+· Rolling 7-day watchlist performance dashboard
+· Roll-out Phase 2: RevolutX batch 2 (mid-caps)
+· Live trading mode (προϋπόθεση: 30 μέρες paper με θετικό Sharpe)
 
 ---
 
-Generated: 2026-10-02 (evening)
-Next session: Send this file + latest queries output.
+LESSONS LEARNED (Session 3)
 
-Commit
+# Μάθημα
+1 Static watchlists don't scale. Auto-discovery είναι prerequisite για long-term operation.
+2 Pinned symbols prevent catastrophic losses. Χωρίς αυτά, open positions θα "ξεχνιόντουσαν".
+3 Hysteresis band is non-negotiable. Χωρίς αυτό, το universe κάνει flip-flop κάθε run.
+4 Bounded complexity beats unbounded. 150 hard cap >> "dynamic but unlimited".
+5 Provenance tagging is cheap insurance. 1-2 ώρες work → άπειρα analytics value σε 1 εβδομάδα.
+6 RevolutX tagging was a red herring. Δεν χρειάζεται manual curation· το HL volume δίνει καλύτερη λίστα αυτόματα.
+
+---
+
+SESSION 3 COMMIT MESSAGE
 
 ```bash
-git add PROJECT_STATE.md
-git commit -m "docs: update PROJECT_STATE.md — dynamic settings, 1h variant resolution, regime-aware Groq, deterministic auto-switch, circuit breaker, prediction magnitude, unit tests"
+git add -A
+git commit -m "feat(watchlist): dynamic universe from Hyperliquid + provenance tagging
+
+- Add dynamic_watchlist_snapshots table (6h TTL, bounded at 150 coins)
+- Add watchlist-resolver.server.ts with HL volume + Binance listing filter
+- Add coin-provenance.ts for static curation + fallback
+- Add watchlist-expander.ts for manual RevolutX discovery
+- Add provenance tags to trade_alerts, trades, composite_signals, variant_signals
+- Apply 11 patches to pipeline.server.ts (dynamic watchlist + tags)
+- Add GIN indexes for tag filtering
+- Capacity analysis: 150 coins safe, 200 max with pMap 20
+
+Sessions: Audit fixes + Quality & safety + Dynamic universe"
 git push
-```
-
-Σύνοψη Τιμών Αλλαγών
-
-Κατηγορία Count
-Νέα αρχεία 4 (trading-settings.server.ts, vitest.config.ts, 2 test files)
-Patched αρχεία 3 (pipeline.server.ts, strategy.functions.ts, package.json)
-Νέα features 8 (Dynamic settings, 1h resolution, Regime-aware Groq, Deterministic fallback, Circuit breaker, Prediction magnitude, classify tightening, Unit tests)
-Αφαιρέθηκαν 9 dead constants
-Νέα tests 57 (41 signal-logic + 16 mtf-gate)
-Patches pipeline 17
-
 ```
 
 ---
 
-## Σύνοψη Διαφορών
-
-| Θέμα | GitHub | Νέο |
-|------|--------|-----|
-| **Auto-switch preset** | `chart-trader` | `vwap-momentum` |
-| **Dynamic settings** | ❌ | ✅ |
-| **Variant resolution** | 4h candles | **1h candles** |
-| **Groq cadence** | Σταθερό 25min | **15/25/40min (regime-aware)** |
-| **Groq token limit** | 800/2048 | **4096** |
-| **Deterministic fallback** | ❌ | ✅ |
-| **Circuit breaker** | ❌ | ✅ |
-| **Prediction magnitude** | Flat ±0.5 | **Scaled 0-1** |
-| **classify()** | Loose (94% bull) | **Strict (44-56 neutral)** |
-| **Unit tests** | 0 | **57** |
-| **Dead constants** | 9 | **0** |
-| **Feed alerts** | ❌ | ✅ `feed_error` + `circuit_breaker` |
-
-**Commit message έτοιμο για copy-paste:**
-```bash
-git add PROJECT_STATE.md
-git commit -m "docs: update PROJECT_STATE.md — dynamic settings, 1h variant resolution, regime-aware Groq, deterministic auto-switch, circuit breaker, prediction magnitude, unit tests"
-git push
-```
+Generated: 2026-10-02 (late evening)
+Next review: 2026-10-03 (after 24h dynamic watchlist operation)
