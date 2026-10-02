@@ -154,6 +154,20 @@ const AUTO_SWITCH_MIN_COOLDOWN_MIN = 30;
  */
 const VARIANT_MIN_TRUSTWORTHY_SAMPLE = 20;
 
+/**
+ * Deterministic fallback thresholds.
+ *
+ * When Groq is unavailable, we select the preset with the highest
+ * (win_rate × total_pnl_pct) among presets with resolved >= MIN_FALLBACK_SAMPLE.
+ *
+ * Additionally, the auto-demote rule forces a switch away from the current
+ * preset if it has proven negative expectancy. This prevents the system
+ * from remaining stuck on a losing preset (e.g. Whale-Focused at 0/18)
+ * simply because the AI layer is rate-limited.
+ */
+const FALLBACK_MIN_SAMPLE = 10;
+const AUTO_DEMOTE_WINRATE_THRESHOLD = 0.4; // 40%
+
 interface MarketSnapshot {
   whale: { buy_usd: number; sell_usd: number; net_pct: number; sample: number };
   technicals: { bull: number; bear: number; neu: number; breadth: number };
@@ -406,6 +420,120 @@ async function fetchVariantPerformance(
   }
 }
 
+/* ───────────── Deterministic fallback selection ───────────── */
+
+/**
+ * Deterministic selection of the best preset based on shadow performance.
+ *
+ * Called in two situations:
+ *   1. When Groq fails (rate limit, token overflow, network) — replaces
+ *      what used to be a silent "groq_failed" no-op.
+ *   2. As a safety override after Groq returns — if Groq picked a preset
+ *      that has proven negative expectancy with meaningful sample, we
+ *      ignore the AI and use the deterministic pick.
+ *
+ * Returns `null` if no switch is warranted (current preset still healthy,
+ * or no preset has enough resolved samples).
+ */
+function selectBestPresetDeterministic(
+  performance: VariantPerformance[],
+  currentPreset: string | null,
+): { preset: string; reasoning: string; forced: boolean } | null {
+  const eligible = performance.filter(
+    (p) => p.resolved >= FALLBACK_MIN_SAMPLE && p.win_rate_pct != null,
+  );
+  if (eligible.length === 0) return null;
+
+  // Score = win_rate (0..1) × total_pnl_pct.
+  // Using total PnL (not avg) rewards presets that have both high win-rate
+  // AND meaningful sample — a single lucky trade does not dominate.
+  const scored = eligible
+    .map((p) => {
+      const wr = (p.win_rate_pct ?? 0) / 100;
+      return {
+        perf: p,
+        score: wr * p.total_pnl_pct,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  const best = scored[0]!;
+
+  // Find current preset's performance (if eligible)
+  const currentPerf = eligible.find((p) => p.strategy_name === currentPreset);
+
+  if (currentPerf) {
+    const wr = (currentPerf.win_rate_pct ?? 0) / 100;
+    const badWinRate = wr < AUTO_DEMOTE_WINRATE_THRESHOLD;
+    const badPnl = currentPerf.total_pnl_pct < 0;
+
+    if (badWinRate || badPnl) {
+      // Auto-demote: force switch away from a proven-losing preset
+      return {
+        preset: best.perf.strategy_name,
+        reasoning:
+          `AUTO_DEMOTE: current=${currentPerf.strategy_name} ` +
+          `(winRate=${currentPerf.win_rate_pct ?? "?"}%, ` +
+          `pnl=${currentPerf.total_pnl_pct.toFixed(1)}%, n=${currentPerf.resolved}) ` +
+          `→ switching to ${best.perf.strategy_name} ` +
+          `(winRate=${best.perf.win_rate_pct}%, ` +
+          `pnl=${best.perf.total_pnl_pct.toFixed(1)}%, n=${best.perf.resolved})`,
+        forced: true,
+      };
+    }
+
+    // Current preset healthy — no switch unless best is materially better.
+    // Require best score to exceed current by at least 20% to avoid churn.
+    const currentScore = wr * currentPerf.total_pnl_pct;
+    if (best.score <= currentScore * 1.2) {
+      return null;
+    }
+  }
+
+  // Deterministic fallback: Groq unavailable or best is materially better
+  return {
+    preset: best.perf.strategy_name,
+    reasoning:
+      `DETERMINISTIC_FALLBACK: best by winRate×totalPnl = ${best.perf.strategy_name} ` +
+      `(winRate=${best.perf.win_rate_pct}%, ` +
+      `pnl=${best.perf.total_pnl_pct.toFixed(1)}%, n=${best.perf.resolved})`,
+    forced: false,
+  };
+}
+
+/**
+ * Verify that a preset chosen by Groq is not a proven loser.
+ * Returns the deterministic override if needed, otherwise null.
+ */
+function checkGroqChoiceAgainstPerformance(
+  groqPreset: string,
+  performance: VariantPerformance[],
+): { preset: string; reasoning: string } | null {
+  const targetPerf = performance.find((p) => p.strategy_name === groqPreset);
+  if (!targetPerf) return null; // no data — trust Groq
+  if (targetPerf.resolved < FALLBACK_MIN_SAMPLE) return null; // insufficient sample
+
+  const wr = (targetPerf.win_rate_pct ?? 0) / 100;
+  const badWinRate = wr < AUTO_DEMOTE_WINRATE_THRESHOLD;
+  const badPnl = targetPerf.total_pnl_pct < 0;
+
+  if (!badWinRate && !badPnl) return null;
+
+  const fallback = selectBestPresetDeterministic(performance, null);
+  if (!fallback) return null;
+
+  return {
+    preset: fallback.preset,
+    reasoning:
+      `OVERRIDE: Groq picked ${groqPreset} but it has negative expectancy ` +
+      `(winRate=${targetPerf.win_rate_pct}%, pnl=${targetPerf.total_pnl_pct.toFixed(1)}%, ` +
+      `n=${targetPerf.resolved}). ` +
+      `Deterministic pick: ${fallback.preset} ` +
+      `(winRate=${fallback.reasoning.match(/winRate=([\d.]+)%/)?.[1] ?? "?"}%, ` +
+      `n=${fallback.reasoning.match(/n=(\d+)/)?.[1] ?? "?"})`,
+  };
+}
+
 /* ───────────── Groq call — discriminated result ───────────── */
 
 type AskResult =
@@ -492,9 +620,11 @@ async function askGroqForPreset(
           { role: "user", content: userPrompt },
         ],
         temperature: 0.15,
-        // gpt-oss-20b reasoning model: χρειάζεται headroom για internal
-        // reasoning tokens πριν το τελικό JSON.
-        max_tokens: 800,
+        // gpt-oss-20b reasoning model: 800 was too low. The audit confirmed
+        // finish_reason=length with reasoning_tokens=798 — the model burned
+        // its entire token budget on hidden reasoning and emitted zero output.
+        // 4096 gives ample headroom for reasoning + the ~40-token JSON.
+        max_tokens: 4096,
       }),
       signal: AbortSignal.timeout(20_000),
     });
@@ -620,6 +750,41 @@ async function askGroqWithRetry(
   };
 }
 
+/* ───────────── Apply preset helper ───────────── */
+
+/**
+ * Applies a preset to strategy_config + records audit fields.
+ * Returns true on success, false on DB error.
+ */
+async function applyPreset(
+  db: Awaited<typeof import("@/integrations/supabase/client.server")>["supabaseAdmin"],
+  presetName: string,
+  reasoning: string,
+): Promise<boolean> {
+  const preset = STRATEGY_PRESETS[presetName];
+  if (!preset) return false;
+
+  const { error } = await db
+    .from("strategy_config")
+    .update({
+      whale_weight: preset.whale_weight,
+      technicals_weight: preset.technicals_weight,
+      prediction_weight: preset.prediction_weight,
+      council_weight: preset.council_weight,
+      preset_name: preset.preset_name ?? "custom",
+      last_auto_switch_at: new Date().toISOString(),
+      last_auto_reasoning: reasoning,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", 1);
+
+  if (error) {
+    console.error("[AUTO_SWITCH] applyPreset failed:", serializeError(error));
+    return false;
+  }
+  return true;
+}
+
 /* ───────────── Maybe auto-switch ───────────── */
 
 export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
@@ -631,6 +796,7 @@ export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
       reason: string;
       detail?: string;
       performance_snapshot?: VariantPerformance[];
+      source?: "groq" | "deterministic" | "auto_demote" | "override";
     }> => {
       const { supabaseAdmin: db } = await import(
         "@/integrations/supabase/client.server"
@@ -679,7 +845,30 @@ export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
         `[AUTO_SWITCH] variant performance loaded: ${performance.length} presets`,
       );
 
-      // 6. Load cleanup config (retry feature flag)
+      const currentPreset = (row["preset_name"] as string | null) ?? null;
+
+      // 6. Deterministic pre-check: if current preset is a proven loser,
+      //    demote BEFORE calling Groq. This guarantees the system never
+      //    stays on a 0/18 preset regardless of Groq availability.
+      const preCheck = selectBestPresetDeterministic(performance, currentPreset);
+      if (preCheck && preCheck.forced) {
+        console.warn(
+          `[AUTO_SWITCH] Pre-Groq auto-demote triggered: ${preCheck.reasoning}`,
+        );
+        const applied = await applyPreset(db, preCheck.preset, preCheck.reasoning);
+        if (applied) {
+          return {
+            switched: true,
+            preset: preCheck.preset,
+            reasoning: preCheck.reasoning,
+            reason: "switched",
+            source: "auto_demote",
+            performance_snapshot: performance,
+          };
+        }
+      }
+
+      // 7. Load cleanup config (retry feature flag)
       const cleanupCfg = await fetchCleanupConfig();
       const retryCfg = cleanupCfg.auto_switch_retry;
       const maxRetries = retryCfg.enabled
@@ -689,8 +878,7 @@ export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
         ? Math.max(500, retryCfg.backoff_ms)
         : 0;
 
-      // 7. Call Groq με retry (πλέον με performance context)
-      const currentPreset = (row["preset_name"] as string | null) ?? null;
+      // 8. Call Groq με retry (πλέον με performance context)
       const {
         result: decision,
         attempts,
@@ -703,6 +891,7 @@ export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
         backoffMs,
       );
 
+      // 9. Groq failed → deterministic fallback (NOT a silent no-op)
       if (decision.kind === "error") {
         const detail = `Groq failed after ${attempts} attempt(s): ${decision.message}`;
         console.error(`[AUTO_SWITCH] ${detail}`);
@@ -710,6 +899,32 @@ export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
           console.error(`[AUTO_SWITCH] history: ${history.join(" → ")}`);
         }
 
+        const fallback = selectBestPresetDeterministic(
+          performance,
+          currentPreset,
+        );
+
+        if (fallback && fallback.preset !== currentPreset) {
+          const fullReasoning = `Groq unavailable (${decision.message}). ${fallback.reasoning}`;
+          const applied = await applyPreset(db, fallback.preset, fullReasoning);
+          if (applied) {
+            console.log(
+              `[AUTO_SWITCH] Deterministic fallback applied: ${currentPreset} → ${fallback.preset}`,
+            );
+            return {
+              switched: true,
+              preset: fallback.preset,
+              reasoning: fullReasoning,
+              reason: "switched",
+              detail,
+              source: "deterministic",
+              performance_snapshot: performance,
+            };
+          }
+        }
+
+        // No eligible fallback OR fallback equals current preset →
+        // still record the Groq failure for audit visibility.
         await db
           .from("strategy_config")
           .update({
@@ -720,66 +935,56 @@ export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
 
         return {
           switched: false,
-          reason: "groq_failed",
+          reason: fallback ? "no_change" : "groq_failed_no_eligible_variant",
           detail,
           performance_snapshot: performance,
         };
       }
 
-      // 8. Same preset → just log
-      if (decision.preset === currentPreset) {
+      // 10. Groq succeeded → verify its pick against performance data.
+      //     If Groq chose a proven loser, override with deterministic pick.
+      const override = checkGroqChoiceAgainstPerformance(
+        decision.preset,
+        performance,
+      );
+      const finalPreset = override?.preset ?? decision.preset;
+      const finalReasoning = override?.reasoning ?? decision.reasoning;
+      const source: "groq" | "override" = override ? "override" : "groq";
+
+      // 11. Same preset → just log
+      if (finalPreset === currentPreset) {
         await db
           .from("strategy_config")
           .update({
             last_auto_switch_at: new Date().toISOString(),
-            last_auto_reasoning: `No change: ${decision.reasoning}`,
+            last_auto_reasoning: `No change: ${finalReasoning}`,
           })
           .eq("id", 1);
         return {
           switched: false,
           reason: "no_change",
-          preset: decision.preset,
-          reasoning: decision.reasoning,
+          preset: finalPreset,
+          reasoning: finalReasoning,
+          source,
           performance_snapshot: performance,
         };
       }
 
-      // 9. Apply new preset
-      const preset = STRATEGY_PRESETS[decision.preset];
-      if (!preset) {
+      // 12. Apply new preset
+      const applied = await applyPreset(db, finalPreset, finalReasoning);
+      if (!applied) {
         return { switched: false, reason: "invalid_preset" };
       }
 
-      const { error: updateErr } = await db
-        .from("strategy_config")
-        .update({
-          whale_weight: preset.whale_weight,
-          technicals_weight: preset.technicals_weight,
-          prediction_weight: preset.prediction_weight,
-          council_weight: preset.council_weight,
-          preset_name: preset.preset_name ?? "custom",
-          last_auto_switch_at: new Date().toISOString(),
-          last_auto_reasoning: decision.reasoning,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", 1);
-
-      if (updateErr) {
-        console.error(
-          "[AUTO_SWITCH] update failed:",
-          serializeError(updateErr),
-        );
-        return { switched: false, reason: "update_failed" };
-      }
-
       console.log(
-        `[AUTO_SWITCH] ${currentPreset} → ${decision.preset} | ${decision.reasoning}`,
+        `[AUTO_SWITCH] ${currentPreset} → ${finalPreset} | source=${source} | ${finalReasoning}`,
       );
       return {
         switched: true,
-        preset: decision.preset,
-        reasoning: decision.reasoning,
+        preset: finalPreset,
+        reasoning: finalReasoning,
         reason: "switched",
+        source,
         performance_snapshot: performance,
       };
     },
