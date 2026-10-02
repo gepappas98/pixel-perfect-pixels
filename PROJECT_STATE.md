@@ -1803,3 +1803,276 @@ Deploy:
 · Per-provenance thresholds (hot-whale trades vs original)
 · Cross-regime learning (τι δούλεψε σε bull χθες → τι κάνουμε σήμερα)
 · Webhook alerts όταν ενεργοποιείται το GTP/ETS
+Σωστή Παρατήρηση — Τι Μας Δίνει το Shadow Mode
+
+Έχεις απόλυτο δίκιο. Με default config (enabled: false, shadow_mode: true), το Global Risk Control:
+
+Κάνει ✅ ΔΕΝ Κάνει ❌
+Τρέχει σε κάθε pipeline Δεν κλείνει θέσεις
+Υπολογίζει equity/peak/drawdown Δεν ενεργοποιεί cooldown
+Ανιχνεύει αν GTP/ETS θα έπρεπε να ενεργοποιηθούν Δεν μπλοκάρει νέα trades
+Γράφει events στο global_risk_events Δεν αλλάζει τίποτα στο real flow
+Γράφει equity snapshots κάθε run 
+
+Άρα η προσθήκη είναι — κυριολεκτικά — ένας καταγραφέας. Το pipeline συνεχίζει ακριβώς όπως πριν.
+
+---
+
+Γιατί Default OFF; — Ο Λόγος
+
+Το λάθος που αποφεύγουμε: Αν ενεργοποιούσαμε live mode αμέσως, θα έκλεινε 6 κερδοφόρες θέσεις μόλις το equity έφτανε +10%. Αυτό είναι ρίσκο:
+
+· Λάθος επιλογή threshold → Κλείνει στο +10%, η αγορά πάει +25% → χάνεις $$$
+· Λάθος regime mapping → Σε bull market κλείνει νωρίς αντί να αφήσει τα κέρδη
+· Λάθος timing → Κλείνει σε flash spike +10% που διαρκεί 30 δευτερόλεπτα
+
+Άρα: Πρώτα μαζεύεις 2 εβδομάδες δεδομένων, μετά αποφασίζεις.
+
+---
+
+Τι Δεδομένα Παίρνεις (Άμεσα)
+
+1. Equity Trajectory — Real-time Plot
+
+Κάθε pipeline (~2-10 min) γράφει στο equity_snapshots:
+
+```sql
+SELECT
+  captured_at::text,
+  ROUND(equity::numeric, 2) AS equity,
+  ROUND(base_equity::numeric, 2) AS base,
+  ROUND(unrealized_pnl::numeric, 2) AS unrealized,
+  open_positions,
+  regime_label
+FROM equity_snapshots
+WHERE captured_at > NOW() - INTERVAL '7 days'
+ORDER BY captured_at;
+```
+
+Παράδειγμα output:
+
+```
+18:20:08  | 20,142.32 | 20,000.00 | +142.32  | 7 | sideways
+18:30:41  | 20,188.51 | 20,000.00 | +188.51  | 7 | sideways
+18:40:15  | 20,201.03 | 20,000.00 | +201.03  | 6 | sideways
+...
+```
+
+Τι σου δίνει: Βλέπεις πόσο συχνά το equity φτάνει +5%, +8%, +10%. Αν το peak σου είναι +1.5%, τότε GTP 10% δεν θα ενεργοποιηθεί ΠΟΤΕ.
+
+2. Πόσο Συχνά Θα Είχε Ενεργοποιηθεί
+
+```sql
+SELECT
+  event_type,
+  regime_label,
+  COUNT(*) AS times,
+  ROUND(AVG(unrealized_pct)::numeric, 2) AS avg_unrealized_pct_at_trigger,
+  ROUND(AVG(drawdown_pct)::numeric, 2) AS avg_drawdown_pct,
+  ROUND(SUM(closed_pnl_net)::numeric, 2) AS hypothetical_pnl_if_closed
+FROM global_risk_events
+WHERE shadow = true
+  AND detected_at > NOW() - INTERVAL '14 days'
+GROUP BY event_type, regime_label
+ORDER BY times DESC;
+```
+
+Τι σου δίνει: Αν δεις 0 events σε 14 μέρες → τα thresholds είναι πολύ ψηλά, δεν κάνουν τίποτα. Αν δεις 50 events/μέρα → τα thresholds είναι πολύ χαμηλά, θα κλείνει συνέχεια.
+
+3. Counterfactual Analysis — «Τι Θα Είχε Γίνει»
+
+```sql
+WITH triggers AS (
+  SELECT
+    detected_at,
+    unrealized_pct,
+    closed_pnl_net AS would_be_pnl,
+    regime_label
+  FROM global_risk_events
+  WHERE shadow = true AND event_type = 'shadow_gtp'
+    AND detected_at > NOW() - INTERVAL '14 days'
+)
+SELECT
+  COUNT(*) AS would_trigger,
+  ROUND(SUM(would_be_pnl)::numeric, 2) AS total_would_lock,
+  ROUND(AVG(unrealized_pct)::numeric, 2) AS avg_trigger_pct
+FROM triggers;
+```
+
+Τι σου δίνει: Αν το "total_would_lock" είναι +$500 σε 14 μέρες, τότε αξίζει. Αν είναι +$50, δεν αξίζει ο κόπος.
+
+Αλλά πιο σημαντικό: Πάρε όλα τα closed trades μετά από κάθε shadow trigger και δες:
+
+```sql
+SELECT
+  e.detected_at::text AS trigger_at,
+  e.unrealized_pct AS pct_at_trigger,
+  COUNT(t.id) AS trades_closed_after,
+  ROUND(SUM(t.pnl)::numeric, 2) AS actual_pnl_after_trigger
+FROM global_risk_events e
+LEFT JOIN trades t ON t.closed_at > e.detected_at
+  AND t.closed_at < e.detected_at + INTERVAL '24 hours'
+WHERE e.shadow = true AND e.event_type = 'shadow_gtp'
+  AND e.detected_at > NOW() - INTERVAL '14 days'
+GROUP BY e.detected_at, e.unrealized_pct
+ORDER BY e.detected_at;
+```
+
+Αν το actual_pnl_after_trigger είναι > would_be_pnl → θα είχε κάνει λάθος να κλείσει.
+Αν είναι < would_be_pnl → θα είχε κάνει καλά να κλείσει.
+
+Αυτό είναι το πραγματικό backtest — χωρίς καθόλου υπολογισμούς, από τα υπάρχοντα δεδομένα σου.
+
+---
+
+Πώς να το Ενεργοποιήσεις (Όταν Είσαι Έτοιμος)
+
+Option A — Πλήρης Live Mode
+
+```sql
+UPDATE pipeline_settings
+SET global_risk_control = jsonb_set(
+  jsonb_set(global_risk_control, '{enabled}', 'true'::jsonb),
+  '{shadow_mode}', 'false'::jsonb
+)
+WHERE id = 1;
+```
+
+Αυτό σημαίνει: Κλείνει πραγματικές θέσεις, ενεργοποιεί cooldown.
+
+Option B — Enabled αλλά Shadow (Πιο ασφαλές)
+
+```sql
+UPDATE pipeline_settings
+SET global_risk_control = jsonb_set(
+  global_risk_control, '{enabled}', 'true'::jsonb
+)
+-- αφήνεις shadow_mode: true
+WHERE id = 1;
+```
+
+Διαφορά από default: Καμία — απλά επισημοποιείς ότι το feature είναι "on". Το pipeline συνεχίζει να γράφει shadow events.
+
+Option C — Enabled + Live, αλλά μόνο σε ένα Regime
+
+```sql
+UPDATE pipeline_settings
+SET global_risk_control = global_risk_control
+  || jsonb_build_object('enabled', true, 'shadow_mode', false)
+  || jsonb_build_object(
+    'regime_overrides',
+    jsonb_build_object(
+      'sideways', jsonb_build_object(
+        'gtp_pct', 8, 'ets_activation_pct', 5,
+        'ets_distance_pct', 2.5, 'cooldown_minutes', 60
+      )
+    )
+  )
+WHERE id = 1;
+```
+
+Αλλά προσοχή: Η λογική του getRegimeThresholds() είναι: αν δεν υπάρχει override για ένα regime, χρησιμοποιεί το default. Άρα αν βάλεις μόνο sideways override, τα άλλα regimes πέφτουν στο default. Αυτό μπορεί να μην είναι αυτό που θέλεις.
+
+Καλύτερη λύση — partial override:
+
+```sql
+UPDATE pipeline_settings
+SET global_risk_control = jsonb_set(
+  jsonb_set(global_risk_control, '{enabled}', 'true'::jsonb),
+  '{shadow_mode}', 'false'::jsonb
+)
+WHERE id = 1;
+
+-- Αν θέλεις να απενεργοποιήσεις το GTP σε trending markets:
+UPDATE pipeline_settings
+SET global_risk_control = jsonb_set(
+  global_risk_control,
+  '{regime_overrides,strong_bull,gtp_pct}',
+  'null'::jsonb
+)
+WHERE id = 1;
+```
+
+Το gtp_pct: null στο code σημαίνει «GTP off σε αυτό το regime, μόνο ETS».
+
+---
+
+Πότε να το Ενεργοποιήσεις — Timeline
+
+Μέρα Ενέργεια Λόγος
+0 Deploy (shadow mode) Ξεκινά η συλλογή δεδομένων
+1-3 Παρακολούθηση equity_snapshots Βλέπεις το εύρος του equity
+4-7 Ανάλυση global_risk_events Πόσα shadow triggers;
+7-14 Counterfactual analysis (queries πάνω) Τι θα είχε γίνει;
+14 Απόφαση Enable live ή adjust thresholds
+14+ Live mode + monitoring Βλέπεις real PnL impact
+
+Rule of thumb: Αν σε 14 μέρες shadow mode το counterfactual δείξει +$X** πραγματικό κέρδος από τα triggers, τότε ενεργοποίησέ το. Αν δείξει **−$X ή 0 → τα thresholds είναι λάθος.
+
+---
+
+Τι ΔΕΝ Κάνει (Πλήρης Λίστα)
+
+Για να μη δημιουργούνται λανθασμένες προσδοκίες:
+
+1. ❌ Δεν κλείνει θέσεις στο default config
+2. ❌ Δεν αλλάζει τη συμπεριφορά του pipeline
+3. ❌ Δεν μπλοκάρει νέα trades
+4. ❌ Δεν εμφανίζεται στο UI ακόμα (χρειάζεται panel)
+5. ❌ Δεν ειδοποιεί (χρειάζεται webhook integration)
+6. ❌ Δεν αυτο-ρυθμίζεται (χρειάζεται auto-tuning script)
+7. ❌ Δεν λαμβάνει υπόψη per-trade age (κλείνει τα πάντα μαζί)
+
+---
+
+Τι Πρέπει να Κάνεις Τώρα
+
+Άμεσα (5 λεπτά):
+
+1. Deploy migration 20261002140000_global_risk_control.sql
+2. Deploy global-risk.server.ts + patches
+3. Verify ότι το shadow mode τρέχει:
+   ```sql
+   SELECT
+     global_risk_control->>'enabled' AS enabled,
+     global_risk_control->>'shadow_mode' AS shadow
+   FROM pipeline_settings WHERE id = 1;
+   -- Expected: enabled=false, shadow=true
+   ```
+4. Περίμενε 2-3 pipeline runs (5-30 λεπτά)
+5. Έλεγξε ότι γράφονται snapshots:
+   ```sql
+   SELECT COUNT(*) FROM equity_snapshots
+   WHERE captured_at > NOW() - INTERVAL '1 hour';
+   -- Expected: ≥ 2
+   ```
+
+Σε 24 ώρες:
+
+6. Τρέξε το Query 2 (πόσο συχνά triggers)
+7. Τρέξε το Query 4 (counterfactual)
+8. Αν δεις σοβαρά δεδομένα → προχώρα σε live mode
+
+Σε 7 μέρες:
+
+9. Tuning — προσάρμοσε τα thresholds βάσει queries
+10. Enable live — μόνο αν το counterfactual δείχνει θετικό
+
+---
+
+Σύνοψη σε 3 Γραμμές
+
+Τι κάνει τώρα: Καταγράφει το equity σου κάθε pipeline και υπολογίζει πότε θα έκλεινε τα πάντα.
+Τι σου δίνει: Backtest από τα πραγματικά σου δεδομένα, χωρίς ρίσκο.
+Πότε ενεργοποιείται: Όταν το 14-ήμερο shadow δείξει ότι αξίζει.
+
+Το Global Risk Control δεν είναι «κλείσε όλα τώρα» — είναι «ας δούμε πρώτα αν αυτό που σκέφτεσαι δουλεύει, πριν το εμπιστευτούμε».
+
+Θέλεις να προσθέσω UI panel στο dashboard που να δείχνει:
+
+· Current equity vs peak
+· Shadow GTP/ETS events σε πραγματικό χρόνο
+· Counterfactual PnL
+· Toggle να ενεργοποιήσεις live mode
+
+Ή να δούμε το auto-tuning script που προσαρμόζει τα thresholds βάσει ιστορικών δεδομένων;
