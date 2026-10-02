@@ -5,7 +5,7 @@ export interface DiagnosticReportLike {
   health?: { overall?: string; score?: number; issues?: string[]; subsystems?: Record<string, { status: string; note: string }> };
   answers?: Record<string, { q: string; a: string; confidence: string }>;
   anomalies?: Array<Record<string, unknown>>;
-  data?: { trades?: { open_count: number; closed_count: number; open: unknown[]; recent_closed: unknown[] }; portfolio?: Record<string, unknown> | null; variants?: { open_count: number; total_count: number; by_symbol_top: unknown[] }; pipeline?: { recent_errors: unknown[] }; symbols?: { watched: string[]; blacklisted: string[]; with_live_price: unknown[] } };
+  data?: { trades?: { open_count: number; closed_count: number; open: unknown[]; recent_closed: unknown[] }; portfolio?: Record<string, unknown> | null; variants?: { open_count: number; total_count: number; resolved_count?: number; by_symbol_top: unknown[] }; pipeline?: { recent_errors: unknown[] }; symbols?: { watched: string[]; blacklisted: string[]; with_live_price: unknown[] } };
   suggested_actions?: Array<{ priority: string; action: string; reason: string; evidence: string[] }>;
   narrative_md?: string;
   ai_context?: string;
@@ -26,8 +26,8 @@ function buildContent(report: DiagnosticReportLike, aiAnalysis?: string | null) 
     `Generated: ${report.generated_at ?? "-"}`, `Duration: ${report.duration_ms ?? "-"}ms`, `Health: ${(report.health?.overall ?? "unknown").toUpperCase()} (${report.health?.score ?? "-"}/100)`,
     `AI analysis: ${aiAnalysis ? `included (${aiAnalysis.length} chars)` : "not included"}`,
     "", line(), "1. EXECUTIVE SUMMARY", line(),
-    `Open trades: ${trades.open_count}`, `Closed trades: ${trades.closed_count}`, `Realized PnL: ${money(portfolio?.realized_pnl)}`, `Unrealized PnL: ${money(portfolio?.unrealized_pnl)}`,
-    `Win rate: ${portfolio?.win_rate_pct ?? "n/a"}%`, `Profit factor: ${portfolio?.profit_factor ?? "n/a"}`, `Open variants: ${variants.open_count}`, `Total variants: ${variants.total_count}`,
+    `Open trades: ${trades.open_count}`, `Closed trades: ${trades.closed_count}`, `Realized PnL: ${money(portfolio?.["realized_pnl"])}`, `Unrealized PnL: ${money(portfolio?.["unrealized_pnl"])}`,
+    `Win rate: ${portfolio?.["win_rate_pct"] ?? "n/a"}%`, `Profit factor: ${portfolio?.["profit_factor"] ?? "n/a"}`, `Open variants: ${variants.open_count}`, `Resolved variants: ${variants.resolved_count ?? "n/a"}`, `Total variants: ${variants.total_count}`,
     `Pipeline errors (24h): ${pipeline.recent_errors.length}`, `Anomalies: ${(report.anomalies ?? []).length}`,
     "", line(), "2. SUBSYSTEM HEALTH", line(), ...Object.entries(report.health?.subsystems ?? {}).map(([key, value]) => `[${value.status.toUpperCase()}] ${key}: ${value.note}`),
     "", line(), "3. ANSWERS", line(), ...Object.values(report.answers ?? {}).flatMap((answer) => [`Q: ${answer.q}`, `Answer: ${answer.a}`, `Confidence: ${answer.confidence}`, ""]),
@@ -36,7 +36,7 @@ function buildContent(report: DiagnosticReportLike, aiAnalysis?: string | null) 
     "", line(), "6. SUGGESTED ACTIONS", line(), ...(report.suggested_actions?.length ? report.suggested_actions.flatMap((item) => [`[${item.priority}] ${item.action}`, `Reason: ${item.reason}`, ...item.evidence.map((e) => `- ${e}`), ""]) : ["No suggested actions."]),
     "", line(), "7. OPEN TRADES", line(), ...(trades.open.length ? trades.open.map((item) => JSON.stringify(item)) : ["No open trades."]),
     "", line(), "8. RECENT CLOSED TRADES", line(), ...(trades.recent_closed.length ? trades.recent_closed.map((item) => JSON.stringify(item)) : ["No recent closed trades."]),
-    "", line(), "9. PIPELINE ERRORS (24H)", line(), ...(pipeline.recent_errors.length ? pipeline.recent_errors.map((item) => `${date((item as Record<string, unknown>).created_at)} ${JSON.stringify(item)}`) : ["No pipeline errors in the last 24 hours."]),
+    "", line(), "9. PIPELINE ERRORS (24H)", line(), ...(pipeline.recent_errors.length ? pipeline.recent_errors.map((item) => `${date((item as Record<string, unknown>)["created_at"])} ${JSON.stringify(item)}`) : ["No pipeline errors in the last 24 hours."]),
     "", line(), "10. RAW JSON REPORT", line(), JSON.stringify(report, null, 2), "", line(), "END OF REPORT", line(),
   ];
   return sections.join("\n");
