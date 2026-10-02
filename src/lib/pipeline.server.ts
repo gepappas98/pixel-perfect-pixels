@@ -44,6 +44,16 @@ import {
   tagsFor,
   type WatchlistContext,
 } from "./watchlist-resolver.server";
+import {
+  recordHotWhale,
+  getHotWhaleSymbols,
+  cleanupHotWhales,
+  getHotWhaleBatch,
+  qualifiesForConvictionBoost,
+  convictionBoostMagnitude,
+  HOT_THRESHOLD_USD,
+  type HotWhaleAggregate,
+} from "./hot-whale.server";
 
 /* ───────────── Shared types ───────────── */
 
@@ -83,16 +93,9 @@ async function pMap<T, R>(
 
 // ─────────────────────────────────────────────────────────────────────
 // DEPRECATED STATIC WATCHLIST — kept for backward compatibility only.
-//
 // The pipeline now uses a DYNAMIC watchlist resolved from Hyperliquid
 // 24h volume + Binance listings. See watchlist-resolver.server.ts.
-//
-// This export exists solely for:
-//   1. UI components that display "watchlist size" in static contexts.
-//   2. Cold-start bootstrap if the resolver fails entirely.
-//
-// DO NOT add new symbols here. Use the RevolutX expander or rely on
-// dynamic resolution.
+// DO NOT add new symbols here.
 // ─────────────────────────────────────────────────────────────────────
 export const WATCHLIST = CORE_FALLBACK_WATCHLIST;
 
@@ -138,10 +141,6 @@ const MAX_ENTRY_DRIFT_PCT = 0.02;
 const SYMBOL_COOLDOWN_MINUTES = 15;
 const WHALE_LOOKBACK_HOURS = 6;
 
-// Trading settings (TP/SL/hold durations) are loaded dynamically from
-// pipeline_settings via fetchTradingSettings() — see executeTrades(),
-// closeTriggeredTrades(), and resolveVariantOutcomes().
-
 const ROTATION_MIN_NEW_CONFIDENCE = 0.75;
 const ROTATION_CONFIDENCE_IMPROVEMENT = 0.10;
 const ROTATION_MIN_OPEN_AGE_MINUTES = 30;
@@ -150,17 +149,12 @@ const ROTATION_MAX_WEAKEST_PNL_PCT = 0.5;
 const INDICATOR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const PREDICTION_MAX_AGE_MS = 30 * 60 * 1000;
 
-// ─── Council freshness TTL (default; regime-aware override below) ───
 const COUNCIL_MAX_AGE_MS = 30 * 60 * 1000;
 const COUNCIL_MAX_AGE_MS_TRENDING = 20 * 60 * 1000;
 const COUNCIL_MAX_AGE_MS_CALM = 45 * 60 * 1000;
 
 const STRATEGY_CACHE_TTL_MS = 60_000;
 
-// Variant resolution uses 1h candles for higher temporal precision on TP/SL
-// hit ordering (a 4h candle can contain both TP and SL touches, and the
-// resolution logic would falsely record a loss if SL were checked first).
-// 100 × 1h = ~4.16 days, comfortably covering the 72h variant expiry window.
 const VARIANT_RESOLVE_TIMEFRAME = "1h";
 const VARIANT_RESOLVE_CANDLE_LIMIT = 100;
 
@@ -185,7 +179,7 @@ async function fetchWithTimeout(input: string, init?: RequestInit) {
   });
 }
 
-/* ───────────── Multi-exchange market data (candles) ───────────── */
+/* ───────────── Multi-exchange market data ───────────── */
 
 const BINANCE_MARKET_HOSTS = [
   "https://api.binance.com",
@@ -193,7 +187,6 @@ const BINANCE_MARKET_HOSTS = [
 ] as const;
 
 const BYBIT_HOST = "https://api.bybit.com";
-
 let preferredMarketHost: (typeof BINANCE_MARKET_HOSTS)[number] | null = null;
 
 function toBybitInterval(timeframe: string): string | null {
@@ -262,11 +255,7 @@ async function binancePublicGet(pathAndQuery: string): Promise<Response> {
 interface BybitKlineResult {
   retCode: number;
   retMsg: string;
-  result?: {
-    category: string;
-    symbol: string;
-    list: string[][];
-  };
+  result?: { category: string; symbol: string; list: string[][]; };
 }
 
 async function bybitPublicGet(
@@ -291,7 +280,6 @@ async function bybitPublicGet(
     }
 
     const json = (await res.json()) as BybitKlineResult;
-
     if (json.retCode !== 0) {
       console.warn(`[BYBIT_GET] ${symbol} ${interval} → retCode=${json.retCode} msg=${json.retMsg}`);
       return null;
@@ -310,10 +298,7 @@ async function bybitPublicGet(
 
     return chronological.map((k) => {
       const startMs = Number(k[0]);
-      return [
-        k[0], k[1], k[2], k[3], k[4], k[5],
-        String(startMs + intervalMs),
-      ];
+      return [k[0], k[1], k[2], k[3], k[4], k[5], String(startMs + intervalMs)];
     });
   } catch (e) {
     const ms = Date.now() - t0;
@@ -338,7 +323,6 @@ async function fetchCandlesUnified(
   timeframe: string,
 ): Promise<{ source: CandleSource; candles: unknown[][] } | null> {
   const binanceSym = binanceSymbol(coin);
-
   const binancePath = `/api/v3/klines?symbol=${binanceSym}&interval=${timeframe}&limit=${KLINE_LIMIT}`;
   const binanceRes = await binancePublicGet(binancePath);
 
@@ -348,9 +332,7 @@ async function fetchCandlesUnified(
       if (Array.isArray(data) && data.length > 0) {
         return { source: "binance", candles: data };
       }
-    } catch {
-      // fall through to Bybit
-    }
+    } catch { /* fall through */ }
   }
 
   const bybitInterval = toBybitInterval(timeframe);
@@ -360,7 +342,6 @@ async function fetchCandlesUnified(
   }
 
   const bybitCandles = await bybitPublicGet(binanceSym, bybitInterval, KLINE_LIMIT);
-
   if (bybitCandles && bybitCandles.length > 0) {
     console.log(`[FALLBACK] ${coin} ${timeframe} → Bybit (${bybitCandles.length} candles)`);
     return { source: "bybit", candles: bybitCandles };
@@ -397,16 +378,6 @@ function newPipelineHealth(): PipelineHealth {
   };
 }
 
-/**
- * Best-effort alert emitter. Writes a `feed_error` row into `trade_alerts`.
- *
- * Some deployments define `trade_alerts.trade_id` as NOT NULL (FK to trades),
- * in which case this insert will fail. We swallow the error and rely on
- * `pipeline_runs.error_message` + console logs as the fallback signal. The
- * pipeline never aborts because an alert couldn't be written.
- *
- * `tags` are propagated to the alert row for provenance tracking.
- */
 async function emitFeedAlert(
   db: Admin,
   eventType: "feed_error" | "circuit_breaker",
@@ -433,19 +404,17 @@ async function emitFeedAlert(
     );
   } catch (e) {
     console.error(
-      `[FEED_ALERT] trade_alerts insert failed (schema may require trade_id or tags column). ` +
+      `[FEED_ALERT] trade_alerts insert failed. ` +
         `Fallback signal: pipeline_runs.error_message. Content: ${eventType} — ${message}`,
       e,
     );
   }
 }
 
-/* ───────────── Strategy loader (cached) ───────────── */
+/* ───────────── Strategy loader ───────────── */
 
 let strategyCache: { config: StrategyConfig; ts: number } | null = null;
 let currentRegimeLabel: string | null = null;
-
-/* ───────────── Regime-aware helpers ───────────── */
 
 function isTrendingRegime(label: string | null): boolean {
   if (!label) return false;
@@ -456,12 +425,7 @@ function isTrendingRegime(label: string | null): boolean {
 function isCalmRegime(label: string | null): boolean {
   if (!label) return false;
   const l = label.toLowerCase();
-  return (
-    l.includes("side") ||
-    l.includes("chop") ||
-    l.includes("rang") ||
-    l.includes("quiet")
-  );
+  return l.includes("side") || l.includes("chop") || l.includes("rang") || l.includes("quiet");
 }
 
 async function fetchStrategy(): Promise<StrategyConfig> {
@@ -509,12 +473,7 @@ const TOP_MOVERS_COUNT = 25;
 const HL_CACHE_TTL_MS = 60_000;
 
 interface HlTrade {
-  px: string;
-  sz: string;
-  side: "B" | "A";
-  time: number;
-  tid: number;
-  hash?: string;
+  px: string; sz: string; side: "B" | "A"; time: number; tid: number; hash?: string;
 }
 
 interface HyperliquidUniverse {
@@ -550,10 +509,7 @@ async function fetchHyperliquidUniverse(): Promise<HyperliquidUniverse> {
       return { all: new Set(), top: [], ts: 0 };
     }
     const top = meta.universe
-      .map((u, i) => ({
-        coin: u.name,
-        vol: parseFloat(ctxs[i]?.dayNtlVlm ?? "0") || 0,
-      }))
+      .map((u, i) => ({ coin: u.name, vol: parseFloat(ctxs[i]?.dayNtlVlm ?? "0") || 0 }))
       .sort((a, b) => b.vol - a.vol)
       .slice(0, TOP_MOVERS_COUNT)
       .map((m) => m.coin);
@@ -570,7 +526,7 @@ async function hyperliquidTopMovers(): Promise<string[]> {
   return top;
 }
 
-/* ───────────── Whale alerts — Hyperliquid ───────────── */
+/* ───────────── Whale alerts — Hyperliquid (HOT QUEUE FEEDING) ───────────── */
 
 export async function collectWhaleAlerts(): Promise<number> {
   const db = await admin();
@@ -598,9 +554,7 @@ export async function collectWhaleAlerts(): Promise<number> {
           ? "hyperliquid-recent-trades"
           : "hyperliquid-top-mover";
 
-        const floor = base.has(coin)
-          ? hlWhaleFloor(coin)
-          : whaleFloor(coin);
+        const floor = base.has(coin) ? hlWhaleFloor(coin) : whaleFloor(coin);
 
         for (const t of trades) {
           const usd = parseFloat(t.px) * parseFloat(t.sz);
@@ -626,6 +580,41 @@ export async function collectWhaleAlerts(): Promise<number> {
 
   const rows = perCoinRows.flat();
   if (rows.length === 0) return 0;
+
+  // ─── Hot whale queue: capture non-watchlist symbols with meaningful USD ───
+  const watchlistSet = new Set(watchlist);
+  const hotCandidates = rows.filter(
+    (r) =>
+      !watchlistSet.has(String(r["symbol"])) &&
+      Number(r["usd_value"]) >= HOT_THRESHOLD_USD,
+  );
+  if (hotCandidates.length > 0) {
+    const bySymbol = new Map<string, { usd: number; isBuy: boolean; source: string }>();
+    for (const r of hotCandidates) {
+      const sym = String(r["symbol"]);
+      const usd = Number(r["usd_value"]);
+      const isBuy = r["direction"] === "accumulation";
+      const source = String(r["source"]);
+      const existing = bySymbol.get(sym);
+      if (!existing || usd > existing.usd) bySymbol.set(sym, { usd, isBuy, source });
+    }
+
+    await Promise.all(
+      [...bySymbol.entries()].slice(0, 50).map(([sym, v]) =>
+        recordHotWhale(sym, v.usd, v.isBuy, v.source),
+      ),
+    );
+
+    const topLog = [...bySymbol.entries()]
+      .sort((a, b) => b[1].usd - a[1].usd)
+      .slice(0, 5)
+      .map(([sym, v]) => `${sym}=$${Math.round(v.usd / 1000)}K`)
+      .join(", ");
+    console.log(
+      `[HOT_WHALE] queued ${bySymbol.size} non-watchlist symbols (top: ${topLog})`,
+    );
+  }
+
   const { data, error } = await db
     .from("whale_alerts")
     .upsert(rows as never, {
@@ -637,11 +626,7 @@ export async function collectWhaleAlerts(): Promise<number> {
   return data?.length ?? 0;
 }
 
-/* ───────────── Whale alerts — Binance spot only ─────────────
- *
- * Bybit linear perps whales were REMOVED (ambiguous direction).
- * Binance returns 403 since 30/09. CoinLobster covers the gap.
- * ───────────────────────────────────────────────────────────── */
+/* ───────────── Whale alerts — Binance spot only ───────────── */
 
 const BINANCE_SYMBOL_MAP: Record<string, string> = {
   MATIC: "POL",
@@ -651,11 +636,7 @@ const binanceSymbol = (coin: string) =>
   `${BINANCE_SYMBOL_MAP[coin] ?? coin}USDT`;
 
 interface BinanceAggTrade {
-  a: number;
-  p: string;
-  q: string;
-  T: number;
-  m: boolean;
+  a: number; p: string; q: string; T: number; m: boolean;
 }
 
 export async function collectExchangeWhaleAlerts(): Promise<number> {
@@ -726,7 +707,7 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
 
   if (binanceSuccessCount === 0 && binanceFailCount > 0) {
     console.error(
-      `[WHALE_BINANCE_COLLECTOR] CRITICAL: Binance whales completely failed (${binanceFailCount} coins). Hyperliquid + CoinLobster cover the rest.`,
+      `[WHALE_BINANCE_COLLECTOR] CRITICAL: Binance whales completely failed (${binanceFailCount} coins).`,
     );
   }
 
@@ -1058,17 +1039,7 @@ function classify(
   if (nearLowerBand && trend.osc >= 20 && momentum >= 0) return "bullish";
   if (nearUpperBand && trend.osc <= -20 && momentum <= 0) return "bearish";
 
-  // Tightened RSI-based classification.
-  //
-  // The previous logic treated ANY RSI < 55 with a weak positive MACD tick
-  // as bullish, which mislabeled hundreds of neutral readings as bullish
-  // in production (audit: 94 shown as "bullish" vs 11 bullish per regime
-  // snapshot). The new logic:
-  //   - RSI 44–56 = strict neutral band, escaped only by a strong MACD
-  //     cross (≥ 5% of |m|).
-  //   - RSI < 44 → bullish only if MACD momentum is positive.
-  //   - RSI > 56 → bearish only if MACD momentum is negative.
-  //   - Everything else = neutral.
+  // Tightened RSI-based classification (see prior patch notes).
   const NEUTRAL_LOW = 44;
   const NEUTRAL_HIGH = 56;
   const STRONG_MACD_FRACTION = 0.05;
@@ -1148,11 +1119,24 @@ async function fetchIndicatorForTimeframe(
   }
 }
 
+/* ───────────── collectIndicators (HOT SYMBOLS INCLUDED) ───────────── */
+
 export async function collectIndicators(): Promise<number> {
   const db = await admin();
   const watchlist = await getActiveWatchlist();
   const movers = await hyperliquidTopMovers();
-  const coins = [...new Set([...watchlist, ...movers])];
+  // Include hot-whale symbols so they receive real 1h/4h/1d candles on
+  // the next run after they enter the hot queue.
+  const hotSymbols = await getHotWhaleSymbols();
+  const coins = [...new Set([...watchlist, ...movers, ...hotSymbols])];
+
+  if (hotSymbols.length > 0) {
+    console.log(
+      `[INDICATORS] including ${hotSymbols.length} hot-whale symbols: ` +
+        hotSymbols.slice(0, 8).join(",") +
+        (hotSymbols.length > 8 ? ` (+${hotSymbols.length - 8} more)` : ""),
+    );
+  }
 
   const tasks: { coin: string; timeframe: string }[] = [];
   for (const coin of coins) {
@@ -1291,8 +1275,7 @@ export async function collectPredictions(): Promise<number> {
   if (error) throw error;
   return data?.length ?? 0;
 }
-
-/* ───────────── Prediction direction helper ───────────── */
+/* ───────────── Prediction direction & magnitude ───────────── */
 
 const BULLISH_QUESTION = /\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\b/i;
 const BEARISH_QUESTION = /\b(dip|drop|fall|below|crash|down to|under|bottom)\b/i;
@@ -1310,17 +1293,6 @@ export function predictionDirection(prediction: Row): "bullish" | "bearish" | "n
   return "neutral";
 }
 
-/**
- * Prediction magnitude 0..1.
- *
- * Maps the distance of the directional probability from 50% to a score
- * multiplier. Neutral-band predictions (40–60%) return 0 and contribute
- * no score. Values above the neutral band scale linearly:
- *   60% → 0, 70% → 0.25, 80% → 0.5, 90% → 0.75, 100% → 1.0.
- *
- * This ensures a 93%-conviction bearish signal contributes ~4× the weight
- * of a barely-passing 60% call, instead of the previous flat 0.5.
- */
 export function predictionMagnitude(prediction: Row): number {
   const yes = Number(prediction?.["yes_price"]);
   if (!Number.isFinite(yes)) return 0;
@@ -1329,8 +1301,8 @@ export function predictionMagnitude(prediction: Row): number {
   const isBearishQ = BEARISH_QUESTION.test(q);
   if (!isBullishQ && !isBearishQ) return 0;
   const up = isBullishQ ? yes : 1 - yes;
-  const distance = Math.abs(up - 0.5) * 2; // 0 at 50%, 1 at extremes
-  if (distance < 0.2) return 0; // neutral band 40–60%
+  const distance = Math.abs(up - 0.5) * 2;
+  if (distance < 0.2) return 0;
   return Math.min(1, (distance - 0.2) / 0.8);
 }
 
@@ -1433,11 +1405,6 @@ function councilEvaluation(whale: Row, mtf: MultiTfResult, prediction: Row) {
 const AI_VERDICT_TTL_MS = 25 * 60 * 1000;
 const AI_BATCH_MAX = 15;
 
-// ─── Dynamic Groq batch cadence (regime-aware) ───
-// In trending markets signals decay faster and regime shifts are more
-// consequential, so we refresh AI verdicts more aggressively. In calm /
-// sideways / choppy conditions we slow down to conserve tokens and stay
-// well below Groq's RPM/TPM limits.
 const AI_MIN_MINUTES_BETWEEN_BATCHES_DEFAULT = 25;
 const AI_MIN_MINUTES_BETWEEN_BATCHES_TRENDING = 15;
 const AI_MIN_MINUTES_BETWEEN_BATCHES_CALM = 40;
@@ -1537,9 +1504,6 @@ async function groqBatchCouncil(
           { role: "user", content: JSON.stringify(payload) },
         ],
         temperature: 0.2,
-        // Reasoning models (gpt-oss) burn tokens on hidden reasoning before
-        // emitting the JSON answer. 2048 was too low and produced
-        // finish_reason="length" with empty content. 4096 gives headroom.
         ...( /gpt-oss/i.test(GROQ_MODEL)
           ? { reasoning_effort: "low", max_completion_tokens: 4096 }
           : { max_tokens: 4096 }
@@ -1597,8 +1561,9 @@ export async function collectCouncilSignals(): Promise<number> {
   const db = await admin();
   const rows: Record<string, unknown>[] = [];
   const watchlist = await getActiveWatchlist();
+  const hotSymbols = await getHotWhaleSymbols();
   const movers = await hyperliquidTopMovers();
-  const symbols = [...new Set([...watchlist, ...movers])];
+  const symbols = [...new Set([...watchlist, ...hotSymbols, ...movers])];
   if (symbols.length === 0) return 0;
   const binSymbols = symbols.map(binanceSymbol);
   const sixHoursAgo = new Date(Date.now() - WHALE_LOOKBACK_HOURS * 60 * 60 * 1000).toISOString();
@@ -1740,7 +1705,7 @@ export async function collectCouncilSignals(): Promise<number> {
   return data?.length ?? 0;
 }
 
-/* ───────────── Signal combiner (weight-aware) ───────────── */
+/* ───────────── Signal combiner ───────────── */
 
 const COMPOSITE_AI_BASE_WEIGHT = 0.75;
 
@@ -1761,6 +1726,7 @@ export function ruleBased(
     mtfGateConfig?: MtfGateConfig;
     sessionConfig?: MarketSessionConfig;
     symbol?: string;
+    hotWhaleAggregate?: HotWhaleAggregate | null;
   },
 ) {
   let score = 0;
@@ -1829,6 +1795,31 @@ export function ruleBased(
     }
   }
 
+  // ─── Hot-whale conviction boost ───
+  const hotAgg = options?.hotWhaleAggregate;
+  if (qualifiesForConvictionBoost(hotAgg) && hotAgg) {
+    const boost = convictionBoostMagnitude(hotAgg);
+    const sign = hotAgg.direction === "accumulation" ? 1 : -1;
+    score += sign * boost;
+    reasons.push(
+      `hot-whale boost ${sign > 0 ? "+" : "-"}${boost.toFixed(2)} ` +
+        `(buy_ratio ${(hotAgg.buy_ratio * 100).toFixed(0)}%, ` +
+        `samples ${hotAgg.alert_count}, ` +
+        `conf ${(hotAgg.confidence * 100).toFixed(0)}%)`,
+    );
+  }
+
+  // ─── Threshold selection (dynamic for sparse hot-whale symbols) ───
+  const hasMtf = mtf.direction !== "neutral" || mtf.score !== 0;
+  const hasCouncil = !!council?.["final_verdict"];
+  const isSparse = !hasMtf || !hasCouncil;
+  const hotBoostActive = qualifiesForConvictionBoost(hotAgg);
+  const lowerThresholds = hotBoostActive && isSparse;
+
+  const buyThreshold = lowerThresholds ? 0.75 : 1.5;
+  const sellThreshold = lowerThresholds ? -0.75 : -1.5;
+  const holdThreshold = lowerThresholds ? 0.25 : 0.5;
+
   let recommendation: "buy" | "sell" | "hold" | "watch" = "hold";
   let mtfGateDecision: ReturnType<typeof checkMtfGate> | null = null;
 
@@ -1836,9 +1827,9 @@ export function ruleBased(
     recommendation = "hold";
     reasons.push(`hard conflict (whale=${conflict.whaleDir}, pred=${conflict.predDir}, no technicals) → hold`);
   } else {
-    if (score >= 1.5) recommendation = "buy";
-    else if (score <= -1.5) recommendation = "sell";
-    else if (Math.abs(score) < 0.5) recommendation = "hold";
+    if (score >= buyThreshold) recommendation = "buy";
+    else if (score <= sellThreshold) recommendation = "sell";
+    else if (Math.abs(score) < holdThreshold) recommendation = "hold";
     else recommendation = "watch";
 
     if (aiAvoid) recommendation = "watch";
@@ -1912,12 +1903,23 @@ export async function combineSignals(): Promise<number> {
   console.log(`[MARKET_SESSION] ${sessionLabel(nowSession.session)} utc_hour=${nowSession.utcHour}${nowSession.isWeekend ? " WEEKEND" : ""}`);
 
   const watchlistCtx = await getActiveWatchlistContext();
+  const hotSymbols = await getHotWhaleSymbols();
+  const hotWhaleBatch = await getHotWhaleBatch();
+  const hotSymbolSet = new Set(hotSymbols);
   const { data: councilRows } = await db.from("council_signals").select("symbol");
   const symbols = [...new Set([
     ...watchlistCtx.symbols,
+    ...hotSymbols,
     ...((councilRows ?? []) as { symbol: string }[]).map((r) => r.symbol),
   ])];
   if (symbols.length === 0) return 0;
+  if (hotSymbols.length > 0) {
+    console.log(
+      `[HOT_WHALE_INCLUDE] added ${hotSymbols.length} hot symbols to signals: ` +
+        hotSymbols.slice(0, 10).join(",") +
+        (hotSymbols.length > 10 ? ` (+${hotSymbols.length - 10} more)` : ""),
+    );
+  }
   const binSymbols = symbols.map(binanceSymbol);
   const whaleSince = new Date(Date.now() - WHALE_LOOKBACK_HOURS * 60 * 60 * 1000).toISOString();
 
@@ -1979,9 +1981,6 @@ export async function combineSignals(): Promise<number> {
     if (!isFreshRow(row, "created_at", PREDICTION_MAX_AGE_MS, freshnessNow)) latestPrediction.delete(s);
   }
 
-  // Regime-aware council freshness TTL: shorter in trending markets so we
-  // don't over-rely on stale AI verdicts during fast regime shifts, longer
-  // in calm markets to avoid discarding still-valid analysis.
   const councilTtlMs = councilMaxAgeMs();
   console.log(
     `[COUNCIL_TTL] regime=${currentRegimeLabel ?? "unknown"} ` +
@@ -2028,9 +2027,41 @@ export async function combineSignals(): Promise<number> {
     const council = (latestCouncil.get(symbol) ?? null) as Row;
     if (!whale && !mtfRaw.primary && !prediction && !council) continue;
 
+    // ─── Hot-whale aggregated direction override ───
+    const hotAgg = hotSymbolSet.has(symbol)
+      ? hotWhaleBatch.get(symbol) ?? null
+      : null;
+
+    if (hotAgg && hotAgg.direction) {
+      whale = {
+        ...(whale ?? {}),
+        direction: hotAgg.direction,
+        id: null,
+        usd_value: hotAgg.total_usd,
+        buy_usd: hotAgg.buy_usd,
+        sell_usd: hotAgg.sell_usd,
+        buy_count: Math.round(hotAgg.buy_ratio * hotAgg.alert_count),
+        sell_count: Math.round((1 - hotAgg.buy_ratio) * hotAgg.alert_count),
+        confidence: hotAgg.confidence,
+      } as Row;
+      console.log(
+        `[HOT_WHALE_DIRECTION] ${symbol}: ${hotAgg.direction} ` +
+          `(buy_ratio=${(hotAgg.buy_ratio * 100).toFixed(0)}%, ` +
+          `samples=${hotAgg.alert_count}, ` +
+          `conf=${(hotAgg.confidence * 100).toFixed(0)}%)`,
+      );
+    }
+
     const result = ruleBased(whale, mtf, prediction, council, weights, {
       conflictFixEnabled, mtfGateConfig, sessionConfig, symbol,
+      hotWhaleAggregate: hotAgg,
     });
+
+    const symbolTags = tagsFor(
+      symbol,
+      watchlistCtx,
+      hotSymbolSet.has(symbol) ? ["hot-whale"] : undefined,
+    );
 
     // MTF gate rejection logging
     if (
@@ -2156,7 +2187,7 @@ export async function combineSignals(): Promise<number> {
         outcome: "open",
         regime_label: regime.label,
         market_session: nowSession.session,
-        source_tags: tagsFor(symbol, watchlistCtx),
+        source_tags: symbolTags,
         created_at: nowIso,
       });
     }
@@ -2190,7 +2221,7 @@ export async function combineSignals(): Promise<number> {
           fingerprint,
           regime_label: regime.label,
           market_session: nowSession.session,
-          source_tags: tagsFor(symbol, watchlistCtx),
+          source_tags: symbolTags,
           created_at: nowIso,
         } as never,
         { onConflict: "fingerprint", ignoreDuplicates: false },
@@ -2234,14 +2265,6 @@ interface VariantCandle {
   close: number; closeTimeMs: number;
 }
 
-/**
- * Fetch candles for variant resolution.
- *
- * Uses 1h candles (VARIANT_RESOLVE_TIMEFRAME) with a 100-candle limit,
- * giving ~4.16 days of history. This is comfortably above the 72h variant
- * expiry window and provides 4× higher temporal precision than 4h candles
- * for detecting the ordering of TP/SL hits within a single bar.
- */
 async function fetchVariantResolutionCandles(
   coin: string,
   limit = VARIANT_RESOLVE_CANDLE_LIMIT,
@@ -2492,6 +2515,8 @@ async function closeTriggeredTrades(): Promise<number> {
   try { prices = await allBinancePrices(); }
   catch (e) { console.error("batch price fetch failed, skipping close checks", e); return 0; }
 
+  const closeCtx = await getActiveWatchlistContext();
+
   let closed = 0;
   const nowMs = Date.now();
 
@@ -2542,7 +2567,6 @@ async function closeTriggeredTrades(): Promise<number> {
     if (closeError) throw closeError;
     if (!closedTrade) continue;
 
-    const closeCtx = await getActiveWatchlistContext();
     const { error: alertError } = await db.from("trade_alerts").insert({
       trade_id: trade.id, symbol: trade.symbol, side: trade.side,
       event_type: closeReason, entry_price: entryPrice, exit_price: price,
@@ -2627,15 +2651,6 @@ async function attemptRotation(
   return weakest.symbol;
 }
 
-/**
- * Trade executor.
- *
- * @param opts.skipNewEntries
- *   When true, the function still runs `closeTriggeredTrades()` (stop losses,
- *   take profits, stale exits, expiries), but skips opening any new
- *   positions. Used by `runFullPipeline()` as a circuit breaker when critical
- *   upstream feeds (indicators / whales) have failed.
- */
 export async function executeTrades(opts?: {
   skipNewEntries?: boolean;
 }): Promise<number> {
@@ -2681,6 +2696,8 @@ export async function executeTrades(opts?: {
   catch (e) { console.error("batch price fetch failed in executeTrades", e); return 0; }
 
   const execCtx = await getActiveWatchlistContext();
+  const hotSymbolsNow = await getHotWhaleSymbols();
+  const hotSymbolSet = new Set(hotSymbolsNow);
 
   let opened = 0;
   let rotationAttempted = false;
@@ -2752,7 +2769,11 @@ export async function executeTrades(opts?: {
       mode, status: "open", exchange_order_id: exchangeOrderId, entry_fee: entryFee,
       regime_label: currentRegimeLabel,
       market_session: tradeSession.session,
-      source_tags: tagsFor(signal.symbol, execCtx),
+      source_tags: tagsFor(
+        signal.symbol,
+        execCtx,
+        hotSymbolSet.has(signal.symbol) ? ["hot-whale"] : undefined,
+      ),
     } as never);
 
     if (tradeErr) {
@@ -2808,6 +2829,12 @@ export async function runFullPipeline() {
         `binance_filtered=${watchlistCtx.meta.binance_filtered})`,
     );
 
+    // ─── Hot whale queue: opportunistic cleanup ───
+    const hotCleaned = await cleanupHotWhales();
+    if (hotCleaned > 0) {
+      console.log(`[HOT_WHALE] cleaned ${hotCleaned} stale entries`);
+    }
+
     step = "whales";
     const [hlWhales, exWhales, clWhales] = await Promise.all([
       collectWhaleAlerts(),
@@ -2829,7 +2856,6 @@ export async function runFullPipeline() {
       health.whalesFailed = true;
       health.degraded = true;
       health.degradedReasons.push("whales=0 (all sources failed)");
-      // SYSTEM-level alert — no specific symbol, so no provenance tag.
       await emitFeedAlert(
         db,
         "feed_error",
@@ -2856,8 +2882,6 @@ export async function runFullPipeline() {
 
     step = "predictions";
     const predictions = await collectPredictions();
-    // Predictions=0 is informational only (Polymarket may have no active crypto
-    // markets); does NOT trip the circuit breaker or mark the run degraded.
 
     step = "council";
     const council = await collectCouncilSignals();
@@ -2937,10 +2961,6 @@ export async function runFullPipeline() {
         .eq("id", runId);
       if (updateError) {
         console.error("failed to update pipeline run", updateError);
-        // Fallback: if the CHECK constraint rejects status="degraded",
-        // retry with status="success" while keeping the DEGRADED warning
-        // in error_message. This preserves the alert signal even on
-        // schemas that only allow ('running','success','error').
         if (health.degraded) {
           console.warn(
             "[PIPELINE_HEALTH] status='degraded' was rejected by DB — falling back to 'success' + error_message",
@@ -2965,19 +2985,12 @@ export async function runFullPipeline() {
     const completedAt = new Date();
     console.error(`[PIPELINE_FAILED] ${message}`);
 
-    // Emit alert for any pipeline failure, including inferred timeouts.
-    //
-    // Note: hard timeouts (pipeline hangs) are handled by the external
-    // watchdog which marks the run as `timed_out`. This alert fires for
-    // in-process failures that DO reach the catch block — e.g. serialized
-    // AbortError from fetch timeouts, or the watchdog re-throwing when
-    // the process is resumed.
     const isTimeout = /timed?\s*out|timeout|abort/i.test(message);
     await emitFeedAlert(
       db,
       "feed_error",
       `${isTimeout ? "PIPELINE_TIMEOUT" : "PIPELINE_ERROR"}: ${message}`,
-      { symbol: null, tags: [] }, // SYSTEM-level, no specific provenance
+      { symbol: null, tags: [] },
     );
 
     if (runId) {
