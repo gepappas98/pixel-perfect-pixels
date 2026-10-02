@@ -366,6 +366,72 @@ async function admin(): Promise<Admin> {
   return supabaseAdmin;
 }
 
+/* ───────────── Feed health & alerting ───────────── */
+
+/**
+ * Tracks feed health across the current pipeline run.
+ *
+ * - `indicatorsFailed` and `whalesFailed` are the only feeds strong enough to
+ *   trip the circuit breaker (they represent market data sources that are
+ *   core to signal generation). Predictions, council, and variants can be
+ *   legitimately empty without indicating a systemic failure.
+ * - When `degraded` is true, `runFullPipeline()` will:
+ *   1. Emit a `feed_error` alert into `trade_alerts` (best-effort).
+ *   2. Skip opening new positions (close-only mode via `executeTrades`).
+ *   3. Record `status: "degraded"` in `pipeline_runs` (with a fallback to
+ *      `"success"` + `error_message` prefix if the DB CHECK rejects it).
+ */
+interface PipelineHealth {
+  degraded: boolean;
+  degradedReasons: string[];
+  indicatorsFailed: boolean;
+  whalesFailed: boolean;
+}
+
+function newPipelineHealth(): PipelineHealth {
+  return {
+    degraded: false,
+    degradedReasons: [],
+    indicatorsFailed: false,
+    whalesFailed: false,
+  };
+}
+
+/**
+ * Best-effort alert emitter. Writes a `feed_error` row into `trade_alerts`.
+ *
+ * Some deployments define `trade_alerts.trade_id` as NOT NULL (FK to trades),
+ * in which case this insert will fail. We swallow the error and rely on
+ * `pipeline_runs.error_message` + console logs as the fallback signal. The
+ * pipeline never aborts because an alert couldn't be written.
+ */
+async function emitFeedAlert(
+  db: Admin,
+  eventType: "feed_error" | "circuit_breaker",
+  message: string,
+): Promise<void> {
+  try {
+    await db.from("trade_alerts").insert({
+      trade_id: null,
+      symbol: "SYSTEM",
+      side: null,
+      event_type: eventType,
+      entry_price: null,
+      exit_price: null,
+      pnl: null,
+      pnl_pct: null,
+      created_at: new Date().toISOString(),
+    } as never);
+    console.log(`[FEED_ALERT] ${eventType} → ${message}`);
+  } catch (e) {
+    console.error(
+      `[FEED_ALERT] trade_alerts insert failed (schema may require trade_id). ` +
+        `Fallback signal: pipeline_runs.error_message. Content: ${eventType} — ${message}`,
+      e,
+    );
+  }
+}
+
 /* ───────────── Strategy loader (cached) ───────────── */
 
 let strategyCache: { config: StrategyConfig; ts: number } | null = null;
@@ -2468,11 +2534,30 @@ async function attemptRotation(
   return weakest.symbol;
 }
 
-export async function executeTrades(): Promise<number> {
+/**
+ * Trade executor.
+ *
+ * @param opts.skipNewEntries
+ *   When true, the function still runs `closeTriggeredTrades()` (stop losses,
+ *   take profits, stale exits, expiries), but skips opening any new
+ *   positions. Used by `runFullPipeline()` as a circuit breaker when critical
+ *   upstream feeds (indicators / whales) have failed.
+ */
+export async function executeTrades(opts?: {
+  skipNewEntries?: boolean;
+}): Promise<number> {
   const db = await admin();
   const mode = tradingMode();
   const settings = await fetchTradingSettings();
   await closeTriggeredTrades();
+
+  if (opts?.skipNewEntries) {
+    console.warn(
+      "[CIRCUIT_BREAKER] skipNewEntries=true — closed-only mode, no new positions will be opened",
+    );
+    return 0;
+  }
+
   const since = new Date(Date.now() - 15 * 60 * 1000).toISOString();
   const cooldownSince = new Date(Date.now() - SYMBOL_COOLDOWN_MINUTES * 60 * 1000).toISOString();
 
@@ -2589,6 +2674,7 @@ export async function executeTrades(): Promise<number> {
 export async function runFullPipeline() {
   const db = await admin();
   const startedAt = new Date();
+  const health = newPipelineHealth();
   const { data: runRow, error: insertError } = await db
     .from("pipeline_runs")
     .insert({
@@ -2620,11 +2706,37 @@ export async function runFullPipeline() {
     const whales = hlWhales + exWhales + clWhales;
     console.log(`[WHALES_TOTAL] hl=${hlWhales} binance=${exWhales} coinlobster=${clWhales} total=${whales}`);
 
+    // ─── Feed health check: whales ───
+    if (whales === 0) {
+      health.whalesFailed = true;
+      health.degraded = true;
+      health.degradedReasons.push("whales=0 (all sources failed)");
+      await emitFeedAlert(
+        db,
+        "feed_error",
+        "CRITICAL: Whale collection returned 0 — Hyperliquid/Binance/CoinLobster all unavailable",
+      );
+    }
+
     step = "indicators";
     const indicators = await collectIndicators();
 
+    // ─── Feed health check: indicators ───
+    if (indicators === 0) {
+      health.indicatorsFailed = true;
+      health.degraded = true;
+      health.degradedReasons.push("indicators=0 (all sources failed)");
+      await emitFeedAlert(
+        db,
+        "feed_error",
+        "CRITICAL: Indicators collection returned 0 — Binance/Bybit market data unavailable",
+      );
+    }
+
     step = "predictions";
     const predictions = await collectPredictions();
+    // Predictions=0 is informational only (Polymarket may have no active crypto
+    // markets); does NOT trip the circuit breaker or mark the run degraded.
 
     step = "council";
     const council = await collectCouncilSignals();
@@ -2649,8 +2761,22 @@ export async function runFullPipeline() {
     const resolvedVariants = await resolveVariantOutcomes();
     if (resolvedVariants > 0) console.log(`[VARIANTS] Resolved ${resolvedVariants} variant outcomes`);
 
+    // ─── Circuit breaker: skip new entries on critical feed failure ───
     step = "trades";
-    const trades = await executeTrades();
+    const circuitBreakerOpen = health.indicatorsFailed || health.whalesFailed;
+    let trades = 0;
+    if (circuitBreakerOpen) {
+      console.warn(
+        `[CIRCUIT_BREAKER] OPEN — skipping new entries. ` +
+          `Reasons: ${health.degradedReasons.join("; ")}`,
+      );
+      await emitFeedAlert(
+        db,
+        "circuit_breaker",
+        `Circuit breaker OPEN — close-only mode. Reasons: ${health.degradedReasons.join("; ")}`,
+      );
+    }
+    trades = await executeTrades({ skipNewEntries: circuitBreakerOpen });
     const mode = tradingMode();
 
     step = "post-mortem";
@@ -2659,23 +2785,53 @@ export async function runFullPipeline() {
     if (learning.status !== "ok") console.warn(`[LESSON] AI status: ${learning.status} — ${learning.error ?? "unknown"}`);
 
     const completedAt = new Date();
+    const finalStatus = health.degraded ? "degraded" : "success";
+    const errorMessage = health.degraded
+      ? `DEGRADED: ${health.degradedReasons.join("; ")}`
+      : null;
+
     const summary = {
       completed_at: completedAt.toISOString(),
       duration_ms: completedAt.getTime() - startedAt.getTime(),
-      status: "success",
+      status: finalStatus,
       whales, indicators, predictions, council, signals, trades,
       variants_resolved: resolvedVariants,
       mode,
-      error_message: null,
+      error_message: errorMessage,
       ai_status: learning.status,
       ai_error: learning.error,
       ai_lessons_generated: learning.generated,
     };
+
     if (runId) {
-      const { error: updateError } = await db.from("pipeline_runs").update(summary as never).eq("id", runId);
-      if (updateError) console.error("failed to update pipeline run", updateError);
+      const { error: updateError } = await db
+        .from("pipeline_runs")
+        .update(summary as never)
+        .eq("id", runId);
+      if (updateError) {
+        console.error("failed to update pipeline run", updateError);
+        // Fallback: if the CHECK constraint rejects status="degraded",
+        // retry with status="success" while keeping the DEGRADED warning
+        // in error_message. This preserves the alert signal even on
+        // schemas that only allow ('running','success','error').
+        if (health.degraded) {
+          console.warn(
+            "[PIPELINE_HEALTH] status='degraded' was rejected by DB — falling back to 'success' + error_message",
+          );
+          const fallback = { ...summary, status: "success" };
+          const { error: fallbackError } = await db
+            .from("pipeline_runs")
+            .update(fallback as never)
+            .eq("id", runId);
+          if (fallbackError) console.error("fallback pipeline_runs update also failed", fallbackError);
+        }
+      }
     }
-    return { whales, indicators, predictions, council, signals, trades, mode };
+    return {
+      whales, indicators, predictions, council, signals, trades, mode,
+      degraded: health.degraded,
+      degraded_reasons: health.degradedReasons,
+    };
   } catch (e) {
     const raw = serializeError(e);
     const message = `[step: ${step}] ${raw}`;
