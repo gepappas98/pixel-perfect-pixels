@@ -134,7 +134,11 @@ const ROTATION_MAX_WEAKEST_PNL_PCT = 0.5;
 
 const INDICATOR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const PREDICTION_MAX_AGE_MS = 30 * 60 * 1000;
+
+// ─── Council freshness TTL (default; regime-aware override below) ───
 const COUNCIL_MAX_AGE_MS = 30 * 60 * 1000;
+const COUNCIL_MAX_AGE_MS_TRENDING = 20 * 60 * 1000;
+const COUNCIL_MAX_AGE_MS_CALM = 45 * 60 * 1000;
 
 const STRATEGY_CACHE_TTL_MS = 60_000;
 
@@ -366,6 +370,25 @@ async function admin(): Promise<Admin> {
 
 let strategyCache: { config: StrategyConfig; ts: number } | null = null;
 let currentRegimeLabel: string | null = null;
+
+/* ───────────── Regime-aware helpers ───────────── */
+
+function isTrendingRegime(label: string | null): boolean {
+  if (!label) return false;
+  const l = label.toLowerCase();
+  return l.includes("trend") || l.includes("strong");
+}
+
+function isCalmRegime(label: string | null): boolean {
+  if (!label) return false;
+  const l = label.toLowerCase();
+  return (
+    l.includes("side") ||
+    l.includes("chop") ||
+    l.includes("rang") ||
+    l.includes("quiet")
+  );
+}
 
 async function fetchStrategy(): Promise<StrategyConfig> {
   const now = Date.now();
@@ -1285,7 +1308,28 @@ function councilEvaluation(whale: Row, mtf: MultiTfResult, prediction: Row) {
 
 const AI_VERDICT_TTL_MS = 25 * 60 * 1000;
 const AI_BATCH_MAX = 15;
-const AI_MIN_MINUTES_BETWEEN_BATCHES = 25;
+
+// ─── Dynamic Groq batch cadence (regime-aware) ───
+// In trending markets signals decay faster and regime shifts are more
+// consequential, so we refresh AI verdicts more aggressively. In calm /
+// sideways / choppy conditions we slow down to conserve tokens and stay
+// well below Groq's RPM/TPM limits.
+const AI_MIN_MINUTES_BETWEEN_BATCHES_DEFAULT = 25;
+const AI_MIN_MINUTES_BETWEEN_BATCHES_TRENDING = 15;
+const AI_MIN_MINUTES_BETWEEN_BATCHES_CALM = 40;
+
+function aiBatchIntervalMinutes(): number {
+  if (isTrendingRegime(currentRegimeLabel)) return AI_MIN_MINUTES_BETWEEN_BATCHES_TRENDING;
+  if (isCalmRegime(currentRegimeLabel)) return AI_MIN_MINUTES_BETWEEN_BATCHES_CALM;
+  return AI_MIN_MINUTES_BETWEEN_BATCHES_DEFAULT;
+}
+
+function councilMaxAgeMs(): number {
+  if (isTrendingRegime(currentRegimeLabel)) return COUNCIL_MAX_AGE_MS_TRENDING;
+  if (isCalmRegime(currentRegimeLabel)) return COUNCIL_MAX_AGE_MS_CALM;
+  return COUNCIL_MAX_AGE_MS;
+}
+
 const AI_RSI_OVERSOLD = 30;
 const AI_RSI_OVERBOUGHT = 70;
 const AI_WHALE_MIN_USD = 25_000;
@@ -1455,7 +1499,8 @@ export async function collectCouncilSignals(): Promise<number> {
   const freshAiSymbols = new Set(((freshAiRes.data ?? []) as { symbol: string }[]).map((r) => r.symbol));
   const lastAiAt = lastAiRes.data?.source_created_at ? new Date(lastAiRes.data.source_created_at).getTime() : 0;
   const minutesSinceLastAi = lastAiAt > 0 ? (Date.now() - lastAiAt) / 60_000 : Infinity;
-  const aiAllowed = minutesSinceLastAi >= AI_MIN_MINUTES_BETWEEN_BATCHES;
+  const aiMinMinutes = aiBatchIntervalMinutes();
+  const aiAllowed = minutesSinceLastAi >= aiMinMinutes;
 
   const perSymbol = new Map<string, { whale: Row; mtf: MultiTfResult; mtfRaw: MultiTfInput; prediction: Row }>();
   const aiCandidates: AiCandidate[] = [];
@@ -1505,9 +1550,18 @@ export async function collectCouncilSignals(): Promise<number> {
   if (aiAllowed) {
     aiCandidates.sort((a, b) => b.whaleUsd - a.whaleUsd);
     const aiBatch = aiCandidates.slice(0, AI_BATCH_MAX);
+    console.log(
+      `[GROQ] Batch allowed — regime=${currentRegimeLabel ?? "unknown"} ` +
+        `interval=${aiMinMinutes}min ` +
+        `sinceLast=${minutesSinceLastAi === Infinity ? "∞" : minutesSinceLastAi.toFixed(1) + "min"} ` +
+        `candidates=${aiBatch.length}/${aiCandidates.length}`,
+    );
     aiResults = await groqBatchCouncil(aiBatch);
   } else {
-    console.log(`[GROQ] Rate guard: skipping AI batch — only ${minutesSinceLastAi.toFixed(1)}min since last run (min ${AI_MIN_MINUTES_BETWEEN_BATCHES}min)`);
+    console.log(
+      `[GROQ] Rate guard: skipping AI batch — only ${minutesSinceLastAi.toFixed(1)}min since last run ` +
+        `(regime=${currentRegimeLabel ?? "unknown"}, min ${aiMinMinutes}min)`,
+    );
   }
 
   for (const [symbol, ctx] of perSymbol) {
@@ -1768,8 +1822,17 @@ export async function combineSignals(): Promise<number> {
   for (const [s, row] of latestPrediction) {
     if (!isFreshRow(row, "created_at", PREDICTION_MAX_AGE_MS, freshnessNow)) latestPrediction.delete(s);
   }
+
+  // Regime-aware council freshness TTL: shorter in trending markets so we
+  // don't over-rely on stale AI verdicts during fast regime shifts, longer
+  // in calm markets to avoid discarding still-valid analysis.
+  const councilTtlMs = councilMaxAgeMs();
+  console.log(
+    `[COUNCIL_TTL] regime=${currentRegimeLabel ?? "unknown"} ` +
+      `ttl=${(councilTtlMs / 60_000).toFixed(0)}min`,
+  );
   for (const [s, row] of latestCouncil) {
-    if (!isFreshRow(row, "source_created_at", COUNCIL_MAX_AGE_MS, freshnessNow)) latestCouncil.delete(s);
+    if (!isFreshRow(row, "source_created_at", councilTtlMs, freshnessNow)) latestCouncil.delete(s);
   }
 
   let created = 0;
