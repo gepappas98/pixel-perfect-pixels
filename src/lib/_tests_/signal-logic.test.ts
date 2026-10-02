@@ -30,6 +30,7 @@ vi.mock("../trading-settings.server", () => ({
 import {
   evaluateMultiTimeframe,
   predictionDirection,
+  predictionMagnitude,
   ruleBased,
   type MultiTfInput,
   type MultiTfResult,
@@ -171,7 +172,6 @@ describe("evaluateMultiTimeframe", () => {
   it("primary bull + fast bear + trend neutral → score 0.7, conflict=false", () => {
     const input: MultiTfInput = {
       primary: { signal: "bullish", price: 100, rsi: 55, raw: { vwap: 90 } },
-      // Neutral VWAP inputs για να μην κάνει override το fast
       fast: { signal: "bearish", price: 100, rsi: 50, raw: { vwap: 100 } },
       trend: { signal: "neutral", price: 100, rsi: 50, raw: { vwap: 100 } },
     };
@@ -267,6 +267,80 @@ describe("predictionDirection", () => {
   });
 });
 
+/* ──────────────────────── predictionMagnitude ──────────────────────── */
+
+describe("predictionMagnitude", () => {
+  it("returns 0 for null prediction", () => {
+    expect(predictionMagnitude(null)).toBe(0);
+  });
+
+  it("returns 0 when yes_price is missing", () => {
+    expect(predictionMagnitude({ question: "will BTC reach 100k" })).toBe(0);
+  });
+
+  it("returns 0 when question has no directional keywords", () => {
+    expect(
+      predictionMagnitude({ question: "will btc do something", yes_price: 0.9 }),
+    ).toBe(0);
+  });
+
+  it("returns 0 for 50% yes (dead center)", () => {
+    expect(
+      predictionMagnitude({ question: "will bitcoin reach 100k", yes_price: 0.5 }),
+    ).toBe(0);
+  });
+
+  it("returns 0 for 55% yes (still inside neutral band)", () => {
+    expect(
+      predictionMagnitude({ question: "will bitcoin reach 100k", yes_price: 0.55 }),
+    ).toBe(0);
+  });
+
+  it("returns 0 for 60% yes (boundary of neutral band)", () => {
+    expect(
+      predictionMagnitude({ question: "will bitcoin reach 100k", yes_price: 0.6 }),
+    ).toBe(0);
+  });
+
+  it("scales linearly: 70% yes → 0.25", () => {
+    expect(
+      predictionMagnitude({ question: "will bitcoin reach 100k", yes_price: 0.7 }),
+    ).toBeCloseTo(0.25, 5);
+  });
+
+  it("scales linearly: 80% yes → 0.5", () => {
+    expect(
+      predictionMagnitude({ question: "will bitcoin reach 100k", yes_price: 0.8 }),
+    ).toBeCloseTo(0.5, 5);
+  });
+
+  it("scales linearly: 90% yes → 0.75", () => {
+    expect(
+      predictionMagnitude({ question: "will bitcoin reach 100k", yes_price: 0.9 }),
+    ).toBeCloseTo(0.75, 5);
+  });
+
+  it("caps at 1.0: 100% yes → 1.0", () => {
+    expect(
+      predictionMagnitude({ question: "will bitcoin reach 100k", yes_price: 1.0 }),
+    ).toBe(1.0);
+  });
+
+  it("bearish question inverts: 80% yes → mag 0.5 (bearish direction)", () => {
+    // bearish question, yes=0.8 → up = 1 - 0.8 = 0.2 → distance = 0.6 → mag 0.5
+    expect(
+      predictionMagnitude({ question: "will bitcoin dip below 50k", yes_price: 0.8 }),
+    ).toBeCloseTo(0.5, 5);
+  });
+
+  it("bearish question extreme: 0% yes → mag 1.0", () => {
+    // up = 1 - 0 = 1.0 → distance = 1.0 → mag 1.0
+    expect(
+      predictionMagnitude({ question: "will bitcoin dip below 50k", yes_price: 0.0 }),
+    ).toBe(1.0);
+  });
+});
+
 /* ───────────────────────────── ruleBased ───────────────────────────── */
 
 describe("ruleBased — empty / neutral inputs", () => {
@@ -292,7 +366,11 @@ describe("ruleBased — empty / neutral inputs", () => {
 });
 
 describe("ruleBased — full bullish / bearish alignment", () => {
-  it("all-bullish balanced → buy with confidence 1.0", () => {
+  // FIX 1: magnitude-aware prediction contribution
+  //   yes_price = 0.8 → mag = 0.5 → contribution = 0.5 × 0.5 = 0.25
+  //   score = 1 + 1.69 + 0.25 + 0.75 = 3.69
+  //   max   = 1 + 1.69 + 0.5  + 0.75 = 3.94
+  it("all-bullish balanced (yes=0.8) → buy with ~0.936 confidence", () => {
     const result = ruleBased(
       { direction: "accumulation" },
       mtfBullishAligned,
@@ -300,17 +378,47 @@ describe("ruleBased — full bullish / bearish alignment", () => {
       { final_verdict: "BUY", conviction: 100 },
       BALANCED,
     );
-    // score = 1 + 1.69 + 0.5 + 0.75 = 3.94, max = 3.94 → confidence 1.0
+    expect(result.score).toBeCloseTo(3.69, 5);
+    expect(result.confidence).toBeCloseTo(3.69 / 3.94, 4);
+    expect(result.recommendation).toBe("buy");
+  });
+
+  it("all-bullish balanced (yes=1.0, mag=1.0) → buy with confidence 1.0", () => {
+    const result = ruleBased(
+      { direction: "accumulation" },
+      mtfBullishAligned,
+      { question: "will bitcoin reach 100k", yes_price: 1.0 },
+      { final_verdict: "BUY", conviction: 100 },
+      BALANCED,
+    );
+    // mag = 1.0 → prediction contribution = 0.5
+    // score = 1 + 1.69 + 0.5 + 0.75 = 3.94 = max → confidence 1.0
     expect(result.score).toBeCloseTo(3.94, 5);
     expect(result.confidence).toBeCloseTo(1, 5);
     expect(result.recommendation).toBe("buy");
   });
 
-  it("all-bearish balanced → sell with confidence 1.0", () => {
+  // FIX 2: same reasoning for bearish
+  it("all-bearish balanced (yes=0.2) → sell with ~0.936 confidence", () => {
     const result = ruleBased(
       { direction: "distribution" },
       mtfBearishAligned,
-      { question: "will bitcoin reach 100k", yes_price: 0.2 }, // bearish
+      { question: "will bitcoin reach 100k", yes_price: 0.2 },
+      { final_verdict: "SELL", conviction: 100 },
+      BALANCED,
+    );
+    // mag = 0.5 → contribution = 0.25
+    // score = -1 - 1.69 - 0.25 - 0.75 = -3.69
+    expect(result.score).toBeCloseTo(-3.69, 5);
+    expect(result.confidence).toBeCloseTo(3.69 / 3.94, 4);
+    expect(result.recommendation).toBe("sell");
+  });
+
+  it("all-bearish balanced (yes=0.0, mag=1.0) → sell with confidence 1.0", () => {
+    const result = ruleBased(
+      { direction: "distribution" },
+      mtfBearishAligned,
+      { question: "will bitcoin reach 100k", yes_price: 0.0 },
       { final_verdict: "SELL", conviction: 100 },
       BALANCED,
     );
@@ -384,19 +492,46 @@ describe("ruleBased — recommendation bands", () => {
   });
 
   it("score < 0.5 (abs) → hold", () => {
+    // yes=0.9 → mag = 0.75 → 0.5 * 0.1 * 0.75 = 0.0375, still < 0.5
     const result = ruleBased(
       null,
       mtf(),
-      { question: "will bitcoin reach 100k", yes_price: 0.9 }, // bullish +0.5 * 0.1 = 0.05
+      { question: "will bitcoin reach 100k", yes_price: 0.9 },
       null,
       TINY_PREDICTION,
     );
     expect(Math.abs(result.score)).toBeLessThan(0.5);
     expect(result.recommendation).toBe("hold");
   });
+
+  it("reasoning contains magnitude tag for prediction", () => {
+    const result = ruleBased(
+      null,
+      mtf(),
+      { question: "will bitcoin reach 100k", yes_price: 0.8 },
+      null,
+      BALANCED,
+    );
+    // With yes=0.8 → mag = 0.5 → tag shows (mag 50%)
+    expect(result.reasoning).toMatch(/prediction market bullish.*mag 50%/);
+  });
+
+  it("no magnitude tag when prediction is in neutral band", () => {
+    // yes=0.55 → mag = 0 → no contribution, no reasoning line added
+    const result = ruleBased(
+      null,
+      mtf(),
+      { question: "will bitcoin reach 100k", yes_price: 0.55 },
+      null,
+      BALANCED,
+    );
+    // predictionDirection returns neutral → no reasoning line at all
+    expect(result.reasoning).not.toContain("prediction market");
+  });
 });
 
 describe("ruleBased — AI AVOID handling", () => {
+  // FIX 3: magnitude-aware score
   it("AVOID with conviction ≥ 60 downgrades strong buy to watch", () => {
     const result = ruleBased(
       { direction: "accumulation" },
@@ -405,7 +540,9 @@ describe("ruleBased — AI AVOID handling", () => {
       { final_verdict: "AVOID", conviction: 80 },
       BALANCED,
     );
-    expect(result.score).toBeCloseTo(3.19, 5); // 1 + 1.69 + 0.5 = 3.19 (AI adds 0)
+    // prediction contribution = 0.5 × 1.0 × 0.5 = 0.25
+    // score = 1 + 1.69 + 0.25 + 0 (AVOID adds nothing) = 2.94
+    expect(result.score).toBeCloseTo(2.94, 5);
     expect(result.recommendation).toBe("watch");
     expect(result.reasoning).toContain("AVOID");
   });
@@ -418,13 +555,13 @@ describe("ruleBased — AI AVOID handling", () => {
       { final_verdict: "AVOID", conviction: 40 },
       BALANCED,
     );
+    // score = 1 + 1.69 + 0.25 = 2.94, still >= 1.5 → buy
     expect(result.recommendation).toBe("buy");
   });
 });
 
 describe("ruleBased — MTF gate integration", () => {
   it("buy rejected by MTF gate when enabled → hold with reason", () => {
-    // whale-focused: score 2.0 → buy, αλλά MTF counts 1/3 bull → reject
     const mtfGateConfig: MtfGateConfig = {
       enabled: true,
       shadow_mode: false,
