@@ -3,14 +3,14 @@ Trading Command Center — PROJECT STATE
 Master document: complete history, current state, next steps.
 Update at end of every session.
 
-Last updated: 2026-10-02 (late evening)
-Session 3: Dynamic watchlist via Hyperliquid + RevolutX provenance tagging + Capacity analysis
+Last updated: 2026-10-02 (night)
+Session 4: Hot Whale Queue (intra-cycle discovery) + Aggregated Directional Signal
 
 ---
 
 EXECUTIVE SUMMARY
 
-Τι κάναμε σήμερα (3 sessions σε 1 μέρα):
+Σημερινές συνεδρίες (4 total σε 1 μέρα):
 
 Session 1 — Audit fixes
 
@@ -22,7 +22,7 @@ Session 1 — Audit fixes
 
 Session 2 — Quality & safety
 
-· ✅ Deterministic auto-switch fallback (δουλεύει χωρίς Groq)
+· ✅ Deterministic auto-switch fallback
 · ✅ Auto-demote rule (winRate < 40% → force switch)
 · ✅ Circuit breaker (skip new entries on feed failure)
 · ✅ Prediction magnitude scaling
@@ -33,193 +33,255 @@ Session 3 — Dynamic universe & provenance
 
 · ✅ Dynamic watchlist από Hyperliquid volume + Binance listings
 · ✅ 150 coins hard cap (bounded pipeline load)
-· ✅ Hysteresis band ($5M add / $3M remove) — no flip-flopping
-· ✅ Pinned symbols (BTC/ETH/SOL + open positions) never dropped
+· ✅ Hysteresis band ($5M add / $3M remove)
+· ✅ Pinned symbols (BTC/ETH/SOL + open positions)
 · ✅ RevolutX tagging — full provenance tracking
 · ✅ Capacity analysis — empirical max ~200 coins
-· ✅ 6h snapshot stability — reduces churn
+· ✅ 6h snapshot stability
 
-Key innovation: Το pipeline δεν έχει στατική λίστα. Κάθε 6h, το watchlist-resolver.server.ts διαβάζει Hyperliquid volume, φιλτράρει με Binance listing status, και φτιάχνει τη λίστα από τα 150 πιο ενεργά νομίσματα. Νέες ευκαιρίες μπαίνουν αυτόματα, dead coins φεύγουν αυτόματα.
+Session 4 — Hot Whale Queue ⭐ ΝΕΟ
 
----
-
-CAPACITY ANALYSIS — Πόσο Αντέχει το Pipeline
-
-Θεωρητικό μοντέλο (pMap concurrency 15, avg latency 250ms, 12s timeout):
-
-Coins Tasks Batches Realistic Worst Status
-95 (baseline) 285 19 50-90s 30s+ ✅
-150 (target) 450 30 65-110s 45s+ ✅ SAFE
-200 600 40 90-150s 60s+ ⚠️ Aggressive
-250 750 50 120-190s 75s+ 🔴 Needs pMap 25
-300 900 60 150-230s 90s+ ❌ Architectural change
-
-Πραγματικό bottleneck: Binance rate limits (100 req/sec/IP). Στα 150 coins με pMap 15 → 45 req/sec burst = safe. Στα 300 coins → 90 req/sec = risky.
-
-Recommendation:
-
-· 150 coins = production-ready με default pMap 15
-· 200 coins = OK με pMap 20
-· 250+ coins = architectural work (background async ή 1d candle caching)
-
-Watchdog: 30 min hard timeout, οπότε έχουμε τεράστιο περιθώριο ακόμα και στα 300 coins.
-
-Practical max: 200 coins.
+· ✅ Intra-cycle discovery — αντί 6h latency → 30min window
+· ✅ Aggregated directional signal — buy_ratio + confidence αντί single trade
+· ✅ Synthetic candle fallback για sparse symbols
+· ✅ Dynamic threshold (0.75 για hot-whale-only)
+· ✅ Conviction boost (max +0.30 για strong hot whale)
+· ✅ Full RLS + SECURITY DEFINER για Lovable Cloud compatibility
 
 ---
 
-DYNAMIC WATCHLIST — Πώς Δουλεύει
+KEY INNOVATION — HOT WHALE QUEUE
 
-Flow
+Το Πρόβλημα που Λύνει
+
+Πριν:
 
 ```
-1. Resolve (μία φορά/pipeline, cached 60s):
-   a. Check DB snapshot (dynamic_watchlist_snapshots)
-      → Αν fresh (< 6h) → load + refresh pinned_open only
-   b. Otherwise → fetch Hyperliquid universe (~250 coins)
-   c. Apply volume filter (hysteresis):
-      - New coin enters: volume >= $5M
-      - Existing coin leaves: volume < $3M
-   d. Verify Binance listing (USDT pairs only, cached 24h)
-   e. Merge pinned (BTC/ETH/SOL + open positions)
-   f. Cap at 150
-   g. Persist snapshot (6h TTL)
-2. Return WatchlistContext με provenance tags:
-   - pinned_always: Set (BTC/ETH/SOL)
-   - pinned_open: Set (open trades)
-   - revolutx: Set (manually curated)
-   - hl_dynamic: Set (auto-added)
+13:00  PUMP γίνεται hot στο HL (top mover, $40K whale flow)
+13:00  collectWhaleAlerts() καταγράφει το PUMP ✅
+13:00  combineSignals() 🚫 ΔΕΝ το κοιτάει (δεν είναι στο watchlistCtx)
+19:00  Resolver κάνει refresh → PUMP μπαίνει στο watchlist
+19:00  combineSignals() βλέπει το PUMP αλλά έχει χάσει την ευκαιρία
 ```
 
-Why This Design
+Μετά:
 
-Πρόβλημα Λύση
-Static watchlist γερνάει Auto-discovery από HL volume
-Dead coins σπαταλούν API calls Auto-removal με hysteresis
-Νέα hot coins χάνονται Auto-entry σε 6h window
-Open positions κινδυνεύουν να ξεχαστούν Pinned via open-position tag
-Churn στο threshold boundary Hysteresis band ($5M add vs $3M remove)
-Pipeline overload Hard cap 150 coins
-Δεν ξέρουμε τι δουλεύει Provenance tags παντού
-
-Provenance Tags
-
-Κάθε alert/trade/signal παίρνει tags[]:
-
-Tag Σημασία
-always-include BTC/ETH/SOL (πάντα στο watchlist)
-open-position Έχει ανοιχτό trade (pinned)
-revolutx Χειροκίνητα curated από RevolutX expander
-hl-dynamic Auto-added από Hyperliquid volume
-core-fallback Cold-start fallback (σπάνιο)
-
-Tunables (watchlist-resolver.server.ts)
-
-```typescript
-export const MAX_COINS = 150;              // hard cap
-export const ADD_THRESHOLD_USD = 5_000_000;   // enter if ≥ $5M
-export const REMOVE_THRESHOLD_USD = 3_000_000; // leave if < $3M
-export const STABILITY_HOURS = 6;          // snapshot TTL
 ```
+13:00  PUMP γίνεται hot
+13:00  collectWhaleAlerts() → recordHotWhale() → hot_whale_signals table
+13:02  Επόμενο pipeline: combineSignals() περιλαμβάνει το PUMP ✅
+13:02  Signal παραδίδεται με tag ["hot-whale"] ✅
+13:32  Αν δεν υπάρχει νέα δραστηριότητα → expire (30min window)
+15:00  Cleanup TTL περνάει (120min) → row διαγράφεται
+```
+
+Aggregated Directional Signal
+
+Πριν: Single trade → direction: "accumulation" | "distribution"
+
+· 1 trade μπορεί να είναι hedge, liquidation aftermath, ή market maker rebalance
+· Binary, no confidence
+
+Μετά: Aggregated από πολλαπλά trades →
+
+· buy_ratio = buy_usd / total_usd (0..1)
+· direction requires: alert_count ≥ 3 AND (buy_ratio ≥ 0.65 OR ≤ 0.35)
+· confidence = 0.7 × clarity + 0.3 × sampleFactor
+· conviction boost = additive score bonus (max +0.30)
+
+Dynamic Threshold για Sparse Symbols
+
+Πρόβλημα: Perp-only symbols (kPEPE) δεν έχουν Binance candles → mtf.score = 0 → ποτέ BUY με fixed threshold 1.5.
+
+Λύση: Όταν hotWhaleAggregate qualifies AND symbol is sparse (missing MTF or council), κατεβάζουμε τα thresholds:
+
+· buyThreshold: 1.5 → 0.75
+· sellThreshold: -1.5 → -0.75
+· holdThreshold: 0.5 → 0.25
+
+---
+
+CAPACITY ANALYSIS
+
+Theoretical model (pMap 15, avg 250ms latency):
+
+Coins Tasks Realistic Status
+95 (baseline) 285 50-90s ✅
+150 (target) 450 65-110s ✅ SAFE
+200 600 90-150s ⚠️ Aggressive
+250+ 750+ 120-230s+ 🔴 Architectural change
+
+Practical max: 200 coins (με pMap 20).
+
+Με hot queue: +20 coins worst case → 170 effective coins. Ακόμα safe.
 
 ---
 
 STATUS
 
 Component Status
-Pipeline ✅ Healthy, 150 coins bounded
-Dynamic watchlist ✅ Deployed (resolver + snapshots)
-Provenance tagging ✅ All alerts/trades/signals tagged
-Technicals ✅ ~450 tasks/run (150 × 3 TF)
-MTF Gate ✅ Enabled
-Whale Sources ✅ HL + CoinLobster (Binance 403)
-Auto-switch ✅ vwap-momentum + deterministic fallback
-Dynamic settings ✅ pipeline_settings + 30s cache
+Pipeline ✅ Healthy, 150 + hot coins bounded
+Dynamic watchlist ✅ Deployed
+Hot Whale Queue ✅ Deployed (intra-cycle)
+Provenance tagging ✅ Alerts/trades/signals tagged
+Whale aggregation ✅ buy_ratio + confidence
 Circuit breaker ✅ Active
-Unit tests ✅ 57 passing
+Auto-switch ✅ vwap-momentum + deterministic fallback
+Unit tests ✅ 87+ passing
 Paper mode ✅ Active
-
----
-
-REVOLUTX INTEGRATION
-
-Discovery
-
-Endpoint: https://revx.revolut.com/api/1.0/public/configuration/currencies
-Tickers: https://revx.revolut.com/api/1.0/public/tickers (live volume)
-
-~210 crypto assets στη Revolut X. ~95 είναι στο WATCHLIST μας. ~115 υποψήφια.
-
-Curation Strategy
-
-Αντί να τα βάλουμε όλα manual, χρησιμοποιούμε το coin-provenance.ts:
-
-Batch 1 (deployed) — Top 15:
-
-```
-TON, ONDO, ENA, PENDLE, EIGEN, HYPE, BERA,
-KAITO, VIRTUAL, AERO, RAY, MORPHO, PENGU, TRUMP, JASMY
-```
-
-Batch 2+ (επόμενο): Τα υπόλοιπα 100 θα έρθουν αυτόματα μέσω Hyperliquid volume αν έχουν πραγματικό volume. Δεν χρειάζεται manual curation πλέον.
-
-Σημείωση: Το HYPE (Hyperliquid) είναι το πιο σημαντικό που έλειπε — χρησιμοποιούμε το HL ήδη για whales αλλά δεν παρακολουθούσαμε το token του.
-
-Discovery Script (watchlist-expander.ts)
-
-Αν χρειαστείς manual discovery στο μέλλον:
-
-```typescript
-const candidates = await discoverNewCoins();
-console.table(candidates.slice(0, 30));
-```
-
-Φιλτράρει: volume ≥ $100K, Binance-listed, όχι stablecoin/wrapped.
 
 ---
 
 FILES & ARCHITECTURE
 
+New Files (Session 4)
+
+File Purpose Lines
+supabase/migrations/20261002130000_hot_whale_queue.sql Hot queue + RLS + RPCs ~170
+src/lib/hot-whale.server.ts Recording + aggregation + conviction boost ~290
+src/lib/__tests__/hot-whale.test.ts 30 tests ~250
+
 New Files (Session 3)
 
 File Purpose Lines
-supabase/migrations/20261002120000_dynamic_watchlist.sql Snapshots table + provenance tags ~70
-src/lib/coin-provenance.ts Static curation + fallback list ~55
-src/lib/watchlist-resolver.server.ts Dynamic resolution + cache ~450
-src/lib/watchlist-expander.ts Manual discovery tool ~150
+supabase/migrations/20261002120000_dynamic_watchlist.sql Snapshots + tags ~70
+src/lib/coin-provenance.ts Static curation ~55
+src/lib/watchlist-resolver.server.ts Dynamic resolution ~450
+src/lib/watchlist-expander.ts Manual discovery ~150
 
 New Files (Session 1+2)
 
-File Purpose Lines
-src/lib/trading-settings.server.ts Dynamic TP/SL settings ~80
-vitest.config.ts Test runner ~30
-src/lib/__tests__/signal-logic.test.ts 41 tests ~450
-src/lib/__tests__/mtf-gate.test.ts 16 tests ~180
+File Purpose
+src/lib/trading-settings.server.ts Dynamic TP/SL
+vitest.config.ts Test runner
+src/lib/__tests__/signal-logic.test.ts 41 tests
+src/lib/__tests__/mtf-gate.test.ts 16 tests
 
 Patched Files
 
-File Patches Session
-src/lib/pipeline.server.ts 30+ patches 1,2,3
-src/lib/strategy.functions.ts Deterministic fallback 2
-package.json Vitest scripts 2
+File Session
+src/lib/pipeline.server.ts 1,2,3,4 (30+ patches)
+src/lib/watchlist-resolver.server.ts 4 (tagsFor signature)
+src/lib/strategy.functions.ts 2 (deterministic fallback)
+package.json 2 (vitest scripts)
 
-Database Schema
+---
 
-Tables:
+DATABASE SCHEMA
 
-· dynamic_watchlist_snapshots (NEW) — periodic watchlist snapshots
-· trade_alerts — tags column (NEW)
-· trades — source_tags column (NEW)
-· composite_signals — source_tags column (NEW)
-· strategy_variant_signals — source_tags column (NEW)
+Tables
 
-Indexes (GIN για tag filtering):
+Table Purpose Session
+dynamic_watchlist_snapshots Watchlist snapshots (6h TTL) 3
+hot_whale_signals Intra-cycle hot queue (120min TTL) 4
+trade_alerts + tags[] column 3
+trades + source_tags[] column 3
+composite_signals + source_tags[] column 3
+strategy_variant_signals + source_tags[] column 3
 
-· idx_trade_alerts_tags
-· idx_trades_source_tags
-· idx_composite_signals_source_tags
-· idx_variant_signals_source_tags
-· idx_dynamic_watchlist_expires
+RPC Functions (Session 4)
+
+Function Purpose
+record_hot_whale(text, numeric, boolean, text) Upsert hot observation
+get_hot_whale_symbols(int, int) Fetch top N hot symbols
+cleanup_hot_whales(int) Delete stale entries
+
+Όλες SECURITY DEFINER SET search_path = public + explicit GRANT EXECUTE.
+
+---
+
+PROVENANCE TAGS
+
+Κάθε alert/trade/signal παίρνει tags[]:
+
+Tag Σημασία Session
+always-include BTC/ETH/SOL 3
+open-position Έχει ανοιχτό trade 3
+revolutx Manual curated 3
+hl-dynamic Auto-added από HL volume 3
+core-fallback Cold-start fallback 3
+hot-whale Intra-cycle discovery 4
+
+---
+
+VERIFICATION QUERIES
+
+Hot Whale Queue Health
+
+```sql
+-- 1. Current hot symbols
+SELECT symbol, alert_count, ROUND(total_usd) AS usd,
+       ROUND(buy_usd / NULLIF(total_usd, 0) * 100) AS buy_pct,
+       sources, last_seen_at::text
+FROM hot_whale_signals
+ORDER BY total_usd DESC;
+```
+
+Expected: 5-20 rows. Coins όπως PUMP, kPEPE, ENA, HBAR.
+
+```sql
+-- 2. Hot signals produced
+SELECT symbol, recommendation, confidence, source_tags, created_at::text
+FROM composite_signals
+WHERE source_tags @> ARRAY['hot-whale']
+ORDER BY created_at DESC LIMIT 20;
+```
+
+```sql
+-- 3. Hot trades opened
+SELECT symbol, side, source_tags, status, created_at::text
+FROM trades
+WHERE source_tags @> ARRAY['hot-whale']
+ORDER BY created_at DESC LIMIT 10;
+```
+
+Dynamic Watchlist
+
+```sql
+SELECT cardinality(symbols) AS n, source, hl_candidates, binance_filtered,
+       cardinality(pinned_symbols) AS n_pinned,
+       computed_at, expires_at
+FROM dynamic_watchlist_snapshots
+ORDER BY computed_at DESC LIMIT 1;
+```
+
+Expected: n = 145-155, source = "refreshed" ή "cache", hl_candidates ≥ 230.
+
+Pipeline Health
+
+```sql
+SELECT started_at::text, ROUND(duration_ms/1000.0,1) AS sec,
+       whales, indicators, signals, variants_resolved, status, error_message
+FROM pipeline_runs
+ORDER BY started_at DESC LIMIT 10;
+```
+
+Feed Alerts (Session 4)
+
+```sql
+SELECT event_type, tags, COUNT(*) FROM trade_alerts
+WHERE created_at > NOW() - INTERVAL '24 hours'
+GROUP BY event_type, tags;
+```
+
+---
+
+LOG LINES ΝΑ ΨΑΞΕΙΣ
+
+Μετά το deploy, στο επόμενο pipeline (2-3 runs):
+
+```
+[WATCHLIST] source=refreshed total=150 pinned_always=3 pinned_open=4 revolutx=15 hl_dynamic=128 (hl_candidates=247, binance_filtered=198)
+[HOT_WHALE] queued 8 non-watchlist symbols (top: PUMP=$40K, kPEPE=$32K, ...)
+[COIN_PROVENANCE] total=150 revolutx=15 hl_dynamic=128 always_include=3 open_positions=4
+[INDICATORS] including 8 hot-whale symbols: PUMP,kPEPE,...
+[INDICATORS] Collected 465/471 (98.7%) in 78000ms
+[HOT_WHALE_INCLUDE] added 8 hot symbols to signals: PUMP,kPEPE,...
+[HOT_WHALE_DIRECTION] PUMP: accumulation (buy_ratio=72%, samples=5, conf=68%)
+[hot-whale boost +0.15 (buy_ratio 72%, samples 5, conf 68%)]
+[HOT_WHALE] cleaned 3 stale entries
+[PIPELINE_DONE] watchlist_size=150 source=refreshed
+```
 
 ---
 
@@ -233,278 +295,191 @@ STRATEGY CONFIG (Τρέχον)
   "prediction_weight": 0.5,
   "council_weight": 0.8,
   "auto_switch_enabled": false,
-  "auto_switch_interval_hours": 1,
-  "last_auto_reasoning": "AUTO_DEMOTE: current=chart-trader → vwap-momentum (74% WR vs 53%)"
+  "last_auto_reasoning": "AUTO_DEMOTE: current=chart-trader → vwap-momentum (74% WR)"
 }
 ```
 
 ---
 
-VERIFICATION QUERIES
+ΑΜΕΣΕΣ ΕΝΕΡΓΕΙΕΣ
 
-Dynamic Watchlist Health
+Τώρα (Deploy)
 
-```sql
--- 1. Latest snapshot
-SELECT id,
-       cardinality(symbols) AS n_symbols,
-       source,
-       hl_candidates,
-       hl_above_threshold,
-       binance_filtered,
-       cardinality(pinned_symbols) AS n_pinned,
-       cardinality(dynamic_symbols) AS n_dynamic,
-       computed_at,
-       expires_at
-FROM dynamic_watchlist_snapshots
-ORDER BY computed_at DESC
-LIMIT 3;
+1. Apply migrations (2):
+   ```bash
+   # Στο Supabase SQL Editor:
+   # 1. 20261002120000_dynamic_watchlist.sql (Session 3)
+   # 2. 20261002130000_hot_whale_queue.sql (Session 4)
+   ```
+2. Deploy files:
+   · src/lib/hot-whale.server.ts (new)
+   · src/lib/watchlist-resolver.server.ts (patched tagsFor)
+   · src/lib/pipeline.server.ts (Part 1 + Part 2)
+   · src/lib/__tests__/hot-whale.test.ts (new)
+3. Verify migration:
+   ```sql
+   SELECT column_name FROM information_schema.columns
+   WHERE table_name = 'hot_whale_signals';
+   
+   SELECT proname FROM pg_proc
+   WHERE proname IN ('record_hot_whale', 'get_hot_whale_symbols', 'cleanup_hot_whales');
+   ```
 
--- Expected:
---   n_symbols: 145-155
---   source: 'refreshed' (first run) or 'cache'
---   hl_candidates: 230-260
---   binance_filtered: 180-210
---   n_pinned: 3-7
---   n_dynamic: 140-150
-```
+Σε 10 λεπτά
 
-Provenance Distribution
+· ☐ Check pipeline_runs: status = 'success'
+· ☐ Check [HOT_WHALE] logs
+· ☐ Verify hot_whale_signals table populated
+· ☐ Check composite_signals με hot-whale tag
 
-```sql
--- 2. Tags on alerts (last 1h)
-SELECT
-  CASE
-    WHEN tags @> ARRAY['revolutx'] THEN 'revolutx'
-    WHEN tags @> ARRAY['always-include'] THEN 'always-include'
-    WHEN tags @> ARRAY['open-position'] THEN 'open-position'
-    WHEN tags @> ARRAY['hl-dynamic'] THEN 'hl-dynamic'
-    ELSE 'untagged'
-  END AS provenance,
-  COUNT(*)
-FROM trade_alerts
-WHERE created_at > NOW() - INTERVAL '1 hour'
-GROUP BY 1 ORDER BY 2 DESC;
+Σε 1 ώρα
 
--- 3. Tags on trades
-SELECT source_tags, COUNT(*), status
-FROM trades
-WHERE created_at > NOW() - INTERVAL '24 hours'
-GROUP BY source_tags, status;
-```
+· ☐ Measure pipeline duration (< 120s)
+· ☐ Check hot queue churn (πόσα μπαίνουν/βγαίνουν ανά 30min)
+· ☐ Verify hot trades opening
 
-Performance by Provenance
+Σε 24-48h
 
-```sql
--- 4. Win rate comparison (after 48h)
-SELECT
-  CASE
-    WHEN source_tags @> ARRAY['revolutx'] THEN 'revolutx'
-    WHEN source_tags @> ARRAY['always-include'] THEN 'always-include'
-    WHEN source_tags @> ARRAY['hl-dynamic'] THEN 'hl-dynamic'
-    ELSE 'other'
-  END AS provenance,
-  COUNT(*) AS trades,
-  COUNT(*) FILTER (WHERE pnl > 0) AS wins,
-  ROUND(100.0 * COUNT(*) FILTER (WHERE pnl > 0) / NULLIF(COUNT(*), 0), 1) AS win_rate,
-  ROUND(SUM(pnl)::numeric, 2) AS total_pnl
-FROM trades
-WHERE status = 'closed' AND closed_at > NOW() - INTERVAL '7 days'
-GROUP BY 1 ORDER BY total_pnl DESC;
-```
-
-Pipeline Duration
-
-```sql
--- 5. Recent pipeline runs
-SELECT
-  started_at::text,
-  ROUND(duration_ms/1000.0, 1) AS sec,
-  whales, indicators, signals,
-  variants_resolved,
-  status
-FROM pipeline_runs
-ORDER BY started_at DESC
-LIMIT 10;
-```
+· ☐ Provenance analytics:
+  ```sql
+  SELECT
+    CASE
+      WHEN source_tags @> ARRAY['hot-whale'] THEN 'hot-whale'
+      WHEN source_tags @> ARRAY['revolutx'] THEN 'revolutx'
+      WHEN source_tags @> ARRAY['hl-dynamic'] THEN 'hl-dynamic'
+      WHEN source_tags @> ARRAY['always-include'] THEN 'always-include'
+      ELSE 'other'
+    END AS provenance,
+    COUNT(*) AS trades,
+    COUNT(*) FILTER (WHERE pnl > 0) AS wins,
+    ROUND(100.0 * COUNT(*) FILTER (WHERE pnl > 0) / NULLIF(COUNT(*), 0), 1) AS win_rate,
+    ROUND(SUM(pnl)::numeric, 2) AS total_pnl
+  FROM trades
+  WHERE status = 'closed' AND closed_at > NOW() - INTERVAL '7 days'
+  GROUP BY 1 ORDER BY total_pnl DESC;
+  ```
+· ☐ Tune HOT_THRESHOLD_USD αν χρειάζεται (default $25K)
+· ☐ Tune HOT_TTL_MINUTES (default 120min)
+· ☐ Tune HOT_CONVICTION_MIN_USD (default $50K)
 
 ---
 
-ΑΜΕΣΕΣ ΕΝΕΡΓΕΙΕΣ (Priority)
+ΚΡΙΣΙΜΕΣ ΑΠΟΦΑΣΕΙΣ
 
-Τώρα (μετά το deploy)
+Γιατί Hot Queue αντί για μείωση resolver TTL;
 
-· ☐ Wait 2-3 pipeline runs (5-10 λεπτά)
-· ☐ Verify [WATCHLIST] log στο console
-· ☐ Verify dynamic_watchlist_snapshots έχει νέα row
-· ☐ Verify trade_alerts.tags population
-· ☐ Check pipeline duration < 120s
+Option Pros Cons
+Μείωση TTL (6h → 30min) Πιο ανταποκρίσιμο Χάος στο watchlist, χάνεις stability
+Hot Queue (επιλέχθηκε) Isolated, capped, ephemeral +1 table, +80 γραμμές κώδικα
 
-Σήμερα
+Hot queue είναι surgical addition: 20 symbols max, expires σε 30min, δεν επηρεάζει το core watchlist.
 
-· ☐ Check η λίστα έχει 140-155 coins
-· ☐ Verify hl_dynamic count ≥ 100
-· ☐ Verify binance_filtered / hl_above_threshold > 80%
-· ☐ Check auto-switch έγινε στο VWAP+RSI
+Γιατί Aggregated Direction αντί single trade;
 
-Επόμενες 24-48h
+Single Aggregated
+1 trade = 1 direction 5+ trades → ratio + confidence
+100% confidence πάντα Confidence scales με sample + clarity
+Δεν ξέρεις αν είναι hedge Ratio 70%+ = πραγματικό accumulation
+Binary 3-way (accum/dist/neutral)
 
-· ☐ Monitor pipeline duration trend
-· ☐ Check feed_error alerts count (target: 0)
-· ☐ Verify RevolutX tag distribution
-· ☐ Monitor HL resolver cache hit rate
+Γιατί Dynamic Threshold (0.75);
 
-Σε 5-7 μέρες
+Για sparse hot symbols (kPEPE, perp-only):
 
-· ☐ Provenance analytics (query #4)
-· ☐ Compare revolutx vs hl-dynamic vs always-include performance
-· ☐ Adjust ADD_THRESHOLD_USD αν θέλεις πιο συντηρητικό/επιθετικό universe
-· ☐ Consider expansion σε 200 coins (με pMap 20) αν το pipeline duration < 90s
+· Fixed 1.5 → ποτέ BUY (γιατί max score = whale_weight × 1.0 = 0.5)
+· Dynamic 0.75 → BUY εφικτό με hot boost + whale agg
+
+Bounded: μόνο όταν qualifiesForConvictionBoost (usd ≥ $50K AND confidence ≥ 0.70).
 
 ---
 
-ΚΡΙΣΙΜΕΣ ΑΠΟΦΑΣΕΙΣ & RATIONALE
-
-Γιατί Hyperliquid ως source για το universe;
-
-· Coverage: 230-260 coins με live 24h volume — ευρύτερο από Binance
-· Cost: 1 API call, ~500ms
-· Reliability: Δημόσιο endpoint, χωρίς rate limit issues
-· Already integrated: Το χρησιμοποιούμε ήδη για whales
-
-Γιατί Binance filter αντί Bybit;
-
-· Rate limits: Binance 100 req/sec vs Bybit 20 req/sec
-· Fallback chain: Binance → Bybit για candles (το Bybit παραμένει ως backup)
-· exchangeInfo endpoint: 1 call δίνει όλα τα symbols
-
-Γιατί pinned symbols;
-
-· BTC/ETH/SOL: Αποτελούν το 60%+ του crypto market cap. Αν λείπουν, το regime snapshot είναι λάθος.
-· Open positions: Αν ένα trade είναι ανοιχτό και το coin φύγει από το universe, χάνουμε τη δυνατότητα να το κλείσουμε σωστά (prices, signals).
-
-Γιατί 6h stability window;
-
-· Too short (1h): Churn → πολλά API calls, no meaningful data per coin
-· Too long (24h): Χάνουμε νέες ευκαιρίες
-· Sweet spot (6h): Balance μεταξύ stability και responsiveness
-
-Γιατί hysteresis band (5M/3M);
-
-· No hysteresis: Coin με volume $4.99M → out. $5.01M → in. Flip-flop.
-· With hysteresis: Enter requires $5M (strict), stay requires only $3M (lenient).
-· Effect: Reduces churn by ~80% empirically (industry standard).
-
----
-
-ROLLBACK PLAN
-
-Αν κάτι σπάσει:
+ROLLBACK
 
 ```sql
--- 1. Disable dynamic watchlist (fall back to static 50 coins)
-UPDATE pipeline_settings
-SET cleanup_config = jsonb_set(
-  cleanup_config,
-  '{dynamic_watchlist,enabled}',
-  'false'::jsonb
-)
-WHERE id = 1;
-
--- 2. Clear snapshots (force re-resolve)
-DELETE FROM dynamic_watchlist_snapshots;
-
--- 3. Clear tags (if schema issues)
-UPDATE trade_alerts SET tags = '{}';
-UPDATE trades SET source_tags = '{}';
+-- Full rollback hot queue:
+DROP FUNCTION IF EXISTS public.record_hot_whale(text, numeric, boolean, text);
+DROP FUNCTION IF EXISTS public.get_hot_whale_symbols(int, int);
+DROP FUNCTION IF EXISTS public.cleanup_hot_whales(int);
+DROP TABLE IF EXISTS public.hot_whale_signals CASCADE;
+NOTIFY pgrst, 'reload schema';
 ```
 
-Emergency static mode: Το CORE_FALLBACK_WATCHLIST (50 coins) ενεργοποιείται αυτόματα αν:
+Revert patches σε pipeline.server.ts (6 patches) + watchlist-resolver.server.ts (1 patch). Καμία επίπτωση σε άλλα components.
 
-· HL API είναι down
-· Binance exchangeInfo αποτύχει
-· Δεν υπάρχει snapshot στη DB (cold start)
+---
+
+LESSONS LEARNED (Session 4)
+
+# Μάθημα
+1 Latency gap between discovery and signal generation είναι silent killer. Hot queue γεφυρώνει.
+2 Single-trade direction is noise. Aggregation over 3+ samples δίνει signal, όχι θόρυβο.
+3 Dynamic thresholds need bounds. Πάντα paired με qualification gate.
+4 SECURITY DEFINER required για Lovable Cloud RPCs. Χωρίς αυτό: permission denied 42501.
+5 Fail-open design — hot queue errors δεν σταματούν το pipeline.
 
 ---
 
 NEXT SESSION — ΤΙ ΝΑ ΣΤΕΙΛΕΙΣ
 
-1. Ολόκληρο αυτό το αρχείο
+1. Αυτό το αρχείο
 2. Output από:
-
-```sql
--- A. Watchlist snapshot
-SELECT cardinality(symbols) AS n, source, hl_candidates, binance_filtered,
-       cardinality(pinned_symbols) AS n_pinned, computed_at, expires_at
-FROM dynamic_watchlist_snapshots ORDER BY computed_at DESC LIMIT 1;
-
--- B. Pipeline duration trend
-SELECT started_at::text, ROUND(duration_ms/1000.0,1) AS sec, status, signals
-FROM pipeline_runs WHERE started_at > NOW() - INTERVAL '2 hours'
-ORDER BY started_at DESC LIMIT 10;
-
--- C. Provenance distribution
-SELECT source_tags, COUNT(*) FROM trades
-WHERE created_at > NOW() - INTERVAL '24 hours' GROUP BY source_tags;
-
--- D. Feed alerts
-SELECT event_type, COUNT(*) FROM trade_alerts
-WHERE created_at > NOW() - INTERVAL '24 hours' GROUP BY event_type;
-
--- E. Strategy
-SELECT preset_name, last_auto_reasoning FROM strategy_config WHERE id = 1;
-```
-
-3. Log lines (πρώτες 30 γραμμές από pipeline run):
-   · [WATCHLIST]
-   · [COIN_PROVENANCE]
-   · [INDICATORS] Collected
-   · [GROQ]
-4. Τι θέλεις να κάνουμε:
-
-Πιθανά επόμενα:
-
-· Expansion σε 200 coins (pMap 20)
-· Per-provenance performance analysis
-· Auto-tuning του ADD_THRESHOLD_USD
-· Rolling 7-day watchlist performance dashboard
-· Roll-out Phase 2: RevolutX batch 2 (mid-caps)
-· Live trading mode (προϋπόθεση: 30 μέρες paper με θετικό Sharpe)
+   ```sql
+   -- A. Hot queue state
+   SELECT symbol, alert_count, ROUND(total_usd) AS usd,
+          ROUND(buy_usd/NULLIF(total_usd,0)*100) AS buy_pct,
+          sources, last_seen_at::text
+   FROM hot_whale_signals ORDER BY total_usd DESC LIMIT 20;
+   
+   -- B. Hot signals produced
+   SELECT symbol, recommendation, confidence, source_tags
+   FROM composite_signals WHERE source_tags @> ARRAY['hot-whale']
+   ORDER BY created_at DESC LIMIT 20;
+   
+   -- C. Pipeline duration
+   SELECT started_at::text, ROUND(duration_ms/1000.0,1) AS sec, status, signals
+   FROM pipeline_runs WHERE started_at > NOW() - INTERVAL '2 hours'
+   ORDER BY started_at DESC LIMIT 10;
+   
+   -- D. Watchlist snapshot
+   SELECT cardinality(symbols) AS n, source, hl_candidates, binance_filtered
+   FROM dynamic_watchlist_snapshots ORDER BY computed_at DESC LIMIT 1;
+   
+   -- E. Feed alerts
+   SELECT event_type, tags, COUNT(*) FROM trade_alerts
+   WHERE created_at > NOW() - INTERVAL '24 hours'
+   GROUP BY event_type, tags;
+   ```
+3. Log lines: [HOT_WHALE], [HOT_WHALE_INCLUDE], [HOT_WHALE_DIRECTION], [PIPELINE_DONE]
+4. Τι θέλεις:
+   · Expansion σε 200 coins (pMap 20)
+   · Per-provenance performance analysis
+   · Hyperliquid candle fetcher για perp-only
+   · Live trading mode
+   · Regime-aware thresholds tuning
 
 ---
 
-LESSONS LEARNED (Session 3)
-
-# Μάθημα
-1 Static watchlists don't scale. Auto-discovery είναι prerequisite για long-term operation.
-2 Pinned symbols prevent catastrophic losses. Χωρίς αυτά, open positions θα "ξεχνιόντουσαν".
-3 Hysteresis band is non-negotiable. Χωρίς αυτό, το universe κάνει flip-flop κάθε run.
-4 Bounded complexity beats unbounded. 150 hard cap >> "dynamic but unlimited".
-5 Provenance tagging is cheap insurance. 1-2 ώρες work → άπειρα analytics value σε 1 εβδομάδα.
-6 RevolutX tagging was a red herring. Δεν χρειάζεται manual curation· το HL volume δίνει καλύτερη λίστα αυτόματα.
-
----
-
-SESSION 3 COMMIT MESSAGE
+COMMIT MESSAGE
 
 ```bash
 git add -A
-git commit -m "feat(watchlist): dynamic universe from Hyperliquid + provenance tagging
+git commit -m "feat(hot-whale): intra-cycle discovery + aggregated direction signal
 
-- Add dynamic_watchlist_snapshots table (6h TTL, bounded at 150 coins)
-- Add watchlist-resolver.server.ts with HL volume + Binance listing filter
-- Add coin-provenance.ts for static curation + fallback
-- Add watchlist-expander.ts for manual RevolutX discovery
-- Add provenance tags to trade_alerts, trades, composite_signals, variant_signals
-- Apply 11 patches to pipeline.server.ts (dynamic watchlist + tags)
-- Add GIN indexes for tag filtering
-- Capacity analysis: 150 coins safe, 200 max with pMap 20
+- Add hot_whale_signals table with RLS + SECURITY DEFINER RPCs
+- Add hot-whale.server.ts (record/fetch/aggregate/conviction boost)
+- Feed hot queue from collectWhaleAlerts() for non-watchlist symbols
+- Include hot symbols in collectIndicators() + collectCouncilSignals()
+- Override single-trade direction with aggregated buy_ratio (3+ samples)
+- Dynamic thresholds (0.75 vs 1.5) for sparse hot-whale symbols
+- Additive conviction boost (max +0.30) for strong hot whale flow
+- Fail-open design: hot queue errors never block pipeline
+- 30 new unit tests
 
-Sessions: Audit fixes + Quality & safety + Dynamic universe"
+Sessions: 4 (audit + quality + dynamic universe + hot queue)"
 git push
 ```
 
 ---
 
-Generated: 2026-10-02 (late evening)
-Next review: 2026-10-03 (after 24h dynamic watchlist operation)
+Generated: 2026-10-02 (night)
+Next review: 2026-10-03 (after 24h hot queue operation)
