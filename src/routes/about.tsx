@@ -62,6 +62,8 @@ function Section({
   );
 }
 
+type TagKind = "core" | "advanced" | "pro";
+
 function FeatureCard({
   emoji,
   name,
@@ -70,7 +72,7 @@ function FeatureCard({
 }: {
   emoji: string;
   name: string;
-  tag?: "core" | "advanced" | "pro" | "new";
+  tag?: TagKind;
   children: ReactNode;
 }) {
   const tagTone =
@@ -78,9 +80,7 @@ function FeatureCard({
       ? "border-accent/40 bg-accent/10 text-accent"
       : tag === "advanced"
         ? "border-bull/40 bg-bull/10 text-bull"
-        : tag === "new"
-          ? "border-warn/40 bg-warn/10 text-warn"
-          : "border-border bg-muted text-muted-foreground";
+        : "border-border bg-muted text-muted-foreground";
   return (
     <div className="rounded-md border border-border/70 bg-background/30 p-3">
       <div className="flex items-start justify-between gap-2">
@@ -166,8 +166,8 @@ function AboutPage() {
           </p>
           <p>
             The universe of coins it watches is <strong>not fixed</strong>. Every
-            6 hours it re-asks the market: <em>"Which coins actually have real
-            volume right now?"</em> — and rebuilds its watchlist from the answer.
+            6 hours it re-asks the market: <em>Which coins actually have real
+            volume right now?</em> — and rebuilds its watchlist from the answer.
             No dead coins, no manual maintenance, no missed opportunities.
           </p>
           <p>
@@ -194,7 +194,7 @@ function AboutPage() {
         <Section
           emoji="🎯"
           title="What the robot does"
-          subtitle="4 evidence sources → 1 decision"
+          subtitle="4 evidence sources to 1 decision"
         >
           <p>
             Every cycle, the robot gathers <strong>four kinds of evidence</strong>.
@@ -205,7 +205,7 @@ function AboutPage() {
           <div className="mt-4 space-y-3">
             <FeatureCard emoji="🐋" name="1. Whale Tracking" tag="core">
               <p>
-                "Whales" are traders with <strong>serious money</strong>. When
+                Whales are traders with <strong>serious money</strong>. When
                 they buy or sell big amounts, prices move. The robot watches both
                 Binance (spot market) and Hyperliquid (perpetual futures) for
                 large trades. When it detects accumulation (buying) or
@@ -219,16 +219,15 @@ function AboutPage() {
                   Bybit, Coinbase, DEX).
                 </p>
                 <p>
-                  <strong>Thresholds (per-market):</strong> BTC/ETH/BNB $50k ·
-                  SOL/XRP/ADA/DOGE $25k · mid-caps $5k–15k · memecoins $3k.
-                  Hyperliquid floors are 2× Binance floors (perps print bigger
-                  clips).
+                  <strong>Thresholds (per-market):</strong> BTC/ETH/BNB $50k,
+                  SOL/XRP/ADA/DOGE $25k, mid-caps $5k–15k, memecoins $3k.
+                  Hyperliquid floors are 2x Binance floors.
                 </p>
                 <p>
                   <strong>Direction logic:</strong> for single-trade signals,
-                  accumulation if buy-USD &gt; sell-USD × 1.15. For hot-queue
+                  accumulation if buy-USD &gt; sell-USD x 1.15. For hot-queue
                   symbols, direction comes from <em>aggregated buy_ratio</em>{" "}
-                  across multiple trades (requires ≥3 samples).
+                  across multiple trades (requires at least 3 samples).
                 </p>
               </ProNote>
             </FeatureCard>
@@ -251,9 +250,9 @@ function AboutPage() {
               </p>
               <ProNote>
                 <p>
-                  <strong>Indicators:</strong> RSI (14) · MACD (12, 26, 9) ·
-                  Bollinger Bands (20, 2σ) · Aroon (25) · VWAP (24h) · ATR
-                  (14) · SMC detector.
+                  <strong>Indicators:</strong> RSI (14), MACD (12, 26, 9),
+                  Bollinger Bands (20, 2 sigma), Aroon (25), VWAP (24h), ATR
+                  (14), SMC detector.
                 </p>
                 <p>
                   <strong>Strict neutral band:</strong> RSI 44–56 stays{" "}
@@ -261,9 +260,9 @@ function AboutPage() {
                   This eliminated the false-bullish bias from earlier versions.
                 </p>
                 <p>
-                  <strong>Multi-timeframe score:</strong> base ±1.0 for
-                  primary (4h), ×1.3 if fast (1h) agrees, ×0.7 if it opposes.
-                  Same for trend (1d). Max ±1.69 when all three align.
+                  <strong>Multi-timeframe score:</strong> base +1.0 for
+                  primary (4h), x1.3 if fast (1h) agrees, x0.7 if it opposes.
+                  Same for trend (1d). Max +1.69 when all three align.
                 </p>
                 <p>
                   <strong>Data:</strong> 100 candles per timeframe. Freshness
@@ -275,13 +274,13 @@ function AboutPage() {
             <FeatureCard emoji="🗳️" name="3. Prediction Markets" tag="core">
               <p>
                 There are websites where people <strong>bet real money</strong> on
-                future events — like "Will Bitcoin reach $130,000 by 2026?". The
+                future events — like Will Bitcoin reach $130,000 by 2026?. The
                 robot reads these markets (from <strong>Polymarket</strong>) and
                 uses them as another opinion.
               </p>
               <p>
-                <strong>Important nuance:</strong> "Yes" doesn't always mean
-                bullish. If a market asks "Will Bitcoin <em>dip</em> to $65k?",
+                <strong>Important nuance:</strong> Yes doesn't always mean
+                bullish. If a market asks Will Bitcoin <em>dip</em> to $65k?,
                 a 19% yes probability is actually <strong>bullish</strong>{" "}
                 (because most traders think it won't fall that far). The robot
                 parses the <em>wording</em> to figure out the correct direction.
@@ -293,11 +292,11 @@ function AboutPage() {
               <ProNote>
                 <p>
                   <strong>Source:</strong> Polymarket Gamma API,{" "}
-                  <code>tag_slug=crypto</code>, limit 200 events/cycle.
+                  <code>tag_slug=crypto</code>, limit 200 events per cycle.
                 </p>
                 <p>
                   <strong>Magnitude scaling:</strong>{" "}
-                  <code>mag = (|up − 0.5| × 2 − 0.2) / 0.8</code>, bounded
+                  <code>mag = (|up - 0.5| x 2 - 0.2) / 0.8</code>, bounded
                   [0, 1]. Neutral band 40–60% contributes 0.
                 </p>
                 <p>
@@ -332,8 +331,8 @@ function AboutPage() {
                   an earlier 800-token overflow that caused empty responses).
                 </p>
                 <p>
-                  <strong>Regime-aware cadence:</strong> 15 min trending · 25
-                  min default · 40 min calm. Council verdict TTL: 20 / 30 / 45
+                  <strong>Regime-aware cadence:</strong> 15 min trending, 25
+                  min default, 40 min calm. Council verdict TTL: 20 / 30 / 45
                   min respectively.
                 </p>
                 <p>
@@ -396,9 +395,8 @@ function AboutPage() {
               with <code>dayNtlVlm</code> (24h notional USD).
             </p>
             <p>
-              <strong>Hysteresis:</strong> add ≥ $5M, remove &lt; $3M. Reduces
-              churn by ~80% empirically (standard technique in universe
-              selection).
+              <strong>Hysteresis:</strong> add if at least $5M, remove if
+              below $3M. Reduces churn by ~80% empirically.
             </p>
             <p>
               <strong>Snapshot stability:</strong> resolved watchlists are
@@ -427,9 +425,9 @@ function AboutPage() {
           </p>
           <p>
             The <strong>Hot Whale Queue</strong> solves this. Whenever the robot
-            detects whale activity (≥ $25K) on a coin that is{" "}
+            detects whale activity (at least $25K) on a coin that is{" "}
             <em>not</em> currently in the watchlist, it adds that coin to a{" "}
-            <strong>temporary "hot" list</strong>. That list is consulted on the
+            <strong>temporary hot list</strong>. That list is consulted on the
             very next cycle — no waiting for the 6-hour refresh.
           </p>
           <p>Hot entries expire quickly:</p>
@@ -453,10 +451,10 @@ function AboutPage() {
             a hot coin has multiple whale alerts, the robot calculates the{" "}
             <em>buy ratio</em> across all of them. A single $40K buy might be a
             hedge, a liquidation aftermath, or a market-maker rebalance — but
-            a 70% buy ratio across 5+ trades is real accumulation. Only{" "}
+            a 70% buy ratio across 5 or more trades is real accumulation. Only{" "}
             <strong>3 or more samples</strong> with a strong skew produce a
-            direction, and each direction comes with a <strong>confidence
-            score</strong>.
+            direction, and each direction comes with a{" "}
+            <strong>confidence score</strong>.
           </p>
           <ProNote>
             <p>
@@ -466,27 +464,27 @@ function AboutPage() {
             </p>
             <p>
               <strong>Direction rules:</strong> accumulation if{" "}
-              <code>buy_ratio ≥ 0.65</code> AND{" "}
-              <code>alert_count ≥ 3</code>. Symmetric for distribution.
+              <code>buy_ratio &gt;= 0.65</code> AND{" "}
+              <code>alert_count &gt;= 3</code>. Symmetric for distribution.
               Otherwise null.
             </p>
             <p>
               <strong>Confidence formula:</strong>{" "}
-              <code>0.7 × clarity + 0.3 × sample_factor</code>, where{" "}
-              <code>clarity = |buy_ratio − 0.5| × 2</code> and{" "}
+              <code>0.7 x clarity + 0.3 x sample_factor</code>, where{" "}
+              <code>clarity = |buy_ratio - 0.5| x 2</code> and{" "}
               <code>sample_factor = min(1, count / 10)</code>.
             </p>
             <p>
-              <strong>Conviction boost:</strong> when a hot coin has ≥ $50K
-              total and ≥ 70% confidence, the composite score receives an
-              additive bonus (up to +0.30) in the direction of the whale flow.
+              <strong>Conviction boost:</strong> when a hot coin has at least
+              $50K total and at least 70% confidence, the composite score
+              receives an additive bonus (up to +0.30) in the direction of the
+              whale flow.
             </p>
             <p>
               <strong>Dynamic thresholds:</strong> sparse hot coins (e.g.,
               perp-only contracts without candle data) get buy/sell thresholds
               lowered from ±1.5 to ±0.75 — but only when the whale aggregate
-              already qualifies for a boost. This lets strong whale-only
-              signals produce trades without permitting weak noise.
+              already qualifies for a boost.
             </p>
           </ProNote>
         </Section>
@@ -506,16 +504,16 @@ function AboutPage() {
           </p>
           <ul className="ml-5 list-disc space-y-1.5">
             <li>
-              <em>"Do hot-discovered coins perform better or worse than the
-              original list?"</em>
+              <em>Do hot-discovered coins perform better or worse than the
+              original list?</em>
             </li>
             <li>
-              <em>"How often does an open-position pin save us from losing
-              track of a trade?"</em>
+              <em>How often does an open-position pin save us from losing
+              track of a trade?</em>
             </li>
             <li>
-              <em>"Is the dynamic watchlist actually adding value, or is the
-              static core list just as good?"</em>
+              <em>Is the dynamic watchlist actually adding value, or is the
+              static core list just as good?</em>
             </li>
           </ul>
           <p>The current tags are:</p>
@@ -549,8 +547,8 @@ function AboutPage() {
             </p>
             <p>
               <strong>Query pattern:</strong>{" "}
-              <code>WHERE source_tags @> ARRAY['hot-whale']</code> — efficient
-              containment queries.
+              <code>WHERE source_tags @&gt; ARRAY['hot-whale']</code> —
+              efficient containment queries.
             </p>
           </ProNote>
         </Section>
@@ -564,11 +562,15 @@ function AboutPage() {
           <p>
             This is what makes the robot <strong>unusual</strong>. Every time a
             trade closes — whether it made money or lost money — the robot asks
-            the AI to write a <strong>short lesson</strong>: "What should I
-            remember for the next time I see this coin?"
+            the AI to write a <strong>short lesson</strong>: What should I
+            remember for the next time I see this coin?
           </p>
 
-          <p>Then, before the next decision, it <strong>reads its own notes</strong>. It's like a student who keeps a notebook and reviews it before every exam.</p>
+          <p>
+            Then, before the next decision, it <strong>reads its own notes</strong>.
+            It's like a student who keeps a notebook and reviews it before every
+            exam.
+          </p>
 
           <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
             <Stat label="Max lessons kept" value="5" hint="per symbol, most recent" />
@@ -589,10 +591,10 @@ function AboutPage() {
               tokens. Outcome derived from realized PnL: win / loss / breakeven.
             </p>
             <p>
-              <strong>System prompt instruction:</strong> "Weigh past_lessons as
+              <strong>System prompt instruction:</strong> Weigh past_lessons as
               real experience: a lesson from a [loss] reduces confidence in
               repeating the same mistake; a [win] increases confidence in the
-              same pattern."
+              same pattern.
             </p>
           </ProNote>
         </Section>
@@ -613,7 +615,7 @@ function AboutPage() {
             <Stat label="Portfolio cap" value="2.0%" hint="total open risk" />
             <Stat label="Daily loss limit" value="2.0%" hint="hard stop for the day" />
             <Stat label="Max positions" value="8" hint="concurrent open trades" />
-            <Stat label="Stop loss" value="−3%" hint="from entry price" />
+            <Stat label="Stop loss" value="-3%" hint="from entry price" />
             <Stat label="Take profit" value="+4%" hint="from entry price" />
           </div>
 
@@ -627,8 +629,8 @@ function AboutPage() {
 
           <p>
             And the daily loss limit: if the portfolio has lost{" "}
-            <strong>2% today</strong> (realized + unrealized), the robot
-            <strong> stops opening new trades</strong> for the rest of the day
+            <strong>2% today</strong> (realized + unrealized), the robot{" "}
+            <strong>stops opening new trades</strong> for the rest of the day
             (Athens timezone).
           </p>
 
@@ -643,12 +645,12 @@ function AboutPage() {
           <ProNote>
             <p>
               <strong>Position sizing formula:</strong> quantity ={" "}
-              <code>maxTradeRisk / (|entry − stop| + (entry + stop) × fee_rate)</code>.
+              <code>maxTradeRisk / (|entry - stop| + (entry + stop) x fee_rate)</code>.
               Fee rate 0.05% per side (Binance taker).
             </p>
             <p>
               <strong>Portfolio risk:</strong> sum of{" "}
-              <code>|entry − stop| × qty + fees</code> across all open trades.
+              <code>|entry - stop| x qty + fees</code> across all open trades.
               Gate rejects new trades if adding would exceed 2%.
             </p>
             <p>
@@ -659,7 +661,7 @@ function AboutPage() {
             <p>
               <strong>Circuit breaker:</strong> triggered when{" "}
               <code>indicators=0</code> or <code>whales=0</code> for a cycle.
-              Pipeline status becomes <code>"degraded"</code> and a{" "}
+              Pipeline status becomes <code>degraded</code> and a{" "}
               <code>feed_error</code> alert is written.
             </p>
           </ProNote>
@@ -685,17 +687,28 @@ function AboutPage() {
           </p>
 
           <ul className="ml-5 list-disc space-y-1.5">
-            <li>New signal is <strong>≥ 75%</strong> confidence</li>
-            <li>It's <strong>≥ 10 points stronger</strong> than the weakest open trade's original confidence</li>
-            <li>The weakest trade is <strong>≥ 30 min old</strong> (no flickering)</li>
-            <li>The weakest trade has PnL <strong>≤ +0.5%</strong> (never cut a winner)</li>
+            <li>New signal is <strong>at least 75%</strong> confidence</li>
+            <li>
+              It's <strong>at least 10 points stronger</strong> than the
+              weakest open trade's original confidence
+            </li>
+            <li>
+              The weakest trade is <strong>at least 30 min old</strong> (no
+              flickering)
+            </li>
+            <li>
+              The weakest trade has PnL <strong>at most +0.5%</strong> (never
+              cut a winner)
+            </li>
             <li>Only <strong>1 rotation per cycle</strong></li>
-            <li>The rotated-out symbol goes on <strong>15 min cooldown</strong></li>
+            <li>
+              The rotated-out symbol goes on <strong>15 min cooldown</strong>
+            </li>
           </ul>
 
           <ProNote>
             <p>
-              <strong>Selection:</strong> rotate out the trade with the lowest{" "}
+              <strong>Selection:</strong> rotate out the trade with the lowest
               PnL%, tie-broken by lowest original signal confidence.
             </p>
             <p>
@@ -724,14 +737,15 @@ function AboutPage() {
 
           <ul className="ml-5 list-disc space-y-1.5">
             <li>
-              <strong>Stale exit</strong> — if a trade is <strong>≥ 48 hours old</strong>{" "}
-              and its PnL is within <strong>±1%</strong> (essentially
-              flat), close it. No reason to keep capital tied up in nothing.
+              <strong>Stale exit</strong> — if a trade is{" "}
+              <strong>at least 48 hours old</strong> and its PnL is within{" "}
+              <strong>±1%</strong> (essentially flat), close it. No reason to
+              keep capital tied up in nothing.
             </li>
             <li>
-              <strong>Expired exit</strong> — if a trade is <strong>≥ 7 days old</strong>{" "}
-              regardless of PnL, close it. This is a hard cap: nothing stays
-              open forever.
+              <strong>Expired exit</strong> — if a trade is{" "}
+              <strong>at least 7 days old</strong> regardless of PnL, close it.
+              This is a hard cap: nothing stays open forever.
             </li>
           </ul>
 
@@ -750,8 +764,8 @@ function AboutPage() {
               <code>max_hold_hours = 168</code>.
             </p>
             <p>
-              <strong>Check order:</strong> stop-loss → take-profit → expired
-              → stale. First matching rule wins.
+              <strong>Check order:</strong> stop-loss, take-profit, expired,
+              stale. First matching rule wins.
             </p>
           </ProNote>
         </Section>
@@ -778,13 +792,14 @@ function AboutPage() {
           <ProNote>
             <p>
               <strong>Single source of truth:</strong>{" "}
-              <code>TRADING_FEE_RATE = 0.0005</code> in <code>src/lib/fees.ts</code>,
-              mirrored by <code>public.trading_fee_rate()</code> in SQL. Change both together.
+              <code>TRADING_FEE_RATE = 0.0005</code> in{" "}
+              <code>src/lib/fees.ts</code>, mirrored by{" "}
+              <code>public.trading_fee_rate()</code> in SQL. Change both together.
             </p>
             <p>
               <strong>Storage:</strong> <code>entry_fee</code> saved on open,
-              actual fees plus gross and net PnL on close. The <code>pnl</code>{" "}
-              column always holds <em>net</em> PnL.
+              actual fees plus gross and net PnL on close. The{" "}
+              <code>pnl</code> column always holds <em>net</em> PnL.
             </p>
           </ProNote>
         </Section>
@@ -823,8 +838,8 @@ function AboutPage() {
             <strong>Auto-adaptive strategy:</strong> when enabled, the robot
             periodically reviews <em>which preset is actually winning</em> and
             can promote the top performer. If the current preset has a
-            proven-losing record (below 40% win rate or negative PnL over 10+
-            trades), it's automatically demoted.
+            proven-losing record (below 40% win rate or negative PnL over 10 or
+            more trades), it's automatically demoted.
           </p>
 
           <ProNote>
@@ -835,13 +850,14 @@ function AboutPage() {
             <p>
               <strong>Deterministic fallback:</strong> if the AI-selection call
               fails, the robot picks the preset with the best{" "}
-              <code>win_rate × total_pnl_pct</code> over the last 7 days
+              <code>win_rate x total_pnl_pct</code> over the last 7 days
               (minimum 10 resolved trades). No stuck states.
             </p>
             <p>
               <strong>Auto-demote:</strong> current preset is force-replaced if
-              it has ≥10 resolved trades AND (win rate &lt; 40% OR total PnL
-              &lt; 0). Prevents the system from staying on a losing strategy.
+              it has at least 10 resolved trades AND (win rate below 40% OR
+              total PnL below 0). Prevents the system from staying on a losing
+              strategy.
             </p>
           </ProNote>
         </Section>
@@ -860,10 +876,22 @@ function AboutPage() {
           </p>
 
           <ul className="ml-5 list-disc space-y-1.5">
-            <li>Each shadow trade assumes <strong>$1,000</strong>, take profit <strong>+4%</strong>, stop <strong>−3%</strong>.</li>
-            <li>Unresolved after <strong>72 hours</strong> → closed at market as <em>expired</em>.</li>
-            <li>Outcomes are checked against real <strong>1-hour candles</strong> — 4× more precise than the earlier 4-hour approach.</li>
-            <li>Shadow results <strong>never</strong> touch the real paper portfolio.</li>
+            <li>
+              Each shadow trade assumes <strong>$1,000</strong>, take profit{" "}
+              <strong>+4%</strong>, stop <strong>-3%</strong>.
+            </li>
+            <li>
+              Unresolved after <strong>72 hours</strong> means closed at market
+              as <em>expired</em>.
+            </li>
+            <li>
+              Outcomes are checked against real <strong>1-hour candles</strong>{" "}
+              — 4x more precise than the earlier 4-hour approach.
+            </li>
+            <li>
+              Shadow results <strong>never</strong> touch the real paper
+              portfolio.
+            </li>
           </ul>
 
           <p>
@@ -874,9 +902,9 @@ function AboutPage() {
 
           <ProNote>
             <p>
-              <strong>Table:</strong> <code>strategy_variant_signals</code>
-              (outcome: <code>open</code> / <code>win</code> / <code>loss</code> /{" "}
-              <code>expired</code>). Resolver:{" "}
+              <strong>Table:</strong> <code>strategy_variant_signals</code>{" "}
+              (outcome: <code>open</code> / <code>win</code> / <code>loss</code>{" "}
+              / <code>expired</code>). Resolver:{" "}
               <code>resolveVariantOutcomes()</code> using 1h candles with
               high/low touch detection.
             </p>
@@ -919,9 +947,18 @@ function AboutPage() {
           </p>
 
           <ul className="ml-5 list-disc space-y-1.5">
-            <li><strong>Kept forever</strong> — trades, council lessons, buy/sell signals, portfolio history.</li>
-            <li><strong>Removed after 7 days</strong> — whale alerts, watch/hold signals, shadow variant signals, indicator and prediction snapshots, run history.</li>
-            <li><strong>Removed after 30 days</strong> — trade alerts.</li>
+            <li>
+              <strong>Kept forever</strong> — trades, council lessons, buy/sell
+              signals, portfolio history.
+            </li>
+            <li>
+              <strong>Removed after 7 days</strong> — whale alerts, watch/hold
+              signals, shadow variant signals, indicator and prediction
+              snapshots, run history.
+            </li>
+            <li>
+              <strong>Removed after 30 days</strong> — trade alerts.
+            </li>
           </ul>
 
           <ProNote>
@@ -958,19 +995,19 @@ function AboutPage() {
               with a confidence percentage.
               <ProNote>
                 <p>
-                  <strong>Scoring:</strong> whale ±weight · technicals
-                  ±1.69×weight · prediction ±0.5×magnitude×weight · AI council
-                  ±0.75×conviction×weight. Hot-whale boost: up to +0.30
-                  additive.
+                  <strong>Scoring:</strong> whale ±weight, technicals
+                  ±1.69 x weight, prediction ±0.5 x magnitude x weight, AI
+                  council ±0.75 x conviction x weight. Hot-whale boost: up to
+                  +0.30 additive.
                 </p>
                 <p>
-                  <strong>Thresholds:</strong> buy if score ≥ 1.5 · sell if ≤
-                  −1.5 · sparse hot-whale symbols use ±0.75 · hold if |score|
-                  &lt; 0.5.
+                  <strong>Thresholds:</strong> buy if score &gt;= 1.5, sell if
+                  &lt;= -1.5, sparse hot-whale symbols use ±0.75, hold if
+                  |score| &lt; 0.5.
                 </p>
                 <p>
                   <strong>Fingerprint:</strong> deterministic hash of all
-                  inputs, excluding timestamps. Same inputs → upsert.
+                  inputs, excluding timestamps. Same inputs produce an upsert.
                 </p>
               </ProNote>
             </FeatureCard>
@@ -990,8 +1027,8 @@ function AboutPage() {
             <FeatureCard emoji="🔮" name="Prediction Markets" tag="core">
               Top markets per symbol, ranked by 24h volume. Yes probability
               displayed as a progress bar. Volume shown for reliability
-              context. Markets with &lt; $500 volume or &gt; 95% odds are
-              filtered out.
+              context. Markets with less than $500 volume or more than 95% odds
+              are filtered out.
             </FeatureCard>
 
             <FeatureCard emoji="🧠" name="AI Council" tag="pro">
@@ -1005,8 +1042,8 @@ function AboutPage() {
             <FeatureCard emoji="📚" name="Council Lessons" tag="pro">
               Post-mortems from closed trades. Each row shows the symbol,
               outcome (win/loss/breakeven), and the AI-generated lesson. These
-              lessons are fed back into future Groq prompts as
-              "past_lessons" — the learning loop.
+              lessons are fed back into future Groq prompts as past_lessons —
+              the learning loop.
             </FeatureCard>
 
             <FeatureCard emoji="💼" name="Positions" tag="core">
@@ -1036,7 +1073,8 @@ function AboutPage() {
             <FeatureCard emoji="🤖" name="AI Risk Summary" tag="pro">
               On-demand deep-dive on any tracked coin. Type a symbol and
               optional context, get a 3-point risk summary: key risks,
-              volatility outlook, actionable takeaway. Powered by Pollinations.ai.
+              volatility outlook, actionable takeaway. Powered by
+              Pollinations.ai.
             </FeatureCard>
 
             <FeatureCard emoji="🎛️" name="Strategy" tag="advanced">
@@ -1109,12 +1147,13 @@ function AboutPage() {
               application logic.
             </li>
             <li>
-              <strong>Freshness gates:</strong> stale data (indicators &gt; 6h,
-              predictions &gt; 30 min, council TTL regime-aware) is ignored.
+              <strong>Freshness gates:</strong> stale data (indicators more
+              than 6h old, predictions more than 30 min old, council TTL
+              regime-aware) is ignored.
             </li>
             <li>
-              <strong>Circuit breaker:</strong> if critical feeds fail,
-              new entries are blocked. Existing positions still close normally.
+              <strong>Circuit breaker:</strong> if critical feeds fail, new
+              entries are blocked. Existing positions still close normally.
             </li>
             <li>
               <strong>Paper mode default:</strong> live trading requires two
@@ -1134,10 +1173,11 @@ function AboutPage() {
               Concurrent inserts fail with Postgres error code 23505.
             </p>
             <p>
-              <strong>Feed failure response:</strong> <code>indicators=0</code>{" "}
-              or <code>whales=0</code> triggers a <code>feed_error</code> alert
-              and marks the run as <code>"degraded"</code> — pipeline continues
-              in close-only mode until feeds recover.
+              <strong>Feed failure response:</strong>{" "}
+              <code>indicators=0</code> or <code>whales=0</code> triggers a{" "}
+              <code>feed_error</code> alert and marks the run as{" "}
+              <code>degraded</code> — pipeline continues in close-only mode
+              until feeds recover.
             </p>
           </ProNote>
         </Section>
@@ -1156,16 +1196,16 @@ function AboutPage() {
           </div>
 
           <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <Stat label="Exchanges" value="3" hint="Binance · Bybit · Hyperliquid" />
-            <Stat label="Data feeds" value="4" hint="spot · perps · prediction · AI" />
+            <Stat label="Exchanges" value="3" hint="Binance, Bybit, Hyperliquid" />
+            <Stat label="Data feeds" value="4" hint="spot, perps, prediction, AI" />
             <Stat label="Watchlist" value="150" hint="dynamic cap" />
-            <Stat label="Cycle time" value="~60–90s" hint="full pipeline" />
+            <Stat label="Cycle time" value="60-90s" hint="full pipeline" />
           </div>
 
           <ProNote>
             <p>
-              <strong>Stack:</strong> TanStack Start + React 19 + TypeScript ·
-              Tailwind CSS · shadcn/ui · React Query · Supabase (Postgres +
+              <strong>Stack:</strong> TanStack Start + React 19 + TypeScript,
+              Tailwind CSS, shadcn/ui, React Query, Supabase (Postgres +
               PostgREST + Realtime).
             </p>
             <p>
@@ -1182,8 +1222,8 @@ function AboutPage() {
               of signal generation.
             </p>
             <p>
-              <strong>Caching:</strong> Hyperliquid universe cached 60s ·
-              Binance exchangeInfo cached 24h · AI verdicts cached 25 min ·
+              <strong>Caching:</strong> Hyperliquid universe cached 60s,
+              Binance exchangeInfo cached 24h, AI verdicts cached 25 min,
               trading settings cached 30s.
             </p>
           </ProNote>
@@ -1212,7 +1252,7 @@ function AboutPage() {
             </li>
             <li>
               <strong>Vector-embedding lessons</strong> — cross-symbol
-              learning ("this pattern on SOL also worked on AVAX").
+              learning (this pattern on SOL also worked on AVAX).
             </li>
             <li>
               <strong>Backtesting engine</strong> — replay historical data
@@ -1221,7 +1261,7 @@ function AboutPage() {
             </li>
             <li>
               <strong>Webhook notifications</strong> — push alerts to
-              Telegram/Discord on significant events.
+              Telegram or Discord on significant events.
             </li>
             <li>
               <strong>Live trading mode</strong> — when paper mode proves
