@@ -22,6 +22,7 @@ export type Database = {
           fingerprint: string | null
           id: string
           indicator_snapshot_id: string | null
+          market_session: string | null
           pattern_key: string | null
           prediction_snapshot_id: string | null
           reasoning: string | null
@@ -37,6 +38,7 @@ export type Database = {
           fingerprint?: string | null
           id?: string
           indicator_snapshot_id?: string | null
+          market_session?: string | null
           pattern_key?: string | null
           prediction_snapshot_id?: string | null
           reasoning?: string | null
@@ -52,6 +54,7 @@ export type Database = {
           fingerprint?: string | null
           id?: string
           indicator_snapshot_id?: string | null
+          market_session?: string | null
           pattern_key?: string | null
           prediction_snapshot_id?: string | null
           reasoning?: string | null
@@ -217,6 +220,48 @@ export type Database = {
           signal?: string | null
           symbol?: string
           timeframe?: string
+        }
+        Relationships: []
+      }
+      mtf_gate_rejections: {
+        Row: {
+          confidence: number | null
+          detected_at: string
+          id: string
+          mtf_bear_count: number
+          mtf_bull_count: number
+          mtf_neutral_count: number
+          regime_label: string | null
+          reject_reason: string | null
+          score: number | null
+          side: string
+          symbol: string
+        }
+        Insert: {
+          confidence?: number | null
+          detected_at?: string
+          id?: string
+          mtf_bear_count: number
+          mtf_bull_count: number
+          mtf_neutral_count: number
+          regime_label?: string | null
+          reject_reason?: string | null
+          score?: number | null
+          side: string
+          symbol: string
+        }
+        Update: {
+          confidence?: number | null
+          detected_at?: string
+          id?: string
+          mtf_bear_count?: number
+          mtf_bull_count?: number
+          mtf_neutral_count?: number
+          regime_label?: string | null
+          reject_reason?: string | null
+          score?: number | null
+          side?: string
+          symbol?: string
         }
         Relationships: []
       }
@@ -500,6 +545,7 @@ export type Database = {
           entry_price: number | null
           exit_price: number | null
           id: string
+          market_session: string | null
           outcome: string | null
           pnl_pct: number | null
           reasoning: string | null
@@ -516,6 +562,7 @@ export type Database = {
           entry_price?: number | null
           exit_price?: number | null
           id?: string
+          market_session?: string | null
           outcome?: string | null
           pnl_pct?: number | null
           reasoning?: string | null
@@ -532,6 +579,7 @@ export type Database = {
           entry_price?: number | null
           exit_price?: number | null
           id?: string
+          market_session?: string | null
           outcome?: string | null
           pnl_pct?: number | null
           reasoning?: string | null
@@ -604,6 +652,7 @@ export type Database = {
           exit_price: number | null
           gross_pnl: number | null
           id: string
+          market_session: string | null
           mode: string
           net_pnl: number | null
           pnl: number | null
@@ -629,6 +678,7 @@ export type Database = {
           exit_price?: number | null
           gross_pnl?: number | null
           id?: string
+          market_session?: string | null
           mode?: string
           net_pnl?: number | null
           pnl?: number | null
@@ -654,6 +704,7 @@ export type Database = {
           exit_price?: number | null
           gross_pnl?: number | null
           id?: string
+          market_session?: string | null
           mode?: string
           net_pnl?: number | null
           pnl?: number | null
