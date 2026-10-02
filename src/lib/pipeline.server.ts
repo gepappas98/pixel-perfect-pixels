@@ -1,5 +1,5 @@
 import { createHmac } from "crypto";
-import { canOpenTrade, RISK_CONFIG } from "./risk.engine";
+import { canOpenTrade } from "./risk.engine";
 import { computeFeeAwarePnl, TRADING_FEE_RATE } from "./fees";
 import { fetchRelevantLessons, generatePostMortems } from "./council-learning";
 import {
@@ -25,10 +25,7 @@ import {
   normalizeCoinLobsterTrade,
   type CoinLobsterTrade,
 } from "./coinlobster.server";
-import {
-  fetchTradingSettings,
-  DEFAULT_TRADING_SETTINGS,
-} from "./trading-settings.server";
+import { fetchTradingSettings } from "./trading-settings.server";
 import {
   classifyMarketSession,
   getSessionBonus,
@@ -122,20 +119,13 @@ const KLINE_LIMIT = 100;
 
 const MIN_CONFIDENCE = 0.6;
 const FETCH_TIMEOUT_MS = 12_000;
-const MAX_OPEN_TRADES = RISK_CONFIG.MAX_OPEN_POSITIONS;
 const MAX_ENTRY_DRIFT_PCT = 0.02;
 const SYMBOL_COOLDOWN_MINUTES = 15;
 const WHALE_LOOKBACK_HOURS = 6;
 
-// ─── Fallback constants (only used if DB read fails) ───
-// Actual values come from pipeline_settings via fetchTradingSettings().
-// See src/lib/trading-settings.server.ts for the DB-driven values.
-const FALLBACK_STALE_EXIT_HOURS = DEFAULT_TRADING_SETTINGS.stale_exit_hours;
-const FALLBACK_STALE_EXIT_MIN_PNL_PCT =
-  DEFAULT_TRADING_SETTINGS.stale_exit_min_pnl_pct;
-const FALLBACK_MAX_HOLD_HOURS = DEFAULT_TRADING_SETTINGS.max_hold_hours;
-const FALLBACK_STOP_LOSS_PCT = DEFAULT_TRADING_SETTINGS.real_sl_pct;
-const FALLBACK_TAKE_PROFIT_PCT = DEFAULT_TRADING_SETTINGS.real_tp_pct;
+// Trading settings (TP/SL/hold durations) are loaded dynamically from
+// pipeline_settings via fetchTradingSettings() — see executeTrades(),
+// closeTriggeredTrades(), and resolveVariantOutcomes().
 
 const ROTATION_MIN_NEW_CONFIDENCE = 0.75;
 const ROTATION_CONFIDENCE_IMPROVEMENT = 0.10;
@@ -148,9 +138,6 @@ const COUNCIL_MAX_AGE_MS = 30 * 60 * 1000;
 
 const STRATEGY_CACHE_TTL_MS = 60_000;
 
-const FALLBACK_VARIANT_TP_PCT = DEFAULT_TRADING_SETTINGS.variant_tp_pct;
-const FALLBACK_VARIANT_SL_PCT = DEFAULT_TRADING_SETTINGS.variant_sl_pct;
-const FALLBACK_VARIANT_MAX_HOURS = DEFAULT_TRADING_SETTINGS.variant_max_hours;
 const VARIANT_RESOLVE_BATCH = 500;
 
 function isFresh(value: unknown, maxAgeMs: number, now = Date.now()): boolean {
