@@ -26,6 +26,10 @@ import {
   type CoinLobsterTrade,
 } from "./coinlobster.server";
 import {
+  fetchTradingSettings,
+  DEFAULT_TRADING_SETTINGS,
+} from "./trading-settings.server";
+import {
   classifyMarketSession,
   getSessionBonus,
   sessionLabel,
@@ -117,17 +121,21 @@ const TIMEFRAMES = [
 const KLINE_LIMIT = 100;
 
 const MIN_CONFIDENCE = 0.6;
-const STOP_LOSS_PCT = 0.03;
-const TAKE_PROFIT_PCT = 0.04;
 const FETCH_TIMEOUT_MS = 12_000;
 const MAX_OPEN_TRADES = RISK_CONFIG.MAX_OPEN_POSITIONS;
 const MAX_ENTRY_DRIFT_PCT = 0.02;
 const SYMBOL_COOLDOWN_MINUTES = 15;
 const WHALE_LOOKBACK_HOURS = 6;
 
-const STALE_EXIT_HOURS = 48;
-const STALE_EXIT_MIN_PNL_PCT = 1.0;
-const MAX_HOLD_HOURS = 168;
+// ─── Fallback constants (only used if DB read fails) ───
+// Actual values come from pipeline_settings via fetchTradingSettings().
+// See src/lib/trading-settings.server.ts for the DB-driven values.
+const FALLBACK_STALE_EXIT_HOURS = DEFAULT_TRADING_SETTINGS.stale_exit_hours;
+const FALLBACK_STALE_EXIT_MIN_PNL_PCT =
+  DEFAULT_TRADING_SETTINGS.stale_exit_min_pnl_pct;
+const FALLBACK_MAX_HOLD_HOURS = DEFAULT_TRADING_SETTINGS.max_hold_hours;
+const FALLBACK_STOP_LOSS_PCT = DEFAULT_TRADING_SETTINGS.real_sl_pct;
+const FALLBACK_TAKE_PROFIT_PCT = DEFAULT_TRADING_SETTINGS.real_tp_pct;
 
 const ROTATION_MIN_NEW_CONFIDENCE = 0.75;
 const ROTATION_CONFIDENCE_IMPROVEMENT = 0.10;
@@ -140,9 +148,9 @@ const COUNCIL_MAX_AGE_MS = 30 * 60 * 1000;
 
 const STRATEGY_CACHE_TTL_MS = 60_000;
 
-const VARIANT_TP_PCT = 0.04;
-const VARIANT_SL_PCT = 0.03;
-const VARIANT_MAX_HOURS = 168;
+const FALLBACK_VARIANT_TP_PCT = DEFAULT_TRADING_SETTINGS.variant_tp_pct;
+const FALLBACK_VARIANT_SL_PCT = DEFAULT_TRADING_SETTINGS.variant_sl_pct;
+const FALLBACK_VARIANT_MAX_HOURS = DEFAULT_TRADING_SETTINGS.variant_max_hours;
 const VARIANT_RESOLVE_BATCH = 500;
 
 function isFresh(value: unknown, maxAgeMs: number, now = Date.now()): boolean {
@@ -2035,6 +2043,12 @@ async function fetch4hCandles(coin: string, limit = 50): Promise<VariantCandle[]
 
 async function resolveVariantOutcomes(): Promise<number> {
   const db = await admin();
+  const settings = await fetchTradingSettings();
+
+  const variantTpPct = settings.variant_tp_pct;
+  const variantSlPct = settings.variant_sl_pct;
+  const variantMaxHours = settings.variant_max_hours;
+
   const minAgeMs = 60 * 60 * 1000;
   const maxAgeIso = new Date(Date.now() - minAgeMs).toISOString();
   const PER_PRESET_BATCH = 300;
@@ -2102,8 +2116,15 @@ async function resolveVariantOutcomes(): Promise<number> {
       const entryMs = new Date(variant.created_at).getTime();
       if (!Number.isFinite(entryMs)) continue;
 
-      const tpPrice = rec === "buy" ? entry * (1 + VARIANT_TP_PCT) : entry * (1 - VARIANT_TP_PCT);
-      const slPrice = rec === "buy" ? entry * (1 - VARIANT_SL_PCT) : entry * (1 + VARIANT_SL_PCT);
+      const tpPrice =
+        rec === "buy"
+          ? entry * (1 + variantTpPct)
+          : entry * (1 - variantTpPct);
+
+      const slPrice =
+        rec === "buy"
+          ? entry * (1 - variantSlPct)
+          : entry * (1 + variantSlPct);
 
       const relevantCandles = candles.filter((c) => c.closeTimeMs > entryMs && c.closeTimeMs <= nowMs);
 
@@ -2119,7 +2140,8 @@ async function resolveVariantOutcomes(): Promise<number> {
 
       if (!outcome) {
         const ageHours = (nowMs - entryMs) / 3_600_000;
-        if (ageHours >= VARIANT_MAX_HOURS) {
+
+        if (ageHours >= variantMaxHours) {
           const expiryCandle = relevantCandles[relevantCandles.length - 1];
           if (expiryCandle) { outcome = "expired"; exitPrice = expiryCandle.close; }
         }
@@ -2206,9 +2228,17 @@ async function placeLiveOrder(coin: string, side: "buy" | "sell", quantity: numb
 
 async function closeTriggeredTrades(): Promise<number> {
   const db = await admin();
+  const settings = await fetchTradingSettings();
+
+  const staleExitHours = settings.stale_exit_hours;
+  const staleExitMinPnlPct = settings.stale_exit_min_pnl_pct;
+  const maxHoldHours = settings.max_hold_hours;
+
   const { data: openTrades, error } = await db
     .from("trades")
-    .select("id, symbol, side, quantity, entry_price, stop_loss, take_profit, mode, created_at")
+    .select(
+      "id, symbol, side, quantity, entry_price, stop_loss, take_profit, mode, created_at",
+    )
     .eq("status", "open");
   if (error) throw error;
   const trades = (openTrades ?? []) as {
@@ -2239,8 +2269,10 @@ async function closeTriggeredTrades(): Promise<number> {
     const pnlPctNow = entryPrice > 0
       ? ((trade.side === "buy" ? price - entryPrice : entryPrice - price) / entryPrice) * 100
       : 0;
-    const stale = ageHours >= STALE_EXIT_HOURS && Math.abs(pnlPctNow) < STALE_EXIT_MIN_PNL_PCT;
-    const expired = ageHours >= MAX_HOLD_HOURS;
+    const stale =
+      ageHours >= staleExitHours &&
+      Math.abs(pnlPctNow) < staleExitMinPnlPct;
+    const expired = ageHours >= maxHoldHours;
 
     if (!hitStopLoss && !hitTakeProfit && !stale && !expired) continue;
 
@@ -2354,6 +2386,7 @@ async function attemptRotation(
 export async function executeTrades(): Promise<number> {
   const db = await admin();
   const mode = tradingMode();
+  const settings = await fetchTradingSettings();
   await closeTriggeredTrades();
   const since = new Date(Date.now() - 15 * 60 * 1000).toISOString();
   const cooldownSince = new Date(Date.now() - SYMBOL_COOLDOWN_MINUTES * 60 * 1000).toISOString();
@@ -2404,8 +2437,14 @@ export async function executeTrades(): Promise<number> {
     if (Number.isFinite(signalPrice) && signalPrice > 0 && Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT) continue;
 
     const side = signal.recommendation as "buy" | "sell";
-    const stopLoss = side === "buy" ? price * (1 - STOP_LOSS_PCT) : price * (1 + STOP_LOSS_PCT);
-    const takeProfit = side === "buy" ? price * (1 + TAKE_PROFIT_PCT) : price * (1 - TAKE_PROFIT_PCT);
+    const stopLoss =
+      side === "buy"
+        ? price * (1 - settings.real_sl_pct)
+        : price * (1 + settings.real_sl_pct);
+    const takeProfit =
+      side === "buy"
+        ? price * (1 + settings.real_tp_pct)
+        : price * (1 - settings.real_tp_pct);
 
     if (signal.created_at && !isFresh(signal.created_at, 15 * 60 * 1000)) continue;
 
