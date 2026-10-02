@@ -33,6 +33,17 @@ import {
   type MarketSession,
   type MarketSessionConfig,
 } from "./market-session";
+import {
+  CORE_FALLBACK_WATCHLIST,
+} from "./coin-provenance";
+import {
+  getActiveWatchlist,
+  getActiveWatchlistContext,
+  resolveWatchlistContext,
+  invalidateWatchlistCache,
+  tagsFor,
+  type WatchlistContext,
+} from "./watchlist-resolver.server";
 
 /* ───────────── Shared types ───────────── */
 
@@ -68,21 +79,25 @@ async function pMap<T, R>(
   return results;
 }
 
-/* ───────────── Watchlist & market config ───────────── */
+/* ───────────── Watchlist (DEPRECATED STATIC) ───────────── */
 
-export const WATCHLIST = [
-  "BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "TRX", "AVAX", "DOT",
-  "LINK", "MATIC", "LTC", "BCH", "XLM", "ETC", "ATOM", "ALGO", "VET", "ICP",
-  "HBAR", "THETA", "FTM", "RUNE", "KAVA", "EOS", "NEO", "IOTA", "KSM", "CELO",
-  "ROSE", "ONE", "ZIL", "NEAR", "APT", "SUI", "SEI", "TIA", "INJ", "ARB",
-  "OP", "STRK", "MANTA", "ZK", "BLAST", "LRC", "METIS", "MINA", "W",
-  "SHIB", "PEPE", "WIF", "BONK", "FLOKI", "ORDI", "BOME", "MEME",
-  "UNI", "CRV", "AAVE", "MKR", "COMP", "SNX", "SUSHI", "1INCH", "CAKE", "DYDX",
-  "GMX", "LDO", "ENS", "BAL", "YFI", "UMA", "JUP", "PYTH", "JTO",
-  "FET", "RNDR", "WLD", "ARKM", "TAO",
-  "SAND", "MANA", "AXS", "GALA", "IMX", "APE", "ENJ", "CHZ",
-  "FIL", "AR", "STORJ", "GRT", "ANKR", "BAT", "BAND",
-];
+// ─────────────────────────────────────────────────────────────────────
+// DEPRECATED STATIC WATCHLIST — kept for backward compatibility only.
+//
+// The pipeline now uses a DYNAMIC watchlist resolved from Hyperliquid
+// 24h volume + Binance listings. See watchlist-resolver.server.ts.
+//
+// This export exists solely for:
+//   1. UI components that display "watchlist size" in static contexts.
+//   2. Cold-start bootstrap if the resolver fails entirely.
+//
+// DO NOT add new symbols here. Use the RevolutX expander or rely on
+// dynamic resolution.
+// ─────────────────────────────────────────────────────────────────────
+export const WATCHLIST = CORE_FALLBACK_WATCHLIST;
+
+/** @deprecated Use `getActiveWatchlist()` instead. */
+export const STATIC_WATCHLIST_SIZE = CORE_FALLBACK_WATCHLIST.length;
 
 const WHALE_MIN_USD: Record<string, number> = {
   BTC: 50_000, ETH: 50_000, BNB: 50_000,
@@ -366,19 +381,6 @@ async function admin(): Promise<Admin> {
 
 /* ───────────── Feed health & alerting ───────────── */
 
-/**
- * Tracks feed health across the current pipeline run.
- *
- * - `indicatorsFailed` and `whalesFailed` are the only feeds strong enough to
- *   trip the circuit breaker (they represent market data sources that are
- *   core to signal generation). Predictions, council, and variants can be
- *   legitimately empty without indicating a systemic failure.
- * - When `degraded` is true, `runFullPipeline()` will:
- *   1. Emit a `feed_error` alert into `trade_alerts` (best-effort).
- *   2. Skip opening new positions (close-only mode via `executeTrades`).
- *   3. Record `status: "degraded"` in `pipeline_runs` (with a fallback to
- *      `"success"` + `error_message` prefix if the DB CHECK rejects it).
- */
 interface PipelineHealth {
   degraded: boolean;
   degradedReasons: string[];
@@ -402,28 +404,36 @@ function newPipelineHealth(): PipelineHealth {
  * in which case this insert will fail. We swallow the error and rely on
  * `pipeline_runs.error_message` + console logs as the fallback signal. The
  * pipeline never aborts because an alert couldn't be written.
+ *
+ * `tags` are propagated to the alert row for provenance tracking.
  */
 async function emitFeedAlert(
   db: Admin,
   eventType: "feed_error" | "circuit_breaker",
   message: string,
+  opts?: { symbol?: string | null; tags?: string[] },
 ): Promise<void> {
+  const tags = opts?.tags ?? [];
   try {
     await db.from("trade_alerts").insert({
       trade_id: null,
-      symbol: "SYSTEM",
+      symbol: opts?.symbol ?? "SYSTEM",
       side: null,
       event_type: eventType,
       entry_price: null,
       exit_price: null,
       pnl: null,
       pnl_pct: null,
+      tags,
       created_at: new Date().toISOString(),
     } as never);
-    console.log(`[FEED_ALERT] ${eventType} → ${message}`);
+    console.log(
+      `[FEED_ALERT] ${eventType} → ${message}` +
+        (tags.length > 0 ? ` [tags=${tags.join(",")}]` : ""),
+    );
   } catch (e) {
     console.error(
-      `[FEED_ALERT] trade_alerts insert failed (schema may require trade_id). ` +
+      `[FEED_ALERT] trade_alerts insert failed (schema may require trade_id or tags column). ` +
         `Fallback signal: pipeline_runs.error_message. Content: ${eventType} — ${message}`,
       e,
     );
@@ -564,16 +574,17 @@ async function hyperliquidTopMovers(): Promise<string[]> {
 
 export async function collectWhaleAlerts(): Promise<number> {
   const db = await admin();
+  const watchlist = await getActiveWatchlist();
   const { all: supported, top: movers } = await fetchHyperliquidUniverse();
   if (supported.size === 0) {
     console.error("[HL] universe empty — skipping whale fetch");
     return 0;
   }
-  const base = new Set(WATCHLIST);
-  const supportedBase = WATCHLIST.filter((c) => supported.has(c));
-  const skipped = WATCHLIST.length - supportedBase.length;
+  const base = new Set(watchlist);
+  const supportedBase = watchlist.filter((c) => supported.has(c));
+  const skipped = watchlist.length - supportedBase.length;
   if (skipped > 0)
-    console.log(`[HL] ${supportedBase.length}/${WATCHLIST.length} watchlist coins supported (skipped ${skipped})`);
+    console.log(`[HL] ${supportedBase.length}/${watchlist.length} watchlist coins supported (skipped ${skipped})`);
   const coins = [...new Set([...supportedBase, ...movers])];
 
   const perCoinRows = await pMap(
@@ -649,12 +660,13 @@ interface BinanceAggTrade {
 
 export async function collectExchangeWhaleAlerts(): Promise<number> {
   const db = await admin();
+  const watchlist = await getActiveWatchlist();
   const startedAt = Date.now();
   let binanceSuccessCount = 0;
   let binanceFailCount = 0;
 
   const perCoinRows = await pMap(
-    WATCHLIST,
+    watchlist,
     async (coin) => {
       const out: Record<string, unknown>[] = [];
       const symbol = binanceSymbol(coin);
@@ -738,10 +750,11 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
 
 const COINLOBSTER_MIN_USD = 100_000;
 const COINLOBSTER_PRIORITY_COINS = ["BTC", "ETH", "SOL", "XRP", "DOGE"];
-const COINLOBSTER_WATCHLIST_FILTER = new Set(WATCHLIST);
 
 export async function collectCoinLobsterWhales(): Promise<number> {
   const db = await admin();
+  const watchlist = await getActiveWatchlist();
+  const COINLOBSTER_WATCHLIST_FILTER = new Set(watchlist);
   const startedAt = Date.now();
 
   const [globalTrades, ...coinBatches] = await Promise.all([
@@ -1137,8 +1150,9 @@ async function fetchIndicatorForTimeframe(
 
 export async function collectIndicators(): Promise<number> {
   const db = await admin();
+  const watchlist = await getActiveWatchlist();
   const movers = await hyperliquidTopMovers();
-  const coins = [...new Set([...WATCHLIST, ...movers])];
+  const coins = [...new Set([...watchlist, ...movers])];
 
   const tasks: { coin: string; timeframe: string }[] = [];
   for (const coin of coins) {
@@ -1582,8 +1596,9 @@ async function groqBatchCouncil(
 export async function collectCouncilSignals(): Promise<number> {
   const db = await admin();
   const rows: Record<string, unknown>[] = [];
+  const watchlist = await getActiveWatchlist();
   const movers = await hyperliquidTopMovers();
-  const symbols = [...new Set([...WATCHLIST, ...movers])];
+  const symbols = [...new Set([...watchlist, ...movers])];
   if (symbols.length === 0) return 0;
   const binSymbols = symbols.map(binanceSymbol);
   const sixHoursAgo = new Date(Date.now() - WHALE_LOOKBACK_HOURS * 60 * 60 * 1000).toISOString();
@@ -1896,8 +1911,12 @@ export async function combineSignals(): Promise<number> {
   const nowSession = classifyMarketSession(new Date());
   console.log(`[MARKET_SESSION] ${sessionLabel(nowSession.session)} utc_hour=${nowSession.utcHour}${nowSession.isWeekend ? " WEEKEND" : ""}`);
 
+  const watchlistCtx = await getActiveWatchlistContext();
   const { data: councilRows } = await db.from("council_signals").select("symbol");
-  const symbols = [...new Set([...WATCHLIST, ...((councilRows ?? []) as { symbol: string }[]).map((r) => r.symbol)])];
+  const symbols = [...new Set([
+    ...watchlistCtx.symbols,
+    ...((councilRows ?? []) as { symbol: string }[]).map((r) => r.symbol),
+  ])];
   if (symbols.length === 0) return 0;
   const binSymbols = symbols.map(binanceSymbol);
   const whaleSince = new Date(Date.now() - WHALE_LOOKBACK_HOURS * 60 * 60 * 1000).toISOString();
@@ -2137,6 +2156,7 @@ export async function combineSignals(): Promise<number> {
         outcome: "open",
         regime_label: regime.label,
         market_session: nowSession.session,
+        source_tags: tagsFor(symbol, watchlistCtx),
         created_at: nowIso,
       });
     }
@@ -2170,6 +2190,7 @@ export async function combineSignals(): Promise<number> {
           fingerprint,
           regime_label: regime.label,
           market_session: nowSession.session,
+          source_tags: tagsFor(symbol, watchlistCtx),
           created_at: nowIso,
         } as never,
         { onConflict: "fingerprint", ignoreDuplicates: false },
@@ -2219,10 +2240,7 @@ interface VariantCandle {
  * Uses 1h candles (VARIANT_RESOLVE_TIMEFRAME) with a 100-candle limit,
  * giving ~4.16 days of history. This is comfortably above the 72h variant
  * expiry window and provides 4× higher temporal precision than 4h candles
- * for detecting the ordering of TP/SL hits within a single bar. Without
- * this granularity, a 4h candle that touches both TP and SL would be
- * incorrectly recorded as a loss, because the resolution loop checks SL
- * before TP.
+ * for detecting the ordering of TP/SL hits within a single bar.
  */
 async function fetchVariantResolutionCandles(
   coin: string,
@@ -2524,10 +2542,12 @@ async function closeTriggeredTrades(): Promise<number> {
     if (closeError) throw closeError;
     if (!closedTrade) continue;
 
+    const closeCtx = await getActiveWatchlistContext();
     const { error: alertError } = await db.from("trade_alerts").insert({
       trade_id: trade.id, symbol: trade.symbol, side: trade.side,
       event_type: closeReason, entry_price: entryPrice, exit_price: price,
       pnl: fee.netPnl, pnl_pct: fee.netPnlPct, created_at: closedAt,
+      tags: tagsFor(trade.symbol, closeCtx),
     } as never);
     if (alertError) throw alertError;
     closed += 1;
@@ -2595,10 +2615,12 @@ async function attemptRotation(
 
   if (closeErr) return null;
 
+  const rotationCtx = await getActiveWatchlistContext();
   await db.from("trade_alerts").insert({
     trade_id: weakest.id, symbol: weakest.symbol, side: weakest.side,
     event_type: "rotated_out", entry_price: entryPrice, exit_price: price,
     pnl: fee.netPnl, pnl_pct: fee.netPnlPct, created_at: closedAt,
+    tags: tagsFor(weakest.symbol, rotationCtx),
   } as never);
 
   console.log(`[ROTATION] closed ${weakest.symbol} (PnL ${weakest.pnlPct.toFixed(2)}%, orig ${(weakest.originalConfidence * 100).toFixed(0)}%) → room for ${newSignal.symbol}`);
@@ -2657,6 +2679,8 @@ export async function executeTrades(opts?: {
   let prices: Map<string, number>;
   try { prices = await allBinancePrices(); }
   catch (e) { console.error("batch price fetch failed in executeTrades", e); return 0; }
+
+  const execCtx = await getActiveWatchlistContext();
 
   let opened = 0;
   let rotationAttempted = false;
@@ -2728,6 +2752,7 @@ export async function executeTrades(opts?: {
       mode, status: "open", exchange_order_id: exchangeOrderId, entry_fee: entryFee,
       regime_label: currentRegimeLabel,
       market_session: tradeSession.session,
+      source_tags: tagsFor(signal.symbol, execCtx),
     } as never);
 
     if (tradeErr) {
@@ -2768,6 +2793,21 @@ export async function runFullPipeline() {
 
   let step = "init";
   try {
+    // ─── Watchlist resolution (once per pipeline) ───
+    step = "watchlist-resolve";
+    invalidateWatchlistCache();
+    const watchlistCtx = await resolveWatchlistContext();
+    console.log(
+      `[WATCHLIST] source=${watchlistCtx.meta.source} ` +
+        `total=${watchlistCtx.symbols.length} ` +
+        `pinned_always=${watchlistCtx.pinned_always.size} ` +
+        `pinned_open=${watchlistCtx.pinned_open.size} ` +
+        `revolutx=${watchlistCtx.revolutx.size} ` +
+        `hl_dynamic=${watchlistCtx.hl_dynamic.size} ` +
+        `(hl_candidates=${watchlistCtx.meta.hl_candidates}, ` +
+        `binance_filtered=${watchlistCtx.meta.binance_filtered})`,
+    );
+
     step = "whales";
     const [hlWhales, exWhales, clWhales] = await Promise.all([
       collectWhaleAlerts(),
@@ -2776,16 +2816,25 @@ export async function runFullPipeline() {
     ]);
     const whales = hlWhales + exWhales + clWhales;
     console.log(`[WHALES_TOTAL] hl=${hlWhales} binance=${exWhales} coinlobster=${clWhales} total=${whales}`);
+    console.log(
+      `[COIN_PROVENANCE] total=${watchlistCtx.symbols.length} ` +
+        `revolutx=${watchlistCtx.revolutx.size} ` +
+        `hl_dynamic=${watchlistCtx.hl_dynamic.size} ` +
+        `always_include=${watchlistCtx.pinned_always.size} ` +
+        `open_positions=${watchlistCtx.pinned_open.size}`,
+    );
 
     // ─── Feed health check: whales ───
     if (whales === 0) {
       health.whalesFailed = true;
       health.degraded = true;
       health.degradedReasons.push("whales=0 (all sources failed)");
+      // SYSTEM-level alert — no specific symbol, so no provenance tag.
       await emitFeedAlert(
         db,
         "feed_error",
         "CRITICAL: Whale collection returned 0 — Hyperliquid/Binance/CoinLobster all unavailable",
+        { symbol: null, tags: [] },
       );
     }
 
@@ -2801,6 +2850,7 @@ export async function runFullPipeline() {
         db,
         "feed_error",
         "CRITICAL: Indicators collection returned 0 — Binance/Bybit market data unavailable",
+        { symbol: null, tags: [] },
       );
     }
 
@@ -2845,6 +2895,7 @@ export async function runFullPipeline() {
         db,
         "circuit_breaker",
         `Circuit breaker OPEN — close-only mode. Reasons: ${health.degradedReasons.join("; ")}`,
+        { symbol: null, tags: [] },
       );
     }
     trades = await executeTrades({ skipNewEntries: circuitBreakerOpen });
@@ -2873,6 +2924,11 @@ export async function runFullPipeline() {
       ai_error: learning.error,
       ai_lessons_generated: learning.generated,
     };
+
+    console.log(
+      `[PIPELINE_DONE] watchlist_size=${watchlistCtx.symbols.length} ` +
+        `source=${watchlistCtx.meta.source}`,
+    );
 
     if (runId) {
       const { error: updateError } = await db
@@ -2921,6 +2977,7 @@ export async function runFullPipeline() {
       db,
       "feed_error",
       `${isTimeout ? "PIPELINE_TIMEOUT" : "PIPELINE_ERROR"}: ${message}`,
+      { symbol: null, tags: [] }, // SYSTEM-level, no specific provenance
     );
 
     if (runId) {
