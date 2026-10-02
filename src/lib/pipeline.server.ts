@@ -1197,7 +1197,7 @@ export async function collectPredictions(): Promise<number> {
 const BULLISH_QUESTION = /\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\b/i;
 const BEARISH_QUESTION = /\b(dip|drop|fall|below|crash|down to|under|bottom)\b/i;
 
-function predictionDirection(prediction: Row): "bullish" | "bearish" | "neutral" {
+export function predictionDirection(prediction: Row): "bullish" | "bearish" | "neutral" {
   const yes = Number(prediction?.["yes_price"]);
   if (!Number.isFinite(yes)) return "neutral";
   const q = String(prediction?.["question"] ?? "").toLowerCase();
@@ -1212,9 +1212,9 @@ function predictionDirection(prediction: Row): "bullish" | "bearish" | "neutral"
 
 /* ───────────── Multi-timeframe evaluator ───────────── */
 
-interface MultiTfInput { primary: Row; fast: Row; trend: Row; }
+export interface MultiTfInput { primary: Row; fast: Row; trend: Row; }
 
-interface MultiTfResult {
+export interface MultiTfResult {
   direction: SignalDir;
   score: number;
   aligned: boolean;
@@ -1225,7 +1225,7 @@ interface MultiTfResult {
   neuCount: number;
 }
 
-function evaluateMultiTimeframe(tf: MultiTfInput): MultiTfResult {
+export function evaluateMultiTimeframe(tf: MultiTfInput): MultiTfResult {
   const p = (tf.primary?.["signal"] as SignalDir | undefined) ?? "neutral";
   let f = (tf.fast?.["signal"] as SignalDir | undefined) ?? "neutral";
   const t = (tf.trend?.["signal"] as SignalDir | undefined) ?? "neutral";
@@ -1607,7 +1607,7 @@ function compositeMaxScore(w: StrategyConfig): number {
   );
 }
 
-function ruleBased(
+export function ruleBased(
   whale: Row, mtf: MultiTfResult, prediction: Row, council: Row,
   weights: StrategyConfig,
   options?: {
