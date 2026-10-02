@@ -14,10 +14,15 @@ interface VariantPerfRow {
   total_pnl_pct: number;
 }
 
+interface TradingSettings {
+  variant_max_hours: number;
+  variant_tp_pct: number;
+  variant_sl_pct: number;
+}
+
 /**
  * Πλήρης λίστα preset keys σε order εμφάνισης.
  * ΠΡΕΠΕΙ να είναι σε sync με το STRATEGY_PRESETS στο strategy.presets.ts.
- * Οτιδήποτε λείπει από εδώ δεν θα εμφανίζεται στο panel.
  */
 const PRESET_ORDER = [
   "balanced",
@@ -52,7 +57,6 @@ interface StrategyStats {
   totalPnlPct: number;
 }
 
-/** Zero-value stats για presets χωρίς signals ακόμη. */
 const ZERO_STATS: StrategyStats = {
   wins: 0,
   losses: 0,
@@ -64,7 +68,14 @@ const ZERO_STATS: StrategyStats = {
 
 const POSITION_SIZE_USD = 1000;
 
+const FALLBACK_SETTINGS: TradingSettings = {
+  variant_max_hours: 72,
+  variant_tp_pct: 0.04,
+  variant_sl_pct: 0.03,
+};
+
 export function VariantComparisonPanel() {
+  // ── Fetch performance data ──
   const { data, isLoading, error } = useQuery<VariantPerfRow[]>({
     queryKey: ["strategy-variants-perf"],
     queryFn: async () => {
@@ -76,6 +87,25 @@ export function VariantComparisonPanel() {
     },
     refetchInterval: 60_000,
     staleTime: 30_000,
+  });
+
+  // ── Fetch dynamic settings ──
+  const { data: settings } = useQuery<TradingSettings>({
+    queryKey: ["trading-settings-variant"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("pipeline_settings")
+        .select("variant_max_hours, variant_tp_pct, variant_sl_pct")
+        .single();
+      if (error) throw error;
+      return {
+        variant_max_hours: Number(data?.variant_max_hours ?? 72),
+        variant_tp_pct: Number(data?.variant_tp_pct ?? 0.04),
+        variant_sl_pct: Number(data?.variant_sl_pct ?? 0.03),
+      };
+    },
+    refetchInterval: 300_000,
+    staleTime: 60_000,
   });
 
   if (isLoading) {
@@ -101,8 +131,9 @@ export function VariantComparisonPanel() {
   }
 
   const rows = data ?? [];
+  const s = settings ?? FALLBACK_SETTINGS;
 
-  // Build aggregation map από τα πραγματικά rows
+  // ── Build aggregation ──
   const agg = new Map<string, StrategyStats>();
   for (const r of rows) {
     agg.set(r.strategy_name, {
@@ -115,25 +146,26 @@ export function VariantComparisonPanel() {
     });
   }
 
-  // ✅ FIX: Δείχνουμε ΟΛΑ τα presets από το PRESET_ORDER,
-  //    ακόμη και αυτά που δεν έχουν ακόμη signals.
-  //    (Πριν: .filter((s) => agg.has(s)) έκρυβε τα νέα presets.)
   const strategies = PRESET_ORDER;
-
   const totalResolved = strategies.reduce(
-    (sum, s) => sum + (agg.get(s)?.resolved ?? 0),
+    (sum, s2) => sum + (agg.get(s2)?.resolved ?? 0),
     0,
   );
 
-  // Find best strategy by total PnL (μόνο με adequate sample)
+  // ── Best strategy ──
   let bestStrategy: { name: string; pnl: number } | null = null;
-  for (const s of strategies) {
-    const a = agg.get(s) ?? ZERO_STATS;
+  for (const s2 of strategies) {
+    const a = agg.get(s2) ?? ZERO_STATS;
     const pnlUsd = a.totalPnlPct * (POSITION_SIZE_USD / 100);
     if (a.resolved >= 5 && (!bestStrategy || pnlUsd > bestStrategy.pnl)) {
-      bestStrategy = { name: s, pnl: pnlUsd };
+      bestStrategy = { name: s2, pnl: pnlUsd };
     }
   }
+
+  // ── Dynamic labels ──
+  const tpLabel = `TP +${(s.variant_tp_pct * 100).toFixed(0)}%`;
+  const slLabel = `SL −${(s.variant_sl_pct * 100).toFixed(0)}%`;
+  const expiryLabel = `${s.variant_max_hours}h expiry`;
 
   return (
     <section className="panel">
@@ -162,7 +194,11 @@ export function VariantComparisonPanel() {
           <strong className="text-foreground">
             ${POSITION_SIZE_USD.toLocaleString()}
           </strong>{" "}
-          per trade — TP +4%, SL −3%, 7-day expiry, no position caps.
+          per trade —{" "}
+          <strong className="text-foreground">{tpLabel}</strong>,{" "}
+          <strong className="text-foreground">{slLabel}</strong>,{" "}
+          <strong className="text-foreground">{expiryLabel}</strong>, no
+          position caps.
           <br />
           <span className="text-muted-foreground/70">
             Shadow-only: does NOT affect real trades.
@@ -193,8 +229,8 @@ export function VariantComparisonPanel() {
               </tr>
             </thead>
             <tbody>
-              {strategies.map((s) => {
-                const a = agg.get(s) ?? ZERO_STATS;
+              {strategies.map((s2) => {
+                const a = agg.get(s2) ?? ZERO_STATS;
                 const decided = a.wins + a.losses;
                 const winRate =
                   decided > 0 ? (a.wins / decided) * 100 : 0;
@@ -203,12 +239,12 @@ export function VariantComparisonPanel() {
                 const totalPnlUsd =
                   a.totalPnlPct * (POSITION_SIZE_USD / 100);
                 const pnlPositive = totalPnlUsd >= 0;
-                const isBest = bestStrategy?.name === s;
+                const isBest = bestStrategy?.name === s2;
                 const hasData = a.resolved > 0 || a.open > 0;
 
                 return (
                   <tr
-                    key={s}
+                    key={s2}
                     className={`border-t border-border font-mono text-xs ${
                       isBest
                         ? "bg-bull/5"
@@ -218,7 +254,7 @@ export function VariantComparisonPanel() {
                     }`}
                   >
                     <td className="py-1.5 pr-3 font-semibold">
-                      {PRESET_LABEL[s] ?? s}
+                      {PRESET_LABEL[s2] ?? s2}
                       {isBest && (
                         <span className="ml-1.5 rounded border border-bull/40 bg-bull/10 px-1 py-0.5 text-[9px] font-semibold text-bull">
                           BEST
@@ -295,8 +331,8 @@ export function VariantComparisonPanel() {
       )}
 
       <p className="mt-3 border-t border-border/70 pt-2 text-[10px] text-muted-foreground">
-        Assumptions: TP +4% · SL −3% · expiry 7d · ${POSITION_SIZE_USD} per
-        trade · entry at 4h candle close.
+        Assumptions: {tpLabel} · {slLabel} · {expiryLabel} · $
+        {POSITION_SIZE_USD} per trade · entry at 4h candle close.
       </p>
     </section>
   );
