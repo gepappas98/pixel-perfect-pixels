@@ -11,15 +11,8 @@ import { maybeAutoSwitchStrategy } from "./strategy.functions";
 import { fetchCleanupConfig } from "./cleanup-config.server";
 import { detectHardConflict } from "./watch-conflict";
 import { serializeError } from "./error-serialize";
-import {
-  checkMtfGate,
-  type MtfCounts,
-  type MtfGateConfig,
-} from "./mtf-gate";
-import {
-  computeRegimeSnapshot,
-  type RegimeSnapshot,
-} from "./regime-snapshot";
+import { checkMtfGate, type MtfCounts, type MtfGateConfig } from "./mtf-gate";
+import { computeRegimeSnapshot } from "./regime-snapshot";
 import {
   fetchCoinLobsterWhales,
   normalizeCoinLobsterTrade,
@@ -33,9 +26,7 @@ import {
   type MarketSession,
   type MarketSessionConfig,
 } from "./market-session";
-import {
-  CORE_FALLBACK_WATCHLIST,
-} from "./coin-provenance";
+import { CORE_FALLBACK_WATCHLIST } from "./coin-provenance";
 import {
   getActiveWatchlist,
   getActiveWatchlistContext,
@@ -54,14 +45,19 @@ import {
   HOT_THRESHOLD_USD,
   type HotWhaleAggregate,
 } from "./hot-whale.server";
+import {
+  evaluateGlobalRisk,
+  getGlobalRiskControl,
+  getGlobalRiskState,
+} from "./global-risk.server";
 
-/* ───────────── Shared types ───────────── */
+/* ───────────── Types ───────────── */
 
 type Row = Record<string, unknown> | null;
 type CouncilVerdict = "BUY" | "SELL" | "HOLD" | "AVOID";
 type SignalDir = "bullish" | "bearish" | "neutral";
 
-/* ───────────── Concurrency helper (pMap) ───────────── */
+/* ───────────── pMap ───────────── */
 
 async function pMap<T, R>(
   items: T[],
@@ -89,17 +85,9 @@ async function pMap<T, R>(
   return results;
 }
 
-/* ───────────── Watchlist (DEPRECATED STATIC) ───────────── */
+/* ───────────── Watchlist (deprecated) ───────────── */
 
-// ─────────────────────────────────────────────────────────────────────
-// DEPRECATED STATIC WATCHLIST — kept for backward compatibility only.
-// The pipeline now uses a DYNAMIC watchlist resolved from Hyperliquid
-// 24h volume + Binance listings. See watchlist-resolver.server.ts.
-// DO NOT add new symbols here.
-// ─────────────────────────────────────────────────────────────────────
-export const WATCHLIST = CORE_FALLBACK_WATCHLIST;
-
-/** @deprecated Use `getActiveWatchlist()` instead. */
+export const WATCHLIST: string[] = [...CORE_FALLBACK_WATCHLIST];
 export const STATIC_WATCHLIST_SIZE = CORE_FALLBACK_WATCHLIST.length;
 
 const WHALE_MIN_USD: Record<string, number> = {
@@ -125,14 +113,12 @@ const whaleFloor = (coin: string) =>
 const HL_FLOOR_MULTIPLIER = 2;
 const hlWhaleFloor = (coin: string) => whaleFloor(coin) * HL_FLOOR_MULTIPLIER;
 
+/* ───────────── Timeframes & thresholds ───────────── */
+
 const PRIMARY_TIMEFRAME = "4h";
 const FAST_TIMEFRAME = "1h";
 const TREND_TIMEFRAME = "1d";
-const TIMEFRAMES = [
-  PRIMARY_TIMEFRAME,
-  FAST_TIMEFRAME,
-  TREND_TIMEFRAME,
-] as const;
+const TIMEFRAMES = [PRIMARY_TIMEFRAME, FAST_TIMEFRAME, TREND_TIMEFRAME] as const;
 const KLINE_LIMIT = 100;
 
 const MIN_CONFIDENCE = 0.6;
@@ -163,29 +149,20 @@ function isFresh(value: unknown, maxAgeMs: number, now = Date.now()): boolean {
   return Number.isFinite(ts) && now - ts >= 0 && now - ts <= maxAgeMs;
 }
 
-function isFreshRow(
-  row: Row,
-  field: string,
-  maxAgeMs: number,
-  now = Date.now(),
-): boolean {
+function isFreshRow(row: Row, field: string, maxAgeMs: number, now = Date.now()): boolean {
   return !!row && isFresh(row[field], maxAgeMs, now);
 }
 
 async function fetchWithTimeout(input: string, init?: RequestInit) {
-  return fetch(input, {
-    ...init,
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
+  return fetch(input, { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
 }
 
-/* ───────────── Multi-exchange market data ───────────── */
+/* ───────────── Exchange candle fetching ───────────── */
 
 const BINANCE_MARKET_HOSTS = [
   "https://api.binance.com",
   "https://data-api.binance.vision",
 ] as const;
-
 const BYBIT_HOST = "https://api.bybit.com";
 let preferredMarketHost: (typeof BINANCE_MARKET_HOSTS)[number] | null = null;
 
@@ -205,105 +182,59 @@ function toBybitInterval(timeframe: string): string | null {
 
 async function binancePublicGet(pathAndQuery: string): Promise<Response> {
   const hosts = preferredMarketHost
-    ? [preferredMarketHost, ...BINANCE_MARKET_HOSTS.filter((host) => host !== preferredMarketHost)]
+    ? [preferredMarketHost, ...BINANCE_MARKET_HOSTS.filter((h) => h !== preferredMarketHost)]
     : [...BINANCE_MARKET_HOSTS];
-
   let lastResponse: Response | null = null;
   const attempts: string[] = [];
-
   for (const host of hosts) {
     const t0 = Date.now();
     try {
       const response = await fetchWithTimeout(`${host}${pathAndQuery}`);
       const ms = Date.now() - t0;
       attempts.push(`${host}→${response.status}(${ms}ms)`);
-
       if (response.ok) {
-        if (preferredMarketHost !== host) {
-          console.log(`[BINANCE_GET] preferred host set to ${host}`);
-        }
         preferredMarketHost = host;
         return response;
       }
-
-      if (![403, 418, 429, 451].includes(response.status) && response.status < 500) {
-        return response;
-      }
-
-      console.warn(`[BINANCE_GET] ${host} returned ${response.status}, trying next host`);
+      if (![403, 418, 429, 451].includes(response.status) && response.status < 500) return response;
       lastResponse = response;
     } catch (e) {
       const ms = Date.now() - t0;
       const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
       attempts.push(`${host}→THREW(${ms}ms:${msg.slice(0, 60)})`);
-      console.error(`[BINANCE_GET] ${host} threw after ${ms}ms: ${msg}`);
     }
   }
-
-  const summary = attempts.join(" | ");
-  console.error(`[BINANCE_GET] ALL HOSTS FAILED for ${pathAndQuery} — ${summary}`);
-
-  return (
-    lastResponse ??
-    new Response(
-      JSON.stringify({ error: "all hosts failed", attempts }),
-      { status: 503, headers: { "Content-Type": "application/json" } },
-    )
+  return lastResponse ?? new Response(
+    JSON.stringify({ error: "all hosts failed", attempts }),
+    { status: 503, headers: { "Content-Type": "application/json" } },
   );
 }
 
 interface BybitKlineResult {
-  retCode: number;
-  retMsg: string;
-  result?: { category: string; symbol: string; list: string[][]; };
+  retCode: number; retMsg: string;
+  result?: { category: string; symbol: string; list: string[][] };
 }
 
-async function bybitPublicGet(
-  symbol: string,
-  interval: string,
-  limit: number,
-): Promise<unknown[][] | null> {
+async function bybitPublicGet(symbol: string, interval: string, limit: number): Promise<unknown[][] | null> {
   const url = new URL(`${BYBIT_HOST}/v5/market/kline`);
   url.searchParams.set("category", "spot");
   url.searchParams.set("symbol", symbol);
   url.searchParams.set("interval", interval);
   url.searchParams.set("limit", String(Math.min(limit, 1000)));
-
-  const t0 = Date.now();
   try {
     const res = await fetchWithTimeout(url.toString());
-    const ms = Date.now() - t0;
-
-    if (!res.ok) {
-      console.warn(`[BYBIT_GET] ${symbol} ${interval} → HTTP ${res.status} (${ms}ms)`);
-      return null;
-    }
-
+    if (!res.ok) return null;
     const json = (await res.json()) as BybitKlineResult;
-    if (json.retCode !== 0) {
-      console.warn(`[BYBIT_GET] ${symbol} ${interval} → retCode=${json.retCode} msg=${json.retMsg}`);
-      return null;
-    }
-
+    if (json.retCode !== 0) return null;
     const list = json.result?.list;
-    if (!Array.isArray(list) || list.length === 0) {
-      console.warn(`[BYBIT_GET] ${symbol} ${interval} → empty list`);
-      return null;
-    }
-
-    console.log(`[BYBIT_GET] ${symbol} ${interval} → ${list.length} candles (${ms}ms)`);
-
+    if (!Array.isArray(list) || list.length === 0) return null;
     const chronological = [...list].reverse();
     const intervalMs = parseBybitIntervalMs(interval);
-
     return chronological.map((k) => {
       const startMs = Number(k[0]);
       return [k[0], k[1], k[2], k[3], k[4], k[5], String(startMs + intervalMs)];
     });
-  } catch (e) {
-    const ms = Date.now() - t0;
-    const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-    console.error(`[BYBIT_GET] ${symbol} ${interval} threw after ${ms}ms: ${msg}`);
+  } catch {
     return null;
   }
 }
@@ -319,48 +250,33 @@ function parseBybitIntervalMs(interval: string): number {
 type CandleSource = "binance" | "bybit";
 
 async function fetchCandlesUnified(
-  coin: string,
-  timeframe: string,
+  coin: string, timeframe: string,
 ): Promise<{ source: CandleSource; candles: unknown[][] } | null> {
   const binanceSym = binanceSymbol(coin);
-  const binancePath = `/api/v3/klines?symbol=${binanceSym}&interval=${timeframe}&limit=${KLINE_LIMIT}`;
-  const binanceRes = await binancePublicGet(binancePath);
-
+  const binanceRes = await binancePublicGet(
+    `/api/v3/klines?symbol=${binanceSym}&interval=${timeframe}&limit=${KLINE_LIMIT}`,
+  );
   if (binanceRes.ok) {
     try {
       const data = (await binanceRes.json()) as unknown[][];
-      if (Array.isArray(data) && data.length > 0) {
-        return { source: "binance", candles: data };
-      }
-    } catch { /* fall through */ }
+      if (Array.isArray(data) && data.length > 0) return { source: "binance", candles: data };
+    } catch {}
   }
-
   const bybitInterval = toBybitInterval(timeframe);
-  if (!bybitInterval) {
-    console.error(`[FALLBACK] ${coin} ${timeframe} — unsupported Bybit interval`);
-    return null;
-  }
-
+  if (!bybitInterval) return null;
   const bybitCandles = await bybitPublicGet(binanceSym, bybitInterval, KLINE_LIMIT);
-  if (bybitCandles && bybitCandles.length > 0) {
-    console.log(`[FALLBACK] ${coin} ${timeframe} → Bybit (${bybitCandles.length} candles)`);
-    return { source: "bybit", candles: bybitCandles };
-  }
-
-  console.error(`[FALLBACK] ${coin} ${timeframe} — ALL SOURCES FAILED`);
+  if (bybitCandles && bybitCandles.length > 0) return { source: "bybit", candles: bybitCandles };
   return null;
 }
 
-type Admin = Awaited<
-  typeof import("@/integrations/supabase/client.server")
->["supabaseAdmin"];
+type Admin = Awaited<typeof import("@/integrations/supabase/client.server")>["supabaseAdmin"];
 
 async function admin(): Promise<Admin> {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   return supabaseAdmin;
 }
 
-/* ───────────── Feed health & alerting ───────────── */
+/* ───────────── Feed health ───────────── */
 
 interface PipelineHealth {
   degraded: boolean;
@@ -370,12 +286,7 @@ interface PipelineHealth {
 }
 
 function newPipelineHealth(): PipelineHealth {
-  return {
-    degraded: false,
-    degradedReasons: [],
-    indicatorsFailed: false,
-    whalesFailed: false,
-  };
+  return { degraded: false, degradedReasons: [], indicatorsFailed: false, whalesFailed: false };
 }
 
 async function emitFeedAlert(
@@ -398,16 +309,9 @@ async function emitFeedAlert(
       tags,
       created_at: new Date().toISOString(),
     } as never);
-    console.log(
-      `[FEED_ALERT] ${eventType} → ${message}` +
-        (tags.length > 0 ? ` [tags=${tags.join(",")}]` : ""),
-    );
+    console.log(`[FEED_ALERT] ${eventType} → ${message}` + (tags.length > 0 ? ` [tags=${tags.join(",")}]` : ""));
   } catch (e) {
-    console.error(
-      `[FEED_ALERT] trade_alerts insert failed. ` +
-        `Fallback signal: pipeline_runs.error_message. Content: ${eventType} — ${message}`,
-      e,
-    );
+    console.error(`[FEED_ALERT] insert failed: ${eventType} — ${message}`, e);
   }
 }
 
@@ -430,16 +334,10 @@ function isCalmRegime(label: string | null): boolean {
 
 async function fetchStrategy(): Promise<StrategyConfig> {
   const now = Date.now();
-  if (strategyCache && now - strategyCache.ts < STRATEGY_CACHE_TTL_MS) {
-    return strategyCache.config;
-  }
+  if (strategyCache && now - strategyCache.ts < STRATEGY_CACHE_TTL_MS) return strategyCache.config;
   try {
     const db = await admin();
-    const { data, error } = await db
-      .from("strategy_config")
-      .select("*")
-      .eq("id", 1)
-      .maybeSingle();
+    const { data, error } = await db.from("strategy_config").select("*").eq("id", 1).maybeSingle();
     if (error) throw error;
     if (!data) {
       strategyCache = { config: DEFAULT_STRATEGY, ts: now };
@@ -473,15 +371,11 @@ const TOP_MOVERS_COUNT = 25;
 const HL_CACHE_TTL_MS = 60_000;
 
 interface HlTrade {
-  px: string; sz: string; side: "B" | "A"; time: number; tid: number; hash?: string;
+  px: string; sz: string; side: "B" | "A";
+  time: number; tid: number; hash?: string;
 }
 
-interface HyperliquidUniverse {
-  all: Set<string>;
-  top: string[];
-  ts: number;
-}
-
+interface HyperliquidUniverse { all: Set<string>; top: string[]; ts: number; }
 let hlUniverseCache: HyperliquidUniverse | null = null;
 
 async function hlPost<T>(body: Record<string, unknown>): Promise<T> {
@@ -490,24 +384,19 @@ async function hlPost<T>(body: Record<string, unknown>): Promise<T> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok)
-    throw new Error(`Hyperliquid ${String(body["type"])} HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`Hyperliquid ${String(body["type"])} HTTP ${res.status}`);
   return (await res.json()) as T;
 }
 
 async function fetchHyperliquidUniverse(): Promise<HyperliquidUniverse> {
   const now = Date.now();
-  if (hlUniverseCache && now - hlUniverseCache.ts < HL_CACHE_TTL_MS)
-    return hlUniverseCache;
+  if (hlUniverseCache && now - hlUniverseCache.ts < HL_CACHE_TTL_MS) return hlUniverseCache;
   try {
     const [meta, ctxs] = await hlPost<
       [{ universe: { name: string }[] }, { dayNtlVlm?: string }[]]
     >({ type: "metaAndAssetCtxs" });
     const all = new Set(meta.universe.map((u) => u.name));
-    if (all.size === 0) {
-      console.error("[HL] empty universe returned, not caching");
-      return { all: new Set(), top: [], ts: 0 };
-    }
+    if (all.size === 0) return { all: new Set(), top: [], ts: 0 };
     const top = meta.universe
       .map((u, i) => ({ coin: u.name, vol: parseFloat(ctxs[i]?.dayNtlVlm ?? "0") || 0 }))
       .sort((a, b) => b.vol - a.vol)
@@ -516,7 +405,7 @@ async function fetchHyperliquidUniverse(): Promise<HyperliquidUniverse> {
     hlUniverseCache = { all, top, ts: now };
     return hlUniverseCache;
   } catch (e) {
-    console.error("[HL] metaAndAssetCtxs failed, not caching empty", e);
+    console.error("[HL] metaAndAssetCtxs failed", e);
     return { all: new Set(), top: [], ts: 0 };
   }
 }
@@ -526,21 +415,16 @@ async function hyperliquidTopMovers(): Promise<string[]> {
   return top;
 }
 
-/* ───────────── Whale alerts — Hyperliquid (HOT QUEUE FEEDING) ───────────── */
+/* ───────────── Whale alerts: Hyperliquid ───────────── */
 
 export async function collectWhaleAlerts(): Promise<number> {
   const db = await admin();
   const watchlist = await getActiveWatchlist();
   const { all: supported, top: movers } = await fetchHyperliquidUniverse();
-  if (supported.size === 0) {
-    console.error("[HL] universe empty — skipping whale fetch");
-    return 0;
-  }
+  if (supported.size === 0) return 0;
+
   const base = new Set(watchlist);
   const supportedBase = watchlist.filter((c) => supported.has(c));
-  const skipped = watchlist.length - supportedBase.length;
-  if (skipped > 0)
-    console.log(`[HL] ${supportedBase.length}/${watchlist.length} watchlist coins supported (skipped ${skipped})`);
   const coins = [...new Set([...supportedBase, ...movers])];
 
   const perCoinRows = await pMap(
@@ -550,29 +434,20 @@ export async function collectWhaleAlerts(): Promise<number> {
       try {
         const trades = await hlPost<HlTrade[]>({ type: "recentTrades", coin });
         if (!Array.isArray(trades)) return out;
-        const source = base.has(coin)
-          ? "hyperliquid-recent-trades"
-          : "hyperliquid-top-mover";
-
+        const source = base.has(coin) ? "hyperliquid-recent-trades" : "hyperliquid-top-mover";
         const floor = base.has(coin) ? hlWhaleFloor(coin) : whaleFloor(coin);
-
         for (const t of trades) {
           const usd = parseFloat(t.px) * parseFloat(t.sz);
           if (!Number.isFinite(usd) || usd < floor) continue;
           out.push({
-            symbol: coin,
-            chain: "hyperliquid-perp",
+            symbol: coin, chain: "hyperliquid-perp",
             direction: t.side === "B" ? "accumulation" : "distribution",
-            usd_value: usd,
-            tx_hash: t.hash ?? String(t.tid),
-            source,
-            created_at: new Date(t.time).toISOString(),
+            usd_value: usd, tx_hash: t.hash ?? String(t.tid),
+            source, created_at: new Date(t.time).toISOString(),
             raw: t as unknown as Record<string, unknown>,
           });
         }
-      } catch (e) {
-        console.error(`[HL] whale fetch failed for ${coin}`, e);
-      }
+      } catch (e) { console.error(`[HL] whale fetch failed for ${coin}`, e); }
       return out;
     },
     10,
@@ -581,12 +456,10 @@ export async function collectWhaleAlerts(): Promise<number> {
   const rows = perCoinRows.flat();
   if (rows.length === 0) return 0;
 
-  // ─── Hot whale queue: capture non-watchlist symbols with meaningful USD ───
+  // Hot whale queue feeding
   const watchlistSet = new Set(watchlist);
   const hotCandidates = rows.filter(
-    (r) =>
-      !watchlistSet.has(String(r["symbol"])) &&
-      Number(r["usd_value"]) >= HOT_THRESHOLD_USD,
+    (r) => !watchlistSet.has(String(r["symbol"])) && Number(r["usd_value"]) >= HOT_THRESHOLD_USD,
   );
   if (hotCandidates.length > 0) {
     const bySymbol = new Map<string, { usd: number; isBuy: boolean; source: string }>();
@@ -598,51 +471,34 @@ export async function collectWhaleAlerts(): Promise<number> {
       const existing = bySymbol.get(sym);
       if (!existing || usd > existing.usd) bySymbol.set(sym, { usd, isBuy, source });
     }
-
     await Promise.all(
       [...bySymbol.entries()].slice(0, 50).map(([sym, v]) =>
         recordHotWhale(sym, v.usd, v.isBuy, v.source),
       ),
     );
-
     const topLog = [...bySymbol.entries()]
-      .sort((a, b) => b[1].usd - a[1].usd)
-      .slice(0, 5)
-      .map(([sym, v]) => `${sym}=$${Math.round(v.usd / 1000)}K`)
-      .join(", ");
-    console.log(
-      `[HOT_WHALE] queued ${bySymbol.size} non-watchlist symbols (top: ${topLog})`,
-    );
+      .sort((a, b) => b[1].usd - a[1].usd).slice(0, 5)
+      .map(([sym, v]) => `${sym}=$${Math.round(v.usd / 1000)}K`).join(", ");
+    console.log(`[HOT_WHALE] queued ${bySymbol.size} non-watchlist symbols (top: ${topLog})`);
   }
 
-  const { data, error } = await db
-    .from("whale_alerts")
-    .upsert(rows as never, {
-      onConflict: "source,tx_hash",
-      ignoreDuplicates: true,
-    })
-    .select("id");
+  const { data, error } = await db.from("whale_alerts").upsert(rows as never, {
+    onConflict: "source,tx_hash", ignoreDuplicates: true,
+  }).select("id");
   if (error) throw error;
   return data?.length ?? 0;
 }
 
-/* ───────────── Whale alerts — Binance spot only ───────────── */
+/* ───────────── Binance spot whales ───────────── */
 
-const BINANCE_SYMBOL_MAP: Record<string, string> = {
-  MATIC: "POL",
-  RNDR: "RENDER",
-};
-const binanceSymbol = (coin: string) =>
-  `${BINANCE_SYMBOL_MAP[coin] ?? coin}USDT`;
+const BINANCE_SYMBOL_MAP: Record<string, string> = { MATIC: "POL", RNDR: "RENDER" };
+const binanceSymbol = (coin: string) => `${BINANCE_SYMBOL_MAP[coin] ?? coin}USDT`;
 
-interface BinanceAggTrade {
-  a: number; p: string; q: string; T: number; m: boolean;
-}
+interface BinanceAggTrade { a: number; p: string; q: string; T: number; m: boolean; }
 
 export async function collectExchangeWhaleAlerts(): Promise<number> {
   const db = await admin();
   const watchlist = await getActiveWatchlist();
-  const startedAt = Date.now();
   let binanceSuccessCount = 0;
   let binanceFailCount = 0;
 
@@ -652,82 +508,40 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
       const out: Record<string, unknown>[] = [];
       const symbol = binanceSymbol(coin);
       const floor = whaleFloor(coin);
-
       try {
-        const res = await binancePublicGet(
-          `/api/v3/aggTrades?symbol=${symbol}&limit=1000`,
-        );
-
-        if (!res.ok) {
-          binanceFailCount++;
-          console.warn(`[WHALE_BINANCE] ${symbol} → HTTP ${res.status}, skipping`);
-          return out;
-        }
-
+        const res = await binancePublicGet(`/api/v3/aggTrades?symbol=${symbol}&limit=1000`);
+        if (!res.ok) { binanceFailCount++; return out; }
         const parsed = (await res.json()) as BinanceAggTrade[];
-        if (!Array.isArray(parsed)) {
-          binanceFailCount++;
-          console.warn(`[WHALE_BINANCE] ${symbol} → invalid response format`);
-          return out;
-        }
-
+        if (!Array.isArray(parsed)) { binanceFailCount++; return out; }
         binanceSuccessCount++;
-
         for (const t of parsed) {
           const usd = parseFloat(t.p) * parseFloat(t.q);
           if (!Number.isFinite(usd) || usd < floor) continue;
           out.push({
-            symbol: coin,
-            chain: "binance-spot",
+            symbol: coin, chain: "binance-spot",
             direction: t.m ? "distribution" : "accumulation",
-            usd_value: usd,
-            tx_hash: String(t.a),
+            usd_value: usd, tx_hash: String(t.a),
             source: "binance-agg-trades",
             created_at: new Date(t.T).toISOString(),
             raw: t as unknown as Record<string, unknown>,
           });
         }
-      } catch (e) {
-        binanceFailCount++;
-        const msg = e instanceof Error ? e.message : String(e);
-        console.warn(`[WHALE_BINANCE] ${symbol} threw: ${msg}`);
-      }
-
+      } catch { binanceFailCount++; }
       return out;
     },
     10,
   );
 
   const rows = perCoinRows.flat();
-  const elapsed = Date.now() - startedAt;
-
-  console.log(
-    `[WHALE_BINANCE_COLLECTOR] ok=${binanceSuccessCount} fail=${binanceFailCount} candidates=${rows.length} in ${elapsed}ms`,
-  );
-
-  if (binanceSuccessCount === 0 && binanceFailCount > 0) {
-    console.error(
-      `[WHALE_BINANCE_COLLECTOR] CRITICAL: Binance whales completely failed (${binanceFailCount} coins).`,
-    );
-  }
-
   if (rows.length === 0) return 0;
-
-  const { data, error } = await db
-    .from("whale_alerts")
-    .upsert(rows as never, {
-      onConflict: "source,tx_hash",
-      ignoreDuplicates: true,
-    })
-    .select("id");
+  const { data, error } = await db.from("whale_alerts").upsert(rows as never, {
+    onConflict: "source,tx_hash", ignoreDuplicates: true,
+  }).select("id");
   if (error) throw error;
-
-  const written = data?.length ?? 0;
-  console.log(`[WHALE_BINANCE_COLLECTOR] Wrote ${written} new whale rows (from ${rows.length} candidates)`);
-  return written;
+  return data?.length ?? 0;
 }
 
-/* ───────────── Whale alerts — CoinLobster ───────────── */
+/* ───────────── CoinLobster whales ───────────── */
 
 const COINLOBSTER_MIN_USD = 100_000;
 const COINLOBSTER_PRIORITY_COINS = ["BTC", "ETH", "SOL", "XRP", "DOGE"];
@@ -735,8 +549,7 @@ const COINLOBSTER_PRIORITY_COINS = ["BTC", "ETH", "SOL", "XRP", "DOGE"];
 export async function collectCoinLobsterWhales(): Promise<number> {
   const db = await admin();
   const watchlist = await getActiveWatchlist();
-  const COINLOBSTER_WATCHLIST_FILTER = new Set(watchlist);
-  const startedAt = Date.now();
+  const filter = new Set(watchlist);
 
   const [globalTrades, ...coinBatches] = await Promise.all([
     fetchCoinLobsterWhales(undefined, 50),
@@ -747,68 +560,32 @@ export async function collectCoinLobsterWhales(): Promise<number> {
     ...(globalTrades ?? []),
     ...coinBatches.flatMap((b) => b ?? []),
   ];
-
-  console.log(
-    `[COINLOBSTER_COLLECTOR] Fetched ${allRaw.length} raw trades ` +
-      `(global=${globalTrades?.length ?? 0}, priority=${coinBatches.length} batches)`,
-  );
-
-  if (allRaw.length === 0) {
-    console.warn(`[COINLOBSTER_COLLECTOR] Zero raw trades retrieved`);
-    return 0;
-  }
+  if (allRaw.length === 0) return 0;
 
   const seenIds = new Set<string>();
   const rows: Record<string, unknown>[] = [];
-  let skippedLowUsd = 0;
-  let skippedOffWatchlist = 0;
 
   for (const raw of allRaw) {
     const norm = normalizeCoinLobsterTrade(raw);
     if (!norm) continue;
-    if (norm.usd_value < COINLOBSTER_MIN_USD) {
-      skippedLowUsd++;
-      continue;
-    }
-    if (!COINLOBSTER_WATCHLIST_FILTER.has(norm.symbol)) {
-      skippedOffWatchlist++;
-      continue;
-    }
+    if (norm.usd_value < COINLOBSTER_MIN_USD) continue;
+    if (!filter.has(norm.symbol)) continue;
     if (seenIds.has(norm.tx_hash)) continue;
     seenIds.add(norm.tx_hash);
-
     rows.push({
-      symbol: norm.symbol,
-      chain: norm.chain,
-      direction: norm.direction,
-      usd_value: norm.usd_value,
-      tx_hash: norm.tx_hash,
-      source: norm.source,
-      created_at: norm.created_at,
+      symbol: norm.symbol, chain: norm.chain, direction: norm.direction,
+      usd_value: norm.usd_value, tx_hash: norm.tx_hash,
+      source: norm.source, created_at: norm.created_at,
       raw: raw as unknown as Record<string, unknown>,
     });
   }
 
-  const elapsed = Date.now() - startedAt;
-  console.log(
-    `[COINLOBSTER_COLLECTOR] Filtered → ${rows.length} candidates ` +
-      `(skipped_low_usd=${skippedLowUsd}, skipped_off_watchlist=${skippedOffWatchlist}) in ${elapsed}ms`,
-  );
-
   if (rows.length === 0) return 0;
-
-  const { data, error } = await db
-    .from("whale_alerts")
-    .upsert(rows as never, {
-      onConflict: "source,tx_hash",
-      ignoreDuplicates: true,
-    })
-    .select("id");
+  const { data, error } = await db.from("whale_alerts").upsert(rows as never, {
+    onConflict: "source,tx_hash", ignoreDuplicates: true,
+  }).select("id");
   if (error) throw error;
-
-  const written = data?.length ?? 0;
-  console.log(`[COINLOBSTER_COLLECTOR] Wrote ${written} new whale rows (from ${rows.length} candidates)`);
-  return written;
+  return data?.length ?? 0;
 }
 
 /* ───────────── Technical indicators ───────────── */
@@ -818,8 +595,7 @@ function rsi(closes: number[], period = 14): number {
   let gains = 0, losses = 0;
   for (let i = closes.length - period; i < closes.length; i++) {
     const diff = closes[i]! - closes[i - 1]!;
-    if (diff >= 0) gains += diff;
-    else losses -= diff;
+    if (diff >= 0) gains += diff; else losses -= diff;
   }
   const avgGain = gains / period, avgLoss = losses / period;
   if (avgLoss === 0) return 100;
@@ -829,8 +605,7 @@ function rsi(closes: number[], period = 14): number {
 function ema(values: number[], period: number): number[] {
   const k = 2 / (period + 1);
   const out: number[] = [values[0]!];
-  for (let i = 1; i < values.length; i++)
-    out.push(values[i]! * k + out[i - 1]! * (1 - k));
+  for (let i = 1; i < values.length; i++) out.push(values[i]! * k + out[i - 1]! * (1 - k));
   return out;
 }
 
@@ -849,24 +624,19 @@ function bollinger(closes: number[], period = 20, mult = 2) {
   return { upper: mean + mult * sd, lower: mean - mult * sd };
 }
 
-function computeVwap(
-  highs: number[], lows: number[], closes: number[], volumes: number[],
-): number {
+function computeVwap(highs: number[], lows: number[], closes: number[], volumes: number[]): number {
   let cumVol = 0, cumTypVol = 0;
   const start = Math.max(0, closes.length - 24);
   for (let i = start; i < closes.length; i++) {
     const typPrice = (highs[i]! + lows[i]! + closes[i]!) / 3;
-    const volume = volumes[i]!;
-    cumTypVol += typPrice * volume;
-    cumVol += volume;
+    cumTypVol += typPrice * volumes[i]!;
+    cumVol += volumes[i]!;
   }
   return cumVol > 0 ? cumTypVol / cumVol : closes[closes.length - 1]!;
 }
 
 function aroon(highs: number[], lows: number[], period = 25) {
-  if (highs.length < period + 1 || lows.length < period + 1) {
-    return { up: 50, down: 50, osc: 0 };
-  }
+  if (highs.length < period + 1 || lows.length < period + 1) return { up: 50, down: 50, osc: 0 };
   const hSlice = highs.slice(-(period + 1));
   const lSlice = lows.slice(-(period + 1));
   let highestIdx = 0, lowestIdx = 0;
@@ -879,27 +649,16 @@ function aroon(highs: number[], lows: number[], period = 25) {
   return { up, down, osc: up - down };
 }
 
-function computeAtrPct(
-  highs: number[], lows: number[], closes: number[], period = 14,
-): number {
+function computeAtrPct(highs: number[], lows: number[], closes: number[], period = 14): number {
   if (closes.length < period + 1) return 0;
-
   const tr: number[] = [];
   for (let i = 1; i < closes.length; i++) {
-    const h = highs[i]!;
-    const l = lows[i]!;
-    const cPrev = closes[i - 1]!;
-    const trueRange = Math.max(h - l, Math.abs(h - cPrev), Math.abs(l - cPrev));
-    tr.push(trueRange);
+    const h = highs[i]!, l = lows[i]!, cPrev = closes[i - 1]!;
+    tr.push(Math.max(h - l, Math.abs(h - cPrev), Math.abs(l - cPrev)));
   }
-
   if (tr.length < period) return 0;
-
   let atr = tr.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  for (let i = period; i < tr.length; i++) {
-    atr = (atr * (period - 1) + tr[i]!) / period;
-  }
-
+  for (let i = period; i < tr.length; i++) atr = (atr * (period - 1) + tr[i]!) / period;
   const currentPrice = closes[closes.length - 1]!;
   return currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
 }
@@ -912,26 +671,15 @@ interface SmcResult {
   lastSwingHigh: number | null;
   lastSwingLow: number | null;
   sweepTrap: {
-    detected: boolean;
-    type: "bsl_sweep" | "ssl_sweep" | "none";
+    detected: boolean; type: "bsl_sweep" | "ssl_sweep" | "none";
     liquidityLevel: number;
-    sweepWickHigh?: number | undefined;
-    sweepWickLow?: number | undefined;
+    sweepWickHigh?: number; sweepWickLow?: number;
     fvgConfirmed: boolean;
   };
-  signal:
-    | "bsl_sweep_trap"
-    | "ssl_sweep_trap"
-    | "bearish_continuation"
-    | "bearish_reversal"
-    | "bullish_continuation"
-    | "bullish_reversal"
-    | "neutral";
+  signal: "bsl_sweep_trap" | "ssl_sweep_trap" | "bearish_continuation" | "bearish_reversal" | "bullish_continuation" | "bullish_reversal" | "neutral";
 }
 
-function detectSmc(
-  opens: number[], highs: number[], lows: number[], closes: number[],
-): SmcResult {
+function detectSmc(opens: number[], highs: number[], lows: number[], closes: number[]): SmcResult {
   const empty: SmcResult = {
     choch: "none", bos: "none",
     fvg: { type: "none", top: 0, bottom: 0, retesting: false },
@@ -973,11 +721,10 @@ function detectSmc(
     if (lows[i - 2]! > highs[i]!) { fvgType = "bearish"; fvgTop = lows[i - 2]!; fvgBottom = highs[i]!; retesting = currentPrice >= fvgBottom && currentPrice <= fvgTop * 1.002; break; }
     if (highs[i - 2]! < lows[i]!) { fvgType = "bullish"; fvgBottom = highs[i - 2]!; fvgTop = lows[i]!; retesting = currentPrice <= fvgTop && currentPrice >= fvgBottom * 0.998; break; }
   }
+
   let sweepTrap: SmcResult["sweepTrap"] = { detected: false, type: "none", liquidityLevel: 0, fvgConfirmed: false };
-  const targetBsl = lastSwingHigh !== null && prevSwingHigh !== null &&
-    Math.abs(lastSwingHigh - prevSwingHigh) / lastSwingHigh <= 0.002
-    ? Math.max(lastSwingHigh, prevSwingHigh)
-    : lastSwingHigh;
+  const targetBsl = lastSwingHigh !== null && prevSwingHigh !== null && Math.abs(lastSwingHigh - prevSwingHigh) / lastSwingHigh <= 0.002
+    ? Math.max(lastSwingHigh, prevSwingHigh) : lastSwingHigh;
   if (targetBsl !== null && targetBsl > 0) {
     for (let i = len - 1; i >= Math.max(0, len - 3); i--) {
       const candleRange = highs[i]! - lows[i]!;
@@ -988,10 +735,8 @@ function detectSmc(
       }
     }
   }
-  const targetSsl = lastSwingLow !== null && prevSwingLow !== null &&
-    Math.abs(lastSwingLow - prevSwingLow) / lastSwingLow <= 0.002
-    ? Math.min(lastSwingLow, prevSwingLow)
-    : lastSwingLow;
+  const targetSsl = lastSwingLow !== null && prevSwingLow !== null && Math.abs(lastSwingLow - prevSwingLow) / lastSwingLow <= 0.002
+    ? Math.min(lastSwingLow, prevSwingLow) : lastSwingLow;
   if (!sweepTrap.detected && targetSsl !== null && targetSsl > 0) {
     for (let i = len - 1; i >= Math.max(0, len - 3); i--) {
       const candleRange = highs[i]! - lows[i]!;
@@ -1002,21 +747,19 @@ function detectSmc(
       }
     }
   }
+
   const signal: SmcResult["signal"] =
-    sweepTrap.detected && sweepTrap.fvgConfirmed && sweepTrap.type === "bsl_sweep"
-      ? "bsl_sweep_trap"
-      : sweepTrap.detected && sweepTrap.fvgConfirmed && sweepTrap.type === "ssl_sweep"
-        ? "ssl_sweep_trap"
-        : bos === "bearish" && inGoldenPocket
-          ? "bearish_continuation"
-          : choch === "bearish" && (fvgType === "bearish" || retesting)
-            ? "bearish_reversal"
-            : bos === "bullish" && range > 0 && currentPrice <= lastSwingLow! + range * 0.382
-              ? "bullish_continuation"
-              : choch === "bullish" && (fvgType === "bullish" || retesting)
-                ? "bullish_reversal"
-                : "neutral";
-  return { choch, bos, fvg: { type: fvgType, top: fvgTop, bottom: fvgBottom, retesting }, fibRetest: { inGoldenPocket, fib618, fib786, range }, lastSwingHigh, lastSwingLow, sweepTrap, signal };
+    sweepTrap.detected && sweepTrap.fvgConfirmed && sweepTrap.type === "bsl_sweep" ? "bsl_sweep_trap"
+    : sweepTrap.detected && sweepTrap.fvgConfirmed && sweepTrap.type === "ssl_sweep" ? "ssl_sweep_trap"
+    : bos === "bearish" && inGoldenPocket ? "bearish_continuation"
+    : choch === "bearish" && (fvgType === "bearish" || retesting) ? "bearish_reversal"
+    : bos === "bullish" && range > 0 && currentPrice <= lastSwingLow! + range * 0.382 ? "bullish_continuation"
+    : choch === "bullish" && (fvgType === "bullish" || retesting) ? "bullish_reversal"
+    : "neutral";
+
+  return { choch, bos, fvg: { type: fvgType, top: fvgTop, bottom: fvgBottom, retesting },
+    fibRetest: { inGoldenPocket, fib618, fib786, range },
+    lastSwingHigh, lastSwingLow, sweepTrap, signal };
 }
 
 function classify(
@@ -1039,7 +782,6 @@ function classify(
   if (nearLowerBand && trend.osc >= 20 && momentum >= 0) return "bullish";
   if (nearUpperBand && trend.osc <= -20 && momentum <= 0) return "bearish";
 
-  // Tightened RSI-based classification (see prior patch notes).
   const NEUTRAL_LOW = 44;
   const NEUTRAL_HIGH = 56;
   const STRONG_MACD_FRACTION = 0.05;
@@ -1055,17 +797,11 @@ function classify(
   return momentum < 0 ? "bearish" : "neutral";
 }
 
-async function fetchIndicatorForTimeframe(
-  coin: string, timeframe: string,
-): Promise<Record<string, unknown> | null> {
+async function fetchIndicatorForTimeframe(coin: string, timeframe: string): Promise<Record<string, unknown> | null> {
   const symbol = binanceSymbol(coin);
   try {
     const result = await fetchCandlesUnified(coin, timeframe);
-    if (!result) {
-      console.error(`[INDICATOR_FETCH] ${symbol} ${timeframe} → no source returned candles`);
-      return null;
-    }
-
+    if (!result) return null;
     const raw = result.candles;
     const opens = raw.map((r) => parseFloat(String(r[1])));
     const highs = raw.map((r) => parseFloat(String(r[2])));
@@ -1073,17 +809,7 @@ async function fetchIndicatorForTimeframe(
     const closes = raw.map((r) => parseFloat(String(r[4])));
     const volumes = raw.map((r) => parseFloat(String(r[5])));
 
-    if (
-      closes.length < 30 ||
-      closes.some((c) => !Number.isFinite(c)) ||
-      opens.some((v) => !Number.isFinite(v)) ||
-      highs.some((v) => !Number.isFinite(v)) ||
-      lows.some((v) => !Number.isFinite(v)) ||
-      volumes.some((v) => !Number.isFinite(v) || v < 0)
-    ) {
-      console.warn(`[INDICATOR_FETCH] ${symbol} ${timeframe} (${result.source}) → invalid data`);
-      return null;
-    }
+    if (closes.length < 30 || closes.some((c) => !Number.isFinite(c))) return null;
 
     const r = rsi(closes);
     const { macd: m, signal: s } = macd(closes);
@@ -1107,89 +833,50 @@ async function fetchIndicatorForTimeframe(
         candle_close_time: candleCloseTime,
         aroon: trend,
         bollinger: { upper: bb.upper, lower: bb.lower },
-        vwap, smc,
-        atr_pct: atrPct,
+        vwap, smc, atr_pct: atrPct,
         source: result.source,
       },
     };
   } catch (e) {
-    const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
-    console.error(`[INDICATOR_FETCH] ${symbol} ${timeframe} threw: ${msg}`);
+    console.error(`[INDICATOR_FETCH] ${symbol} ${timeframe} threw:`, e);
     return null;
   }
 }
-
-/* ───────────── collectIndicators (HOT SYMBOLS INCLUDED) ───────────── */
 
 export async function collectIndicators(): Promise<number> {
   const db = await admin();
   const watchlist = await getActiveWatchlist();
   const movers = await hyperliquidTopMovers();
-  // Include hot-whale symbols so they receive real 1h/4h/1d candles on
-  // the next run after they enter the hot queue.
   const hotSymbols = await getHotWhaleSymbols();
   const coins = [...new Set([...watchlist, ...movers, ...hotSymbols])];
 
   if (hotSymbols.length > 0) {
-    console.log(
-      `[INDICATORS] including ${hotSymbols.length} hot-whale symbols: ` +
-        hotSymbols.slice(0, 8).join(",") +
-        (hotSymbols.length > 8 ? ` (+${hotSymbols.length - 8} more)` : ""),
-    );
+    console.log(`[INDICATORS] including ${hotSymbols.length} hot-whale symbols: ${hotSymbols.slice(0, 8).join(",")}${hotSymbols.length > 8 ? ` (+${hotSymbols.length - 8} more)` : ""}`);
   }
 
   const tasks: { coin: string; timeframe: string }[] = [];
-  for (const coin of coins) {
-    for (const tf of TIMEFRAMES) {
-      tasks.push({ coin, timeframe: tf });
-    }
-  }
+  for (const coin of coins) for (const tf of TIMEFRAMES) tasks.push({ coin, timeframe: tf });
 
   const startedAt = Date.now();
   console.log(`[INDICATORS] Starting collection for ${coins.length} coins × ${TIMEFRAMES.length} timeframes = ${tasks.length} tasks`);
 
-  const results = await pMap(
-    tasks,
-    async ({ coin, timeframe }) => fetchIndicatorForTimeframe(coin, timeframe),
-    15,
-  );
-
+  const results = await pMap(tasks, async ({ coin, timeframe }) => fetchIndicatorForTimeframe(coin, timeframe), 15);
   const rows = results.filter((r): r is Record<string, unknown> => r != null);
-  const elapsed = Date.now() - startedAt;
-  const successRate = tasks.length > 0 ? ((rows.length / tasks.length) * 100).toFixed(1) : "0.0";
 
-  console.log(`[INDICATORS] Collected ${rows.length}/${tasks.length} (${successRate}%) in ${elapsed}ms`);
-
+  console.log(`[INDICATORS] Collected ${rows.length}/${tasks.length} in ${Date.now() - startedAt}ms`);
   if (rows.length === 0) {
     console.error(`[INDICATORS] CRITICAL: 0/${tasks.length} fetches succeeded.`);
     return 0;
   }
 
-  const bySource = rows.reduce<Record<string, number>>((acc, r) => {
-    const src = String((r["raw"] as Record<string, unknown>)?.["source"] ?? "unknown");
-    acc[src] = (acc[src] ?? 0) + 1;
-    return acc;
-  }, {});
-  console.log(`[INDICATORS] Sources: ${JSON.stringify(bySource)}`);
-
-  const { data, error } = await db
-    .from("indicator_snapshots")
-    .upsert(rows as never, {
-      onConflict: "symbol,timeframe",
-      ignoreDuplicates: false,
-    })
-    .select("id");
-  if (error) {
-    console.error(`[INDICATORS] Upsert failed:`, error);
-    throw error;
-  }
-
-  const written = data?.length ?? 0;
-  console.log(`[INDICATORS] Wrote ${written} rows to indicator_snapshots`);
-  return written;
+  const { data, error } = await db.from("indicator_snapshots").upsert(rows as never, {
+    onConflict: "symbol,timeframe", ignoreDuplicates: false,
+  }).select("id");
+  if (error) throw error;
+  return data?.length ?? 0;
 }
 
-/* ───────────── Prediction markets ───────────── */
+/* ───────────── Predictions ───────────── */
 
 const WATCH_KEYWORDS: Record<string, string[]> = {
   BTC: ["bitcoin", "btc"], ETH: ["ethereum", "eth"],
@@ -1206,21 +893,13 @@ const WATCH_KEYWORDS: Record<string, string[]> = {
   UNI: ["uniswap", "uni"], AAVE: ["aave"],
 };
 
-const cryptoWord =
-  /\b(bitcoin|btc|ethereum|eth|solana|sol|xrp|ripple|dogecoin|doge|cardano|ada|avalanche|avax|chainlink|link|polkadot|dot|litecoin|ltc|polygon|matic|pol|bnb|binance coin|tron|trx|shiba|shib|pepe|cosmos|atom|near protocol|aptos|apt|sui|injective|inj|arbitrum|arb|optimism|uniswap|uni|aave)\b/i;
+const cryptoWord = /\b(bitcoin|btc|ethereum|eth|solana|sol|xrp|ripple|dogecoin|doge|cardano|ada|avalanche|avax|chainlink|link|polkadot|dot|litecoin|ltc|polygon|matic|pol|bnb|binance coin|tron|trx|shiba|shib|pepe|cosmos|atom|near protocol|aptos|apt|sui|injective|inj|arbitrum|arb|optimism|uniswap|uni|aave)\b/i;
 
-interface PolymarketMarket {
-  slug?: string; question?: string;
-  outcomePrices?: string; volume24hr?: number;
-}
-interface PolymarketEvent {
-  markets?: PolymarketMarket[];
-}
+interface PolymarketMarket { slug?: string; question?: string; outcomePrices?: string; volume24hr?: number; }
+interface PolymarketEvent { markets?: PolymarketMarket[]; }
 
 function eventMarkets(payload: (PolymarketEvent | PolymarketMarket)[]): PolymarketMarket[] {
-  return payload.flatMap((item) =>
-    "markets" in item ? ((item as PolymarketEvent).markets ?? []) : [item as PolymarketMarket],
-  );
+  return payload.flatMap((item) => "markets" in item ? ((item as PolymarketEvent).markets ?? []) : [item as PolymarketMarket]);
 }
 
 function matchSymbolFromQuestion(q: string): string | null {
@@ -1238,13 +917,12 @@ function matchSymbolFromQuestion(q: string): string | null {
 
 export async function collectPredictions(): Promise<number> {
   const db = await admin();
-  const res = await fetchWithTimeout(
-    "https://gamma-api.polymarket.com/events?tag_slug=crypto&active=true&closed=false&limit=200",
-  );
+  const res = await fetchWithTimeout("https://gamma-api.polymarket.com/events?tag_slug=crypto&active=true&closed=false&limit=200");
   if (!res.ok) return 0;
   const payload = (await res.json()) as PolymarketEvent[] | PolymarketMarket[];
   const markets = eventMarkets(payload);
   const rows: Record<string, unknown>[] = [];
+
   for (const m of markets) {
     if (!m.slug) continue;
     const question = m.question ?? "";
@@ -1257,7 +935,7 @@ export async function collectPredictions(): Promise<number> {
       const prices = JSON.parse(m.outcomePrices ?? "[]") as string[];
       yes = prices[0] ? parseFloat(prices[0]) : null;
       no = prices[1] ? parseFloat(prices[1]) : null;
-    } catch { /* unparsable */ }
+    } catch {}
     if (yes == null || !Number.isFinite(yes) || yes < 0 || yes > 1) continue;
     rows.push({
       market_slug: m.slug, question, related_symbol: symbol,
@@ -1267,15 +945,14 @@ export async function collectPredictions(): Promise<number> {
       raw: m as unknown as Record<string, unknown>,
     });
   }
+
   if (rows.length === 0) return 0;
-  const { data, error } = await db
-    .from("prediction_snapshots")
-    .upsert(rows as never, { onConflict: "market_slug" })
-    .select("id");
+  const { data, error } = await db.from("prediction_snapshots").upsert(rows as never, { onConflict: "market_slug" }).select("id");
   if (error) throw error;
   return data?.length ?? 0;
 }
-/* ───────────── Prediction direction & magnitude ───────────── */
+
+/* ───────────── Prediction helpers ───────────── */
 
 const BULLISH_QUESTION = /\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\b/i;
 const BEARISH_QUESTION = /\b(dip|drop|fall|below|crash|down to|under|bottom)\b/i;
@@ -1306,7 +983,7 @@ export function predictionMagnitude(prediction: Row): number {
   return Math.min(1, (distance - 0.2) / 0.8);
 }
 
-/* ───────────── Multi-timeframe evaluator ───────────── */
+/* ───────────── Multi-timeframe ───────────── */
 
 export interface MultiTfInput { primary: Row; fast: Row; trend: Row; }
 
@@ -1334,8 +1011,7 @@ export function evaluateMultiTimeframe(tf: MultiTfInput): MultiTfResult {
     else if (fastRsi <= 40 && fastPrice < fastVwap) f = "bearish";
   }
 
-  const label = (s: SignalDir) =>
-    s === "bullish" ? "bull" : s === "bearish" ? "bear" : "neu";
+  const label = (s: SignalDir) => s === "bullish" ? "bull" : s === "bearish" ? "bear" : "neu";
   const detail = `4h ${label(p)} · 1h ${label(f)} · 1d ${label(t)}`;
 
   const bullCount = [p, f, t].filter((s) => s === "bullish").length;
@@ -1348,10 +1024,8 @@ export function evaluateMultiTimeframe(tf: MultiTfInput): MultiTfResult {
 
   const base = p === "bullish" ? 1.0 : -1.0;
   let multiplier = 1.0;
-  if (f === p) multiplier *= 1.3;
-  else if (f !== "neutral") multiplier *= 0.7;
-  if (t === p) multiplier *= 1.3;
-  else if (t !== "neutral") multiplier *= 0.7;
+  if (f === p) multiplier *= 1.3; else if (f !== "neutral") multiplier *= 0.7;
+  if (t === p) multiplier *= 1.3; else if (t !== "neutral") multiplier *= 0.7;
 
   const aligned = f === p && t === p;
   const conflict = t !== "neutral" && t !== p;
@@ -1359,22 +1033,16 @@ export function evaluateMultiTimeframe(tf: MultiTfInput): MultiTfResult {
   return { direction: p, score: base * multiplier, aligned, conflict, detail, bullCount, bearCount, neuCount };
 }
 
-/* ───────────── Deterministic council fallback ───────────── */
+/* ───────────── Council fallback ───────────── */
 
 function councilEvaluation(whale: Row, mtf: MultiTfResult, prediction: Row) {
   const votes: CouncilVerdict[] = [];
   const reasons: string[] = [];
 
-  if (mtf.direction === "bullish" && mtf.score >= 0.7) {
-    votes.push("BUY"); reasons.push(`quant sees bullish alignment (${mtf.detail})`);
-  } else if (mtf.direction === "bearish" && mtf.score <= -0.7) {
-    votes.push("SELL"); reasons.push(`quant sees bearish alignment (${mtf.detail})`);
-  } else if (mtf.aligned) {
-    votes.push(mtf.direction === "bullish" ? "BUY" : "SELL");
-    reasons.push(`quant sees aligned trend (${mtf.detail})`);
-  } else {
-    votes.push("HOLD"); reasons.push(`quant sees mixed technicals (${mtf.detail})`);
-  }
+  if (mtf.direction === "bullish" && mtf.score >= 0.7) { votes.push("BUY"); reasons.push(`quant sees bullish alignment (${mtf.detail})`); }
+  else if (mtf.direction === "bearish" && mtf.score <= -0.7) { votes.push("SELL"); reasons.push(`quant sees bearish alignment (${mtf.detail})`); }
+  else if (mtf.aligned) { votes.push(mtf.direction === "bullish" ? "BUY" : "SELL"); reasons.push(`quant sees aligned trend (${mtf.detail})`); }
+  else { votes.push("HOLD"); reasons.push(`quant sees mixed technicals (${mtf.detail})`); }
 
   const flow = whale?.["direction"];
   if (flow === "accumulation") { votes.push("BUY"); reasons.push("whale tracker sees accumulation"); }
@@ -1386,9 +1054,7 @@ function councilEvaluation(whale: Row, mtf: MultiTfResult, prediction: Row) {
   else if (dir === "bearish") { votes.push("SELL"); reasons.push("sentiment leans bearish"); }
   else { votes.push("HOLD"); reasons.push("sentiment is inconclusive"); }
 
-  const counts = votes.reduce<Record<string, number>>((all, vote) => {
-    all[vote] = (all[vote] ?? 0) + 1; return all;
-  }, {});
+  const counts = votes.reduce<Record<string, number>>((all, v) => { all[v] = (all[v] ?? 0) + 1; return all; }, {});
   const ordered = (Object.entries(counts) as [CouncilVerdict, number][]).sort((a, b) => b[1] - a[1]);
   const [topVote, topCount] = ordered[0] ?? ["HOLD", 0];
   const rawConviction = Math.round((topCount / votes.length) * 100);
@@ -1400,11 +1066,10 @@ function councilEvaluation(whale: Row, mtf: MultiTfResult, prediction: Row) {
   return { final_verdict: verdict, conviction, reflection };
 }
 
-/* ───────────── Groq AI Council ───────────── */
+/* ───────────── Groq ───────────── */
 
 const AI_VERDICT_TTL_MS = 25 * 60 * 1000;
 const AI_BATCH_MAX = 15;
-
 const AI_MIN_MINUTES_BETWEEN_BATCHES_DEFAULT = 25;
 const AI_MIN_MINUTES_BETWEEN_BATCHES_TRENDING = 15;
 const AI_MIN_MINUTES_BETWEEN_BATCHES_CALM = 40;
@@ -1443,16 +1108,11 @@ function qualifiesForAi(whale: Row, mtf: MultiTfResult, symbol?: string): boolea
   return false;
 }
 
-async function groqBatchCouncil(
-  candidates: AiCandidate[],
-): Promise<Map<string, { final_verdict: CouncilVerdict; conviction: number; reflection: string }>> {
+async function groqBatchCouncil(candidates: AiCandidate[]): Promise<Map<string, { final_verdict: CouncilVerdict; conviction: number; reflection: string }>> {
   const result = new Map<string, { final_verdict: CouncilVerdict; conviction: number; reflection: string }>();
   if (candidates.length === 0) return result;
   const apiKey = process.env["GROQ_API_KEY"];
-  if (!apiKey) {
-    console.error("[GROQ] GROQ_API_KEY not set — falling back to deterministic council");
-    return result;
-  }
+  if (!apiKey) { console.error("[GROQ] GROQ_API_KEY not set"); return result; }
 
   const lessonsMap = await fetchRelevantLessons(candidates.map((c) => c.symbol), 5);
 
@@ -1487,16 +1147,13 @@ async function groqBatchCouncil(
     "AVOID = conflicting signals or high uncertainty.",
     "HOLD = no clear directional edge.",
     "BUY or SELL only when evidence is reasonably aligned.",
-    "If past_lessons are provided, weigh them as real experience: [loss] reduces confidence, [win] increases it.",
+    "If past_lessons are provided, weigh them as real experience.",
   ].join("\n");
 
   try {
     const res = await fetch(GROQ_URL, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model: GROQ_MODEL,
         messages: [
@@ -1511,27 +1168,12 @@ async function groqBatchCouncil(
       }),
       signal: AbortSignal.timeout(GROQ_TIMEOUT_MS),
     });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(`Groq HTTP ${res.status}: ${body.slice(0, 300)}`);
-    }
-    const data = (await res.json()) as {
-      choices?: { message?: { content?: string }; finish_reason?: string }[];
-      usage?: {
-        completion_tokens?: number;
-        completion_tokens_details?: { reasoning_tokens?: number };
-      };
-    };
+    if (!res.ok) throw new Error(`Groq HTTP ${res.status}`);
+    const data = (await res.json()) as { choices?: { message?: { content?: string }; finish_reason?: string }[]; usage?: { completion_tokens_details?: { reasoning_tokens?: number } } };
     const finishReason = data.choices?.[0]?.finish_reason;
     const content = data.choices?.[0]?.message?.content ?? "";
-    const reasoningTokens =
-      data.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
     if (finishReason === "length") {
-      console.warn(
-        `[GROQ] finish_reason=length — model hit max tokens. ` +
-          `completion_tokens=${data.usage?.completion_tokens ?? "?"} ` +
-          `reasoning_tokens=${reasoningTokens}`,
-      );
+      console.warn(`[GROQ] finish_reason=length, reasoning_tokens=${data.usage?.completion_tokens_details?.reasoning_tokens ?? 0}`);
     }
     if (!content) throw new Error("Empty Groq response");
     const clean = content.replace(/```json|```/g, "").trim();
@@ -1549,10 +1191,7 @@ async function groqBatchCouncil(
     }
     console.log(`[GROQ] model=${GROQ_MODEL} council batch: ${result.size}/${candidates.length} verdicts received`);
   } catch (e) {
-    console.error(
-      `[GROQ] batch failed for [${candidates.map((c) => c.symbol).join(",")}], falling back to deterministic:`,
-      e,
-    );
+    console.error(`[GROQ] batch failed`, e);
   }
   return result;
 }
@@ -1565,6 +1204,7 @@ export async function collectCouncilSignals(): Promise<number> {
   const movers = await hyperliquidTopMovers();
   const symbols = [...new Set([...watchlist, ...hotSymbols, ...movers])];
   if (symbols.length === 0) return 0;
+
   const binSymbols = symbols.map(binanceSymbol);
   const sixHoursAgo = new Date(Date.now() - WHALE_LOOKBACK_HOURS * 60 * 60 * 1000).toISOString();
   const aiCacheSince = new Date(Date.now() - AI_VERDICT_TTL_MS).toISOString();
@@ -1580,17 +1220,17 @@ export async function collectCouncilSignals(): Promise<number> {
   const whalesBySymbol = new Map<string, Record<string, unknown>[]>();
   for (const w of (whalesRes.data ?? []) as Record<string, unknown>[]) {
     const s = w["symbol"] as string;
-    const bucket = whalesBySymbol.get(s);
-    if (!bucket) whalesBySymbol.set(s, [w]);
-    else if (bucket.length < 20) bucket.push(w);
+    const b = whalesBySymbol.get(s);
+    if (!b) whalesBySymbol.set(s, [w]);
+    else if (b.length < 20) b.push(w);
   }
 
   const indicatorByTf = new Map<string, Record<string, unknown>>();
   for (const i of (indicatorsRes.data ?? []) as Record<string, unknown>[]) {
     const s = i["symbol"] as string;
     const tf = i["timeframe"] as string;
-    const key = `${s}:${tf}`;
-    if (!indicatorByTf.has(key)) indicatorByTf.set(key, i);
+    const k = `${s}:${tf}`;
+    if (!indicatorByTf.has(k)) indicatorByTf.set(k, i);
   }
 
   const latestPrediction = new Map<string, Record<string, unknown>>();
@@ -1618,22 +1258,18 @@ export async function collectCouncilSignals(): Promise<number> {
 
   for (const symbol of symbols) {
     const whaleRows = whalesBySymbol.get(symbol) ?? [];
-    const buyUsd = whaleRows.filter((r) => r["direction"] === "accumulation").reduce((sum, r) => sum + Number(r["usd_value"] ?? 0), 0);
-    const sellUsd = whaleRows.filter((r) => r["direction"] === "distribution").reduce((sum, r) => sum + Number(r["usd_value"] ?? 0), 0);
+    const buyUsd = whaleRows.filter((r) => r["direction"] === "accumulation").reduce((s, r) => s + Number(r["usd_value"] ?? 0), 0);
+    const sellUsd = whaleRows.filter((r) => r["direction"] === "distribution").reduce((s, r) => s + Number(r["usd_value"] ?? 0), 0);
     const whaleUsdTotal = buyUsd + sellUsd;
     let whaleDirection: "accumulation" | "distribution" | undefined;
     if (buyUsd > sellUsd * 1.15) whaleDirection = "accumulation";
     else if (sellUsd > buyUsd * 1.15) whaleDirection = "distribution";
-    const whale = whaleRows.length
-      ? ({
-          direction: whaleDirection,
-          id: whaleRows[0]?.["id"],
-          usd_value: whaleUsdTotal,
-          buy_usd: buyUsd, sell_usd: sellUsd,
-          buy_count: whaleRows.filter((r) => r["direction"] === "accumulation").length,
-          sell_count: whaleRows.filter((r) => r["direction"] === "distribution").length,
-        } as Row)
-      : null;
+    const whale = whaleRows.length ? ({
+      direction: whaleDirection, id: whaleRows[0]?.["id"],
+      usd_value: whaleUsdTotal, buy_usd: buyUsd, sell_usd: sellUsd,
+      buy_count: whaleRows.filter((r) => r["direction"] === "accumulation").length,
+      sell_count: whaleRows.filter((r) => r["direction"] === "distribution").length,
+    } as Row) : null;
 
     const binSym = binanceSymbol(symbol);
     const mtfRaw: MultiTfInput = {
@@ -1648,9 +1284,7 @@ export async function collectCouncilSignals(): Promise<number> {
     perSymbol.set(symbol, { whale, mtf, mtfRaw, prediction });
 
     const rsi4hRaw = mtfRaw.primary?.["rsi"];
-    if (typeof rsi4hRaw === "number") {
-      (mtf as unknown as Record<string, unknown>)["rsi4h"] = rsi4hRaw;
-    }
+    if (typeof rsi4hRaw === "number") (mtf as unknown as Record<string, unknown>)["rsi4h"] = rsi4hRaw;
 
     if (!freshAiSymbols.has(symbol) && qualifiesForAi(whale, mtf, symbol)) {
       aiCandidates.push({ symbol, whale, mtf, mtfRaw, prediction, whaleUsd: whaleUsdTotal });
@@ -1661,18 +1295,10 @@ export async function collectCouncilSignals(): Promise<number> {
   if (aiAllowed) {
     aiCandidates.sort((a, b) => b.whaleUsd - a.whaleUsd);
     const aiBatch = aiCandidates.slice(0, AI_BATCH_MAX);
-    console.log(
-      `[GROQ] Batch allowed — regime=${currentRegimeLabel ?? "unknown"} ` +
-        `interval=${aiMinMinutes}min ` +
-        `sinceLast=${minutesSinceLastAi === Infinity ? "∞" : minutesSinceLastAi.toFixed(1) + "min"} ` +
-        `candidates=${aiBatch.length}/${aiCandidates.length}`,
-    );
+    console.log(`[GROQ] Batch allowed — regime=${currentRegimeLabel ?? "unknown"} interval=${aiMinMinutes}min candidates=${aiBatch.length}/${aiCandidates.length}`);
     aiResults = await groqBatchCouncil(aiBatch);
   } else {
-    console.log(
-      `[GROQ] Rate guard: skipping AI batch — only ${minutesSinceLastAi.toFixed(1)}min since last run ` +
-        `(regime=${currentRegimeLabel ?? "unknown"}, min ${aiMinMinutes}min)`,
-    );
+    console.log(`[GROQ] Rate guard: skipping — ${minutesSinceLastAi.toFixed(1)}min since last (min ${aiMinMinutes}min)`);
   }
 
   for (const [symbol, ctx] of perSymbol) {
@@ -1680,12 +1306,7 @@ export async function collectCouncilSignals(): Promise<number> {
     const aiResult = aiResults.get(symbol);
     const usedAi = !!aiResult;
     const result = aiResult ?? councilEvaluation(ctx.whale, ctx.mtf, ctx.prediction);
-    const sourceId = [
-      symbol, ctx.whale?.["id"], ctx.mtfRaw.primary?.["id"], ctx.prediction?.["id"],
-      usedAi ? "ai" : "rule",
-      result.final_verdict,
-      String(Math.round(Number(result.conviction) || 0)),
-    ].join(":");
+    const sourceId = [symbol, ctx.whale?.["id"], ctx.mtfRaw.primary?.["id"], ctx.prediction?.["id"], usedAi ? "ai" : "rule", result.final_verdict, String(Math.round(Number(result.conviction) || 0))].join(":");
     rows.push({
       symbol, source_id: sourceId,
       final_verdict: result.final_verdict,
@@ -1696,15 +1317,12 @@ export async function collectCouncilSignals(): Promise<number> {
       source_created_at: new Date().toISOString(),
     });
   }
+
   if (rows.length === 0) return 0;
-  const { data, error } = await db
-    .from("council_signals")
-    .upsert(rows as never, { onConflict: "source_id" })
-    .select("id");
+  const { data, error } = await db.from("council_signals").upsert(rows as never, { onConflict: "source_id" }).select("id");
   if (error) throw error;
   return data?.length ?? 0;
 }
-
 /* ───────────── Signal combiner ───────────── */
 
 const COMPOSITE_AI_BASE_WEIGHT = 0.75;
@@ -1754,15 +1372,11 @@ export function ruleBased(
   if (predDir === "bullish") {
     const mag = predictionMagnitude(prediction);
     score += 0.5 * weights.prediction_weight * mag;
-    reasons.push(
-      `prediction market bullish ×${weights.prediction_weight.toFixed(1)} (mag ${(mag * 100).toFixed(0)}%)`,
-    );
+    reasons.push(`prediction market bullish ×${weights.prediction_weight.toFixed(1)} (mag ${(mag * 100).toFixed(0)}%)`);
   } else if (predDir === "bearish") {
     const mag = predictionMagnitude(prediction);
     score -= 0.5 * weights.prediction_weight * mag;
-    reasons.push(
-      `prediction market bearish ×${weights.prediction_weight.toFixed(1)} (mag ${(mag * 100).toFixed(0)}%)`,
-    );
+    reasons.push(`prediction market bearish ×${weights.prediction_weight.toFixed(1)} (mag ${(mag * 100).toFixed(0)}%)`);
   }
 
   if (council?.["final_verdict"]) {
@@ -1784,7 +1398,6 @@ export function ruleBased(
     }
   }
 
-  // ── Market session bonus/penalty ──
   if (options?.sessionConfig?.enabled) {
     const sessionInfo = classifyMarketSession(new Date());
     const bonus = getSessionBonus(sessionInfo.session, options.sessionConfig);
@@ -1809,7 +1422,7 @@ export function ruleBased(
     );
   }
 
-  // ─── Threshold selection (dynamic for sparse hot-whale symbols) ───
+  // ─── Dynamic thresholds for sparse hot-whale symbols ───
   const hasMtf = mtf.direction !== "neutral" || mtf.score !== 0;
   const hasCouncil = !!council?.["final_verdict"];
   const isSparse = !hasMtf || !hasCouncil;
@@ -1914,12 +1527,9 @@ export async function combineSignals(): Promise<number> {
   ])];
   if (symbols.length === 0) return 0;
   if (hotSymbols.length > 0) {
-    console.log(
-      `[HOT_WHALE_INCLUDE] added ${hotSymbols.length} hot symbols to signals: ` +
-        hotSymbols.slice(0, 10).join(",") +
-        (hotSymbols.length > 10 ? ` (+${hotSymbols.length - 10} more)` : ""),
-    );
+    console.log(`[HOT_WHALE_INCLUDE] added ${hotSymbols.length} hot symbols to signals: ${hotSymbols.slice(0, 10).join(",")}${hotSymbols.length > 10 ? ` (+${hotSymbols.length - 10} more)` : ""}`);
   }
+
   const binSymbols = symbols.map(binanceSymbol);
   const whaleSince = new Date(Date.now() - WHALE_LOOKBACK_HOURS * 60 * 60 * 1000).toISOString();
 
@@ -1948,17 +1558,17 @@ export async function combineSignals(): Promise<number> {
   const whaleBySymbol = new Map<string, Record<string, unknown>[]>();
   for (const w of (whalesRes.data ?? []) as Record<string, unknown>[]) {
     const s = w["symbol"] as string;
-    const bucket = whaleBySymbol.get(s);
-    if (!bucket) whaleBySymbol.set(s, [w]);
-    else if (bucket.length < 20) bucket.push(w);
+    const b = whaleBySymbol.get(s);
+    if (!b) whaleBySymbol.set(s, [w]);
+    else if (b.length < 20) b.push(w);
   }
 
   const indicatorByTf = new Map<string, Record<string, unknown>>();
   for (const i of (indicatorsRes.data ?? []) as Record<string, unknown>[]) {
     const s = i["symbol"] as string;
     const tf = i["timeframe"] as string;
-    const key = `${s}:${tf}`;
-    if (!indicatorByTf.has(key)) indicatorByTf.set(key, i);
+    const k = `${s}:${tf}`;
+    if (!indicatorByTf.has(k)) indicatorByTf.set(k, i);
   }
 
   const latestPrediction = new Map<string, Record<string, unknown>>();
@@ -1982,17 +1592,13 @@ export async function combineSignals(): Promise<number> {
   }
 
   const councilTtlMs = councilMaxAgeMs();
-  console.log(
-    `[COUNCIL_TTL] regime=${currentRegimeLabel ?? "unknown"} ` +
-      `ttl=${(councilTtlMs / 60_000).toFixed(0)}min`,
-  );
+  console.log(`[COUNCIL_TTL] regime=${currentRegimeLabel ?? "unknown"} ttl=${(councilTtlMs / 60_000).toFixed(0)}min`);
   for (const [s, row] of latestCouncil) {
     if (!isFreshRow(row, "source_created_at", councilTtlMs, freshnessNow)) latestCouncil.delete(s);
   }
 
   let created = 0;
   const nowIso = new Date().toISOString();
-
   const variantRows: Record<string, unknown>[] = [];
   const shadowConflictBuffer: Record<string, unknown>[] = [];
   const shadowMtfGateBuffer: Record<string, unknown>[] = [];
@@ -2002,8 +1608,8 @@ export async function combineSignals(): Promise<number> {
     const whaleRows = whaleBySymbol.get(symbol) ?? [];
     let whale: Row = null;
     if (whaleRows.length > 0) {
-      const buyUsd = whaleRows.filter((r) => r["direction"] === "accumulation").reduce((sum, r) => sum + Number(r["usd_value"] ?? 0), 0);
-      const sellUsd = whaleRows.filter((r) => r["direction"] === "distribution").reduce((sum, r) => sum + Number(r["usd_value"] ?? 0), 0);
+      const buyUsd = whaleRows.filter((r) => r["direction"] === "accumulation").reduce((s, r) => s + Number(r["usd_value"] ?? 0), 0);
+      const sellUsd = whaleRows.filter((r) => r["direction"] === "distribution").reduce((s, r) => s + Number(r["usd_value"] ?? 0), 0);
       const whaleUsdTotal = buyUsd + sellUsd;
       let direction: "accumulation" | "distribution" | undefined;
       if (buyUsd > sellUsd * 1.15) direction = "accumulation";
@@ -2027,10 +1633,8 @@ export async function combineSignals(): Promise<number> {
     const council = (latestCouncil.get(symbol) ?? null) as Row;
     if (!whale && !mtfRaw.primary && !prediction && !council) continue;
 
-    // ─── Hot-whale aggregated direction override ───
-    const hotAgg = hotSymbolSet.has(symbol)
-      ? hotWhaleBatch.get(symbol) ?? null
-      : null;
+    // Hot-whale aggregated direction override
+    const hotAgg = hotSymbolSet.has(symbol) ? hotWhaleBatch.get(symbol) ?? null : null;
 
     if (hotAgg && hotAgg.direction) {
       whale = {
@@ -2063,7 +1667,6 @@ export async function combineSignals(): Promise<number> {
       hotSymbolSet.has(symbol) ? ["hot-whale"] : undefined,
     );
 
-    // MTF gate rejection logging
     if (
       mtfGateConfig?.enabled &&
       result.mtfGateDecision &&
@@ -2086,7 +1689,6 @@ export async function combineSignals(): Promise<number> {
     if (conflictShadowMode && !conflictFixEnabled) {
       const shadow = ruleBased(whale, mtf, prediction, council, weights, { conflictFixEnabled: true });
       if (shadow.recommendation !== result.recommendation) {
-        console.log(`[WATCH_CONFLICT_SHADOW] ${symbol}: would be ${shadow.recommendation} (currently ${result.recommendation})`);
         shadowConflictBuffer.push({
           symbol,
           current_recommendation: result.recommendation,
@@ -2168,10 +1770,9 @@ export async function combineSignals(): Promise<number> {
           const primaryRaw = mtfRaw.primary?.["raw"] as Row;
           const atrPct = Number(primaryRaw?.["atr_pct"] ?? 0);
           const isHighVol = Number.isFinite(atrPct) && atrPct > vwapGate.atr_pct_threshold;
-
           if (isHighVol) {
             if (vwapGate.enabled) continue;
-            else console.log(`[VWAP_GATE_SHADOW] ${symbol}: would skip (atr=${atrPct.toFixed(2)}% > ${vwapGate.atr_pct_threshold}%)`);
+            else console.log(`[VWAP_GATE_SHADOW] ${symbol}: would skip (atr=${atrPct.toFixed(2)}%)`);
           }
         }
       }
@@ -2234,31 +1835,28 @@ export async function combineSignals(): Promise<number> {
   if (variantRows.length > 0) {
     const { error: variantErr } = await db.from("strategy_variant_signals").insert(variantRows as never);
     if (variantErr) console.error("[VARIANTS] insert failed:", variantErr);
-    else console.log(`[VARIANTS] Recorded ${variantRows.length} shadow signals across ${Object.keys(STRATEGY_PRESETS).length} presets (regime=${regime.label}, session=${nowSession.session})`);
+    else console.log(`[VARIANTS] Recorded ${variantRows.length} shadow signals (regime=${regime.label}, session=${nowSession.session})`);
   }
 
   if (shadowConflictBuffer.length > 0) {
     const { error: shadowErr } = await db.from("shadow_conflicts" as never).insert(shadowConflictBuffer as never);
     if (shadowErr) console.error("[SHADOW_CONFLICTS] insert failed:", shadowErr);
-    else console.log(`[SHADOW_CONFLICTS] Recorded ${shadowConflictBuffer.length} would-be changes`);
   }
 
   if (shadowMtfGateBuffer.length > 0) {
     const { error: mtfErr } = await db.from("shadow_mtf_gates" as never).insert(shadowMtfGateBuffer as never);
     if (mtfErr) console.error("[SHADOW_MTF_GATES] insert failed:", mtfErr);
-    else console.log(`[SHADOW_MTF_GATES] Recorded ${shadowMtfGateBuffer.length} would-be rejects`);
   }
 
   if (mtfRejectionBuffer.length > 0) {
     const { error: rejErr } = await db.from("mtf_gate_rejections" as never).insert(mtfRejectionBuffer as never);
     if (rejErr) console.error("[MTF_GATE_REJECTIONS] insert failed:", rejErr);
-    else console.log(`[MTF_GATE_REJECTIONS] Recorded ${mtfRejectionBuffer.length} real rejections`);
   }
 
   return created;
 }
 
-/* ───────────── Resolve variant signal outcomes ───────────── */
+/* ───────────── Variant resolution ───────────── */
 
 interface VariantCandle {
   open: number; high: number; low: number;
@@ -2272,10 +1870,7 @@ async function fetchVariantResolutionCandles(
   const symbol = binanceSymbol(coin);
   try {
     const result = await fetchCandlesUnified(coin, VARIANT_RESOLVE_TIMEFRAME);
-    if (!result) {
-      console.error(`[VARIANTS] no ${VARIANT_RESOLVE_TIMEFRAME} candles for ${symbol}`);
-      return [];
-    }
+    if (!result) return [];
     const raw = result.candles.slice(-limit);
     return raw
       .map((r) => ({
@@ -2288,7 +1883,7 @@ async function fetchVariantResolutionCandles(
         Number.isFinite(c.closeTimeMs),
       );
   } catch (e) {
-    console.error(`[VARIANTS] ${VARIANT_RESOLVE_TIMEFRAME} klines fetch failed for ${symbol}:`, e);
+    console.error(`[VARIANTS] klines fetch failed for ${symbol}:`, e);
     return [];
   }
 }
@@ -2296,7 +1891,6 @@ async function fetchVariantResolutionCandles(
 async function resolveVariantOutcomes(): Promise<number> {
   const db = await admin();
   const settings = await fetchTradingSettings();
-
   const variantTpPct = settings.variant_tp_pct;
   const variantSlPct = settings.variant_sl_pct;
   const variantMaxHours = settings.variant_max_hours;
@@ -2320,28 +1914,15 @@ async function resolveVariantOutcomes(): Promise<number> {
         .lte("created_at", maxAgeIso)
         .order("created_at", { ascending: true })
         .limit(PER_PRESET_BATCH);
-      if (error) {
-        console.error(`[VARIANTS] fetch failed for preset ${preset}:`, error);
-        return [] as typeof openVariants;
-      }
+      if (error) return [] as typeof openVariants;
       return (data ?? []) as typeof openVariants;
     }),
   );
 
   for (const batch of presetFetchResults) openVariants.push(...batch);
-
-  if (openVariants.length === 0) {
-    console.log(`[VARIANTS] No eligible open variants (per_preset_batch=${PER_PRESET_BATCH}, presets=${PRESETS.length}, age≥1h)`);
-    return 0;
-  }
-
-  console.log(
-    `[VARIANTS] Processing ${openVariants.length} variants across ${PRESETS.length} presets ` +
-      `(${PER_PRESET_BATCH} max each, resolution=${VARIANT_RESOLVE_TIMEFRAME}×${VARIANT_RESOLVE_CANDLE_LIMIT})`,
-  );
+  if (openVariants.length === 0) return 0;
 
   const bySymbol = new Map<string, { id: string; recommendation: "buy" | "sell"; entry_price: number; created_at: string; }[]>();
-
   for (const raw of openVariants) {
     const entry = Number(raw.entry_price);
     const rec = String(raw.recommendation ?? "").toLowerCase();
@@ -2355,8 +1936,7 @@ async function resolveVariantOutcomes(): Promise<number> {
   const symbolResults = await pMap(
     [...bySymbol.entries()],
     async ([symbol, variants]) => ({
-      symbol,
-      variants,
+      symbol, variants,
       candles: await fetchVariantResolutionCandles(symbol, VARIANT_RESOLVE_CANDLE_LIMIT),
     }),
     10,
@@ -2375,18 +1955,10 @@ async function resolveVariantOutcomes(): Promise<number> {
       const entryMs = new Date(variant.created_at).getTime();
       if (!Number.isFinite(entryMs)) continue;
 
-      const tpPrice =
-        rec === "buy"
-          ? entry * (1 + variantTpPct)
-          : entry * (1 - variantTpPct);
-
-      const slPrice =
-        rec === "buy"
-          ? entry * (1 - variantSlPct)
-          : entry * (1 + variantSlPct);
+      const tpPrice = rec === "buy" ? entry * (1 + variantTpPct) : entry * (1 - variantTpPct);
+      const slPrice = rec === "buy" ? entry * (1 - variantSlPct) : entry * (1 + variantSlPct);
 
       const relevantCandles = candles.filter((c) => c.closeTimeMs > entryMs && c.closeTimeMs <= nowMs);
-
       let outcome: "win" | "loss" | "expired" | null = null;
       let exitPrice: number | null = null;
 
@@ -2399,7 +1971,6 @@ async function resolveVariantOutcomes(): Promise<number> {
 
       if (!outcome) {
         const ageHours = (nowMs - entryMs) / 3_600_000;
-
         if (ageHours >= variantMaxHours) {
           const expiryCandle = relevantCandles[relevantCandles.length - 1];
           if (expiryCandle) { outcome = "expired"; exitPrice = expiryCandle.close; }
@@ -2421,16 +1992,12 @@ async function resolveVariantOutcomes(): Promise<number> {
         .eq("outcome", "open")
         .select("id");
 
-      if (updateErr) { console.error(`[VARIANTS] update failed for ${variant.id}:`, updateErr); continue; }
+      if (updateErr) continue;
       if (updatedRows && updatedRows.length > 0) resolved += 1;
     }
   }
 
-  if (resolved > 0) {
-    console.log(
-      `[VARIANTS] Resolved ${resolved} outcomes (${VARIANT_RESOLVE_TIMEFRAME} candle-based)`,
-    );
-  }
+  if (resolved > 0) console.log(`[VARIANTS] Resolved ${resolved} outcomes`);
   return resolved;
 }
 
@@ -2456,6 +2023,7 @@ async function allBinancePrices(): Promise<Map<string, number>> {
       if (map.size > 0) return map;
     }
   } catch { /* fall through */ }
+
   const mids = await hlPost<Record<string, string>>({ type: "allMids" });
   const fallback = new Map<string, number>();
   for (const [coin, raw] of Object.entries(mids ?? {})) {
@@ -2473,7 +2041,7 @@ async function allBinancePrices(): Promise<Map<string, number>> {
 async function placeLiveOrder(coin: string, side: "buy" | "sell", quantity: number) {
   const apiKey = process.env["BINANCE_API_KEY"];
   const apiSecret = process.env["BINANCE_API_SECRET"];
-  if (!apiKey || !apiSecret) throw new Error("Binance API credentials are not configured");
+  if (!apiKey || !apiSecret) throw new Error("Binance API credentials not configured");
   const symbol = binanceSymbol(coin);
   const params = new URLSearchParams({
     symbol, side: side.toUpperCase(), type: "MARKET",
@@ -2492,16 +2060,13 @@ async function placeLiveOrder(coin: string, side: "buy" | "sell", quantity: numb
 async function closeTriggeredTrades(): Promise<number> {
   const db = await admin();
   const settings = await fetchTradingSettings();
-
   const staleExitHours = settings.stale_exit_hours;
   const staleExitMinPnlPct = settings.stale_exit_min_pnl_pct;
   const maxHoldHours = settings.max_hold_hours;
 
   const { data: openTrades, error } = await db
     .from("trades")
-    .select(
-      "id, symbol, side, quantity, entry_price, stop_loss, take_profit, mode, created_at",
-    )
+    .select("id, symbol, side, quantity, entry_price, stop_loss, take_profit, mode, created_at")
     .eq("status", "open");
   if (error) throw error;
   const trades = (openTrades ?? []) as {
@@ -2513,30 +2078,26 @@ async function closeTriggeredTrades(): Promise<number> {
 
   let prices: Map<string, number>;
   try { prices = await allBinancePrices(); }
-  catch (e) { console.error("batch price fetch failed, skipping close checks", e); return 0; }
+  catch { return 0; }
 
   const closeCtx = await getActiveWatchlistContext();
-
   let closed = 0;
   const nowMs = Date.now();
 
   for (const trade of trades) {
     const binSym = binanceSymbol(trade.symbol);
     const price = prices.get(binSym);
-    if (price == null) { console.error(`no price for ${trade.symbol} (${binSym})`); continue; }
+    if (price == null) continue;
 
     const entryPrice = Number(trade.entry_price);
     const hitStopLoss = trade.stop_loss != null && (trade.side === "buy" ? price <= trade.stop_loss : price >= trade.stop_loss);
     const hitTakeProfit = trade.take_profit != null && (trade.side === "buy" ? price >= trade.take_profit : price <= trade.take_profit);
 
-    const ageMs = nowMs - new Date(trade.created_at).getTime();
-    const ageHours = ageMs / 3_600_000;
+    const ageHours = (nowMs - new Date(trade.created_at).getTime()) / 3_600_000;
     const pnlPctNow = entryPrice > 0
       ? ((trade.side === "buy" ? price - entryPrice : entryPrice - price) / entryPrice) * 100
       : 0;
-    const stale =
-      ageHours >= staleExitHours &&
-      Math.abs(pnlPctNow) < staleExitMinPnlPct;
+    const stale = ageHours >= staleExitHours && Math.abs(pnlPctNow) < staleExitMinPnlPct;
     const expired = ageHours >= maxHoldHours;
 
     if (!hitStopLoss && !hitTakeProfit && !stale && !expired) continue;
@@ -2544,7 +2105,7 @@ async function closeTriggeredTrades(): Promise<number> {
     if (trade.mode === "live") {
       const opposite: "buy" | "sell" = trade.side === "buy" ? "sell" : "buy";
       try { await placeLiveOrder(trade.symbol, opposite, Number(trade.quantity)); }
-      catch (e) { console.error(`[LIVE] failed to close ${trade.symbol} ${opposite}:`, e); continue; }
+      catch { continue; }
     }
 
     const closeReason = hitStopLoss ? "stop_loss" : hitTakeProfit ? "take_profit" : expired ? "expired" : "stale_exit";
@@ -2567,13 +2128,12 @@ async function closeTriggeredTrades(): Promise<number> {
     if (closeError) throw closeError;
     if (!closedTrade) continue;
 
-    const { error: alertError } = await db.from("trade_alerts").insert({
+    await db.from("trade_alerts").insert({
       trade_id: trade.id, symbol: trade.symbol, side: trade.side,
       event_type: closeReason, entry_price: entryPrice, exit_price: price,
       pnl: fee.netPnl, pnl_pct: fee.netPnlPct, created_at: closedAt,
       tags: tagsFor(trade.symbol, closeCtx),
     } as never);
-    if (alertError) throw alertError;
     closed += 1;
   }
   return closed;
@@ -2609,7 +2169,6 @@ async function attemptRotation(
       t.pnlPct <= ROTATION_MAX_WEAKEST_PNL_PCT &&
       t.currentPrice != null,
   );
-
   if (eligible.length === 0) return null;
 
   eligible.sort((a, b) => {
@@ -2636,7 +2195,6 @@ async function attemptRotation(
     })
     .eq("id", weakest.id)
     .eq("status", "open");
-
   if (closeErr) return null;
 
   const rotationCtx = await getActiveWatchlistContext();
@@ -2647,7 +2205,7 @@ async function attemptRotation(
     tags: tagsFor(weakest.symbol, rotationCtx),
   } as never);
 
-  console.log(`[ROTATION] closed ${weakest.symbol} (PnL ${weakest.pnlPct.toFixed(2)}%, orig ${(weakest.originalConfidence * 100).toFixed(0)}%) → room for ${newSignal.symbol}`);
+  console.log(`[ROTATION] closed ${weakest.symbol} (PnL ${weakest.pnlPct.toFixed(2)}%) → room for ${newSignal.symbol}`);
   return weakest.symbol;
 }
 
@@ -2660,10 +2218,22 @@ export async function executeTrades(opts?: {
   await closeTriggeredTrades();
 
   if (opts?.skipNewEntries) {
-    console.warn(
-      "[CIRCUIT_BREAKER] skipNewEntries=true — closed-only mode, no new positions will be opened",
-    );
+    console.warn("[CIRCUIT_BREAKER] skipNewEntries=true — closed-only mode");
     return 0;
+  }
+
+  // ─── Global-risk cooldown gate ───
+  const globalRiskState = await getGlobalRiskState();
+  if (globalRiskState.cooldown_until) {
+    const until = new Date(globalRiskState.cooldown_until).getTime();
+    if (Number.isFinite(until) && until > Date.now()) {
+      const remaining = Math.ceil((until - Date.now()) / 60_000);
+      console.warn(
+        `[GLOBAL_RISK_COOLDOWN] skipping new entries — ${remaining}min left ` +
+          `(last trigger: ${globalRiskState.last_trigger_type ?? "?"})`,
+      );
+      return 0;
+    }
   }
 
   const since = new Date(Date.now() - 15 * 60 * 1000).toISOString();
@@ -2693,7 +2263,7 @@ export async function executeTrades(opts?: {
 
   let prices: Map<string, number>;
   try { prices = await allBinancePrices(); }
-  catch (e) { console.error("batch price fetch failed in executeTrades", e); return 0; }
+  catch (e) { console.error("batch price fetch failed", e); return 0; }
 
   const execCtx = await getActiveWatchlistContext();
   const hotSymbolsNow = await getHotWhaleSymbols();
@@ -2719,14 +2289,8 @@ export async function executeTrades(opts?: {
     if (Number.isFinite(signalPrice) && signalPrice > 0 && Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT) continue;
 
     const side = signal.recommendation as "buy" | "sell";
-    const stopLoss =
-      side === "buy"
-        ? price * (1 - settings.real_sl_pct)
-        : price * (1 + settings.real_sl_pct);
-    const takeProfit =
-      side === "buy"
-        ? price * (1 + settings.real_tp_pct)
-        : price * (1 - settings.real_tp_pct);
+    const stopLoss = side === "buy" ? price * (1 - settings.real_sl_pct) : price * (1 + settings.real_sl_pct);
+    const takeProfit = side === "buy" ? price * (1 + settings.real_tp_pct) : price * (1 - settings.real_tp_pct);
 
     if (signal.created_at && !isFresh(signal.created_at, 15 * 60 * 1000)) continue;
 
@@ -2752,7 +2316,6 @@ export async function executeTrades(opts?: {
 
     if (!risk.allowed) { console.log(`[RISK_REJECTED] ${signal.symbol} ${side}: ${risk.reason}`); continue; }
     if (!Number.isFinite(risk.quantity) || risk.quantity <= 0) continue;
-    console.log(`[RISK_APPROVED] ${signal.symbol} ${side} | qty=${risk.quantity.toFixed(6)}`);
 
     const quantity = risk.quantity;
     let exchangeOrderId: string | null = null;
@@ -2814,7 +2377,7 @@ export async function runFullPipeline() {
 
   let step = "init";
   try {
-    // ─── Watchlist resolution (once per pipeline) ───
+    // ─── Watchlist resolution ───
     step = "watchlist-resolve";
     invalidateWatchlistCache();
     const watchlistCtx = await resolveWatchlistContext();
@@ -2829,12 +2392,10 @@ export async function runFullPipeline() {
         `binance_filtered=${watchlistCtx.meta.binance_filtered})`,
     );
 
-    // ─── Hot whale queue: opportunistic cleanup ───
     const hotCleaned = await cleanupHotWhales();
-    if (hotCleaned > 0) {
-      console.log(`[HOT_WHALE] cleaned ${hotCleaned} stale entries`);
-    }
+    if (hotCleaned > 0) console.log(`[HOT_WHALE] cleaned ${hotCleaned} stale entries`);
 
+    // ─── Whales ───
     step = "whales";
     const [hlWhales, exWhales, clWhales] = await Promise.all([
       collectWhaleAlerts(),
@@ -2851,7 +2412,6 @@ export async function runFullPipeline() {
         `open_positions=${watchlistCtx.pinned_open.size}`,
     );
 
-    // ─── Feed health check: whales ───
     if (whales === 0) {
       health.whalesFailed = true;
       health.degraded = true;
@@ -2864,10 +2424,9 @@ export async function runFullPipeline() {
       );
     }
 
+    // ─── Indicators ───
     step = "indicators";
     const indicators = await collectIndicators();
-
-    // ─── Feed health check: indicators ───
     if (indicators === 0) {
       health.indicatorsFailed = true;
       health.degraded = true;
@@ -2880,12 +2439,15 @@ export async function runFullPipeline() {
       );
     }
 
+    // ─── Predictions ───
     step = "predictions";
     const predictions = await collectPredictions();
 
+    // ─── Council ───
     step = "council";
     const council = await collectCouncilSignals();
 
+    // ─── Auto-strategy ───
     step = "auto-strategy";
     try {
       const autoSwitch = await maybeAutoSwitchStrategy();
@@ -2899,22 +2461,44 @@ export async function runFullPipeline() {
       console.error("[AUTO_SWITCH] non-fatal error:", e);
     }
 
+    // ─── Signals ───
     step = "signals";
     const signals = await combineSignals();
 
+    // ─── Variants ───
     step = "resolve-variants";
     const resolvedVariants = await resolveVariantOutcomes();
     if (resolvedVariants > 0) console.log(`[VARIANTS] Resolved ${resolvedVariants} variant outcomes`);
 
-    // ─── Circuit breaker: skip new entries on critical feed failure ───
+    // ─── Global risk (GTP + ETS) ───
+    step = "global-risk";
+    let globalRiskTriggered = false;
+    try {
+      const prices = await allBinancePrices();
+      const globalRisk = await evaluateGlobalRisk(
+        db,
+        currentRegimeLabel,
+        null,
+        classifyMarketSession(new Date()),
+        prices,
+      );
+      if (globalRisk.evaluated) {
+        console.log(
+          `[GLOBAL_RISK] evaluated — ${globalRisk.reasoning}` +
+            (globalRisk.triggered ? ` → ${globalRisk.shadow ? "SHADOW" : "LIVE"} ${globalRisk.trigger_type}` : ""),
+        );
+      }
+      globalRiskTriggered = globalRisk.triggered && !globalRisk.shadow;
+    } catch (e) {
+      console.error("[GLOBAL_RISK] non-fatal error:", e);
+    }
+
+    // ─── Trades ───
     step = "trades";
     const circuitBreakerOpen = health.indicatorsFailed || health.whalesFailed;
     let trades = 0;
     if (circuitBreakerOpen) {
-      console.warn(
-        `[CIRCUIT_BREAKER] OPEN — skipping new entries. ` +
-          `Reasons: ${health.degradedReasons.join("; ")}`,
-      );
+      console.warn(`[CIRCUIT_BREAKER] OPEN — skipping new entries. Reasons: ${health.degradedReasons.join("; ")}`);
       await emitFeedAlert(
         db,
         "circuit_breaker",
@@ -2925,6 +2509,7 @@ export async function runFullPipeline() {
     trades = await executeTrades({ skipNewEntries: circuitBreakerOpen });
     const mode = tradingMode();
 
+    // ─── Post-mortem ───
     step = "post-mortem";
     const learning = await generatePostMortems();
     if (learning.generated > 0) console.log(`[LESSON] Generated ${learning.generated} new lessons`);
@@ -2932,9 +2517,7 @@ export async function runFullPipeline() {
 
     const completedAt = new Date();
     const finalStatus = health.degraded ? "degraded" : "success";
-    const errorMessage = health.degraded
-      ? `DEGRADED: ${health.degradedReasons.join("; ")}`
-      : null;
+    const errorMessage = health.degraded ? `DEGRADED: ${health.degradedReasons.join("; ")}` : null;
 
     const summary = {
       completed_at: completedAt.toISOString(),
@@ -2949,28 +2532,16 @@ export async function runFullPipeline() {
       ai_lessons_generated: learning.generated,
     };
 
-    console.log(
-      `[PIPELINE_DONE] watchlist_size=${watchlistCtx.symbols.length} ` +
-        `source=${watchlistCtx.meta.source}`,
-    );
+    if (globalRiskTriggered) console.warn(`[GLOBAL_RISK] trigger fired this run — cooldown active`);
+    console.log(`[PIPELINE_DONE] watchlist_size=${watchlistCtx.symbols.length} source=${watchlistCtx.meta.source}`);
 
     if (runId) {
-      const { error: updateError } = await db
-        .from("pipeline_runs")
-        .update(summary as never)
-        .eq("id", runId);
+      const { error: updateError } = await db.from("pipeline_runs").update(summary as never).eq("id", runId);
       if (updateError) {
         console.error("failed to update pipeline run", updateError);
         if (health.degraded) {
-          console.warn(
-            "[PIPELINE_HEALTH] status='degraded' was rejected by DB — falling back to 'success' + error_message",
-          );
           const fallback = { ...summary, status: "success" };
-          const { error: fallbackError } = await db
-            .from("pipeline_runs")
-            .update(fallback as never)
-            .eq("id", runId);
-          if (fallbackError) console.error("fallback pipeline_runs update also failed", fallbackError);
+          await db.from("pipeline_runs").update(fallback as never).eq("id", runId);
         }
       }
     }
