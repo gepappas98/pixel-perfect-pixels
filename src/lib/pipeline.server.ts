@@ -140,6 +140,13 @@ const STRATEGY_CACHE_TTL_MS = 60_000;
 
 const VARIANT_RESOLVE_BATCH = 500;
 
+// Variant resolution uses 1h candles for higher temporal precision on TP/SL
+// hit ordering (a 4h candle can contain both TP and SL touches, and the
+// resolution logic would falsely record a loss if SL were checked first).
+// 100 × 1h = ~4.16 days, comfortably covering the 72h variant expiry window.
+const VARIANT_RESOLVE_TIMEFRAME = "1h";
+const VARIANT_RESOLVE_CANDLE_LIMIT = 100;
+
 function isFresh(value: unknown, maxAgeMs: number, now = Date.now()): boolean {
   const ts = new Date(String(value ?? "")).getTime();
   return Number.isFinite(ts) && now - ts >= 0 && now - ts <= maxAgeMs;
@@ -2006,11 +2013,28 @@ interface VariantCandle {
   close: number; closeTimeMs: number;
 }
 
-async function fetch4hCandles(coin: string, limit = 50): Promise<VariantCandle[]> {
+/**
+ * Fetch candles for variant resolution.
+ *
+ * Uses 1h candles (VARIANT_RESOLVE_TIMEFRAME) with a 100-candle limit,
+ * giving ~4.16 days of history. This is comfortably above the 72h variant
+ * expiry window and provides 4× higher temporal precision than 4h candles
+ * for detecting the ordering of TP/SL hits within a single bar. Without
+ * this granularity, a 4h candle that touches both TP and SL would be
+ * incorrectly recorded as a loss, because the resolution loop checks SL
+ * before TP.
+ */
+async function fetchVariantResolutionCandles(
+  coin: string,
+  limit = VARIANT_RESOLVE_CANDLE_LIMIT,
+): Promise<VariantCandle[]> {
   const symbol = binanceSymbol(coin);
   try {
-    const result = await fetchCandlesUnified(coin, "4h");
-    if (!result) { console.error(`[VARIANTS] no candles for ${symbol}`); return []; }
+    const result = await fetchCandlesUnified(coin, VARIANT_RESOLVE_TIMEFRAME);
+    if (!result) {
+      console.error(`[VARIANTS] no ${VARIANT_RESOLVE_TIMEFRAME} candles for ${symbol}`);
+      return [];
+    }
     const raw = result.candles.slice(-limit);
     return raw
       .map((r) => ({
@@ -2023,7 +2047,7 @@ async function fetch4hCandles(coin: string, limit = 50): Promise<VariantCandle[]
         Number.isFinite(c.closeTimeMs),
       );
   } catch (e) {
-    console.error(`[VARIANTS] klines fetch failed for ${symbol}:`, e);
+    console.error(`[VARIANTS] ${VARIANT_RESOLVE_TIMEFRAME} klines fetch failed for ${symbol}:`, e);
     return [];
   }
 }
@@ -2070,7 +2094,10 @@ async function resolveVariantOutcomes(): Promise<number> {
     return 0;
   }
 
-  console.log(`[VARIANTS] Processing ${openVariants.length} variants across ${PRESETS.length} presets (${PER_PRESET_BATCH} max each)`);
+  console.log(
+    `[VARIANTS] Processing ${openVariants.length} variants across ${PRESETS.length} presets ` +
+      `(${PER_PRESET_BATCH} max each, resolution=${VARIANT_RESOLVE_TIMEFRAME}×${VARIANT_RESOLVE_CANDLE_LIMIT})`,
+  );
 
   const bySymbol = new Map<string, { id: string; recommendation: "buy" | "sell"; entry_price: number; created_at: string; }[]>();
 
@@ -2086,7 +2113,11 @@ async function resolveVariantOutcomes(): Promise<number> {
 
   const symbolResults = await pMap(
     [...bySymbol.entries()],
-    async ([symbol, variants]) => ({ symbol, variants, candles: await fetch4hCandles(symbol, 50) }),
+    async ([symbol, variants]) => ({
+      symbol,
+      variants,
+      candles: await fetchVariantResolutionCandles(symbol, VARIANT_RESOLVE_CANDLE_LIMIT),
+    }),
     10,
   );
 
@@ -2154,7 +2185,11 @@ async function resolveVariantOutcomes(): Promise<number> {
     }
   }
 
-  if (resolved > 0) console.log(`[VARIANTS] Resolved ${resolved} outcomes (4h candle-based)`);
+  if (resolved > 0) {
+    console.log(
+      `[VARIANTS] Resolved ${resolved} outcomes (${VARIANT_RESOLVE_TIMEFRAME} candle-based)`,
+    );
+  }
   return resolved;
 }
 
