@@ -220,6 +220,42 @@ export type Database = {
         }
         Relationships: []
       }
+      hot_whale_signals: {
+        Row: {
+          alert_count: number
+          buy_usd: number
+          first_seen_at: string
+          last_seen_at: string
+          sell_usd: number
+          sources: string[]
+          symbol: string
+          tags: string[]
+          total_usd: number
+        }
+        Insert: {
+          alert_count?: number
+          buy_usd?: number
+          first_seen_at?: string
+          last_seen_at?: string
+          sell_usd?: number
+          sources?: string[]
+          symbol: string
+          tags?: string[]
+          total_usd?: number
+        }
+        Update: {
+          alert_count?: number
+          buy_usd?: number
+          first_seen_at?: string
+          last_seen_at?: string
+          sell_usd?: number
+          sources?: string[]
+          symbol?: string
+          tags?: string[]
+          total_usd?: number
+        }
+        Relationships: []
+      }
       indicator_snapshots: {
         Row: {
           bb_lower: number | null
@@ -823,6 +859,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      cleanup_hot_whales: {
+        Args: { p_older_than_minutes?: number }
+        Returns: number
+      }
       cleanup_old_pipeline_data: {
         Args: never
         Returns: {
@@ -834,6 +874,13 @@ export type Database = {
           deleted_trade_alerts: number
           deleted_variant_signals: number
           deleted_whale_alerts: number
+        }[]
+      }
+      get_hot_whale_symbols: {
+        Args: { p_limit?: number; p_minutes?: number }
+        Returns: {
+          symbol: string
+          total_usd: number
         }[]
       }
       get_pipeline_cron_health: { Args: never; Returns: Json }
@@ -869,6 +916,15 @@ export type Database = {
         }[]
       }
       reconcile_stuck_pipeline_runs: { Args: never; Returns: number }
+      record_hot_whale: {
+        Args: {
+          p_is_buy: boolean
+          p_source: string
+          p_symbol: string
+          p_usd: number
+        }
+        Returns: undefined
+      }
       refresh_pattern_stats: { Args: never; Returns: number }
       set_pipeline_schedule: { Args: { _minutes: number }; Returns: number }
       trading_fee_rate: { Args: never; Returns: number }
