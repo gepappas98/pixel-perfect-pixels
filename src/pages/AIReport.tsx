@@ -14,7 +14,7 @@ export default function AIReport() {
       const [open, closed, variants, errors] = await Promise.all([
         supabase.from("trades").select("*").eq("status", "open").order("created_at", { ascending: false }).limit(100),
         supabase.from("trades").select("*").eq("status", "closed").order("closed_at", { ascending: false }).limit(20),
-        supabase.from("strategy_variant_signals").select("*").order("created_at", { ascending: false }).limit(500),
+        supabase.from("strategy_variant_signals").select("*", { count: "exact" }).order("created_at", { ascending: false }).limit(2000),
         supabase.from("pipeline_runs").select("*").eq("status", "error").gte("created_at", since).order("created_at", { ascending: false }).limit(30),
       ]);
       if (open.error) throw open.error;
@@ -22,13 +22,25 @@ export default function AIReport() {
       const closedTrades = (closed.data ?? []) as Array<Record<string, unknown>>;
       const variantRows = (variants.data ?? []) as Array<Record<string, unknown>>;
       const errorRows = (errors.data ?? []) as Array<Record<string, unknown>>;
-      const realized = closedTrades.reduce((sum, row) => sum + Number(row.pnl_usd ?? 0), 0);
-      const wins = closedTrades.filter((row) => Number(row.pnl_usd ?? 0) > 0).length;
+      const getPnl = (row: Record<string, unknown>) => Number(row.net_pnl ?? row.gross_pnl ?? row.pnl ?? 0);
+      const realized = closedTrades.reduce((sum, row) => sum + getPnl(row), 0);
+      const wins = closedTrades.filter((row) => getPnl(row) > 0).length;
+      const variantBySymbol = new Map<string, { symbol: string; open_count: number; total_count: number }>();
+      for (const row of variantRows) {
+        const symbol = String(row.symbol ?? "unknown");
+        const current = variantBySymbol.get(symbol) ?? { symbol, open_count: 0, total_count: 0 };
+        current.total_count += 1;
+        if (row.outcome === "open") current.open_count += 1;
+        variantBySymbol.set(symbol, current);
+      }
+      const bySymbolTop = Array.from(variantBySymbol.values())
+        .sort((a, b) => b.open_count - a.open_count || b.total_count - a.total_count)
+        .slice(0, 20);
       const health = errorRows.length ? "degraded" : "ok";
       setReport({ schema_version: "1.0", generated_at: new Date().toISOString(), duration_ms: Date.now() - started,
         health: { overall: health, score: errorRows.length ? 70 : 100, issues: errorRows.length ? [`${errorRows.length} pipeline errors in the last 24 hours`] : [], subsystems: { database: { status: "ok", note: `${openTrades.length} open trades loaded` }, pipeline: { status: errorRows.length ? "warn" : "ok", note: `${errorRows.length} recent errors` } } },
         answers: { summary: { q: "What is the current system status?", a: `${openTrades.length} open trades, ${closedTrades.length} recent closed trades, and ${variantRows.length} recent variants.`, confidence: "high" } }, anomalies: [],
-        data: { trades: { open_count: openTrades.length, closed_count: closedTrades.length, open: openTrades, recent_closed: closedTrades }, portfolio: { realized_pnl: realized, unrealized_pnl: openTrades.reduce((sum, row) => sum + Number(row.pnl_usd ?? 0), 0), closed_count: closedTrades.length, win_rate_pct: closedTrades.length ? (wins / closedTrades.length) * 100 : 0 }, variants: { open_count: variantRows.filter((row) => row.outcome === "open").length, total_count: variantRows.length, by_symbol_top: [] }, pipeline: { recent_errors: errorRows }, symbols: { watched: [], blacklisted: [], with_live_price: [] } }, suggested_actions: [], narrative_md: "", ai_context: "" });
+        data: { trades: { open_count: openTrades.length, closed_count: closedTrades.length, open: openTrades, recent_closed: closedTrades }, portfolio: { realized_pnl: realized, unrealized_pnl: openTrades.reduce((sum, row) => sum + getPnl(row), 0), closed_count: closedTrades.length, win_rate_pct: closedTrades.length ? (wins / closedTrades.length) * 100 : 0 }, variants: { open_count: variantRows.filter((row) => row.outcome === "open").length, total_count: variants.count ?? variantRows.length, by_symbol_top: bySymbolTop }, pipeline: { recent_errors: errorRows }, symbols: { watched: [], blacklisted: [], with_live_price: [] } }, suggested_actions: [], narrative_md: "", ai_context: "" });
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setLoading(false); }
   }, []);
