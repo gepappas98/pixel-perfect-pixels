@@ -28,6 +28,7 @@ export type Database = {
           reasoning: string | null
           recommendation: string | null
           regime_label: string | null
+          source_tags: string[]
           symbol: string
           whale_alert_id: string | null
         }
@@ -44,6 +45,7 @@ export type Database = {
           reasoning?: string | null
           recommendation?: string | null
           regime_label?: string | null
+          source_tags?: string[]
           symbol: string
           whale_alert_id?: string | null
         }
@@ -60,6 +62,7 @@ export type Database = {
           reasoning?: string | null
           recommendation?: string | null
           regime_label?: string | null
+          source_tags?: string[]
           symbol?: string
           whale_alert_id?: string | null
         }
@@ -175,6 +178,45 @@ export type Database = {
           symbol?: string
           synced_at?: string
           token_id?: string | null
+        }
+        Relationships: []
+      }
+      dynamic_watchlist_snapshots: {
+        Row: {
+          binance_filtered: number
+          computed_at: string
+          dynamic_symbols: string[]
+          expires_at: string
+          hl_above_threshold: number
+          hl_candidates: number
+          id: string
+          pinned_symbols: string[]
+          source: string
+          symbols: string[]
+        }
+        Insert: {
+          binance_filtered?: number
+          computed_at?: string
+          dynamic_symbols?: string[]
+          expires_at: string
+          hl_above_threshold?: number
+          hl_candidates?: number
+          id?: string
+          pinned_symbols?: string[]
+          source: string
+          symbols: string[]
+        }
+        Update: {
+          binance_filtered?: number
+          computed_at?: string
+          dynamic_symbols?: string[]
+          expires_at?: string
+          hl_above_threshold?: number
+          hl_candidates?: number
+          id?: string
+          pinned_symbols?: string[]
+          source?: string
+          symbols?: string[]
         }
         Relationships: []
       }
@@ -553,6 +595,7 @@ export type Database = {
           regime_label: string | null
           resolved_at: string | null
           score: number | null
+          source_tags: string[]
           strategy_name: string
           symbol: string
         }
@@ -570,6 +613,7 @@ export type Database = {
           regime_label?: string | null
           resolved_at?: string | null
           score?: number | null
+          source_tags?: string[]
           strategy_name: string
           symbol: string
         }
@@ -587,6 +631,7 @@ export type Database = {
           regime_label?: string | null
           resolved_at?: string | null
           score?: number | null
+          source_tags?: string[]
           strategy_name?: string
           symbol?: string
         }
@@ -603,6 +648,7 @@ export type Database = {
           pnl_pct: number
           side: string
           symbol: string
+          tags: string[]
           trade_id: string
         }
         Insert: {
@@ -615,6 +661,7 @@ export type Database = {
           pnl_pct: number
           side: string
           symbol: string
+          tags?: string[]
           trade_id: string
         }
         Update: {
@@ -627,6 +674,7 @@ export type Database = {
           pnl_pct?: number
           side?: string
           symbol?: string
+          tags?: string[]
           trade_id?: string
         }
         Relationships: [
@@ -660,6 +708,7 @@ export type Database = {
           quantity: number
           regime_label: string | null
           side: string
+          source_tags: string[]
           status: string
           stop_loss: number | null
           symbol: string
@@ -686,6 +735,7 @@ export type Database = {
           quantity: number
           regime_label?: string | null
           side: string
+          source_tags?: string[]
           status?: string
           stop_loss?: number | null
           symbol: string
@@ -712,6 +762,7 @@ export type Database = {
           quantity?: number
           regime_label?: string | null
           side?: string
+          source_tags?: string[]
           status?: string
           stop_loss?: number | null
           symbol?: string
