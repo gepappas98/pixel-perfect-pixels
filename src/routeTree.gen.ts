@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AboutRouteImport } from './routes/about'
+import { Route as AiReportRouteImport } from './routes/ai-report'
 import { Route as ApiDiagnosticRouteImport } from './routes/api/diagnostic'
 import { Route as ApiPublicCronRouteImport } from './routes/api/public/cron'
 
@@ -22,6 +23,11 @@ const IndexRoute = IndexRouteImport.update({
 const AboutRoute = AboutRouteImport.update({
   id: '/about',
   path: '/about',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AiReportRoute = AiReportRouteImport.update({
+  id: '/ai-report',
+  path: '/ai-report',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiDiagnosticRoute = ApiDiagnosticRouteImport.update({
@@ -38,12 +44,14 @@ const ApiPublicCronRoute = ApiPublicCronRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/ai-report': typeof AiReportRoute
   '/api/diagnostic': typeof ApiDiagnosticRoute
   '/api/public/cron': typeof ApiPublicCronRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/ai-report': typeof AiReportRoute
   '/api/diagnostic': typeof ApiDiagnosticRoute
   '/api/public/cron': typeof ApiPublicCronRoute
 }
@@ -51,20 +59,29 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/ai-report': typeof AiReportRoute
   '/api/diagnostic': typeof ApiDiagnosticRoute
   '/api/public/cron': typeof ApiPublicCronRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/about' | '/api/diagnostic' | '/api/public/cron'
+  fullPaths:
+    '/' | '/about' | '/ai-report' | '/api/diagnostic' | '/api/public/cron'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/about' | '/api/diagnostic' | '/api/public/cron'
-  id: '__root__' | '/' | '/about' | '/api/diagnostic' | '/api/public/cron'
+  to: '/' | '/about' | '/ai-report' | '/api/diagnostic' | '/api/public/cron'
+  id:
+    | '__root__'
+    | '/'
+    | '/about'
+    | '/ai-report'
+    | '/api/diagnostic'
+    | '/api/public/cron'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AboutRoute: typeof AboutRoute
+  AiReportRoute: typeof AiReportRoute
   ApiDiagnosticRoute: typeof ApiDiagnosticRoute
   ApiPublicCronRoute: typeof ApiPublicCronRoute
 }
@@ -83,6 +100,13 @@ declare module '@tanstack/react-router' {
       path: '/about'
       fullPath: '/about'
       preLoaderRoute: typeof AboutRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/ai-report': {
+      id: '/ai-report'
+      path: '/ai-report'
+      fullPath: '/ai-report'
+      preLoaderRoute: typeof AiReportRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/diagnostic': {
@@ -105,6 +129,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AboutRoute: AboutRoute,
+  AiReportRoute: AiReportRoute,
   ApiDiagnosticRoute: ApiDiagnosticRoute,
   ApiPublicCronRoute: ApiPublicCronRoute,
 }
