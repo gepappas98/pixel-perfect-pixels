@@ -85,6 +85,13 @@
       "when": 1790740340833,
       "tag": "0011_variant_performance_summary",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1790916386290,
+      "tag": "0012_strategy_config_rls",
+      "breakpoints": true
     }
   ]
 }
