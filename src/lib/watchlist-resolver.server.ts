@@ -28,14 +28,6 @@
  * │                                                                │
  * │  7. Persist snapshot + return WatchlistContext.                │
  * └────────────────────────────────────────────────────────────────┘
- *
- * Why this design:
- *   - Pipeline fetches candles for 150 coins MAX, regardless of how many
- *     exist on Hyperliquid. Load is bounded and predictable.
- *   - New hot coins enter automatically within STABILITY_HOURS.
- *   - Dead coins drop out automatically, saving API calls.
- *   - Pinned symbols guarantee we never lose track of open positions.
- *   - Hysteresis prevents oscillation at the threshold boundary.
  */
 
 import {
@@ -102,15 +94,26 @@ export interface WatchlistContext {
 /**
  * Compute provenance tags for a symbol given the current context.
  *
- * Order matters for readability in logs and UI.
+ * Order matters for readability in logs and UI. `extras` are appended
+ * after the built-in tags (e.g. `["hot-whale"]` from the intra-cycle
+ * discovery queue). Duplicate tags are skipped.
  */
-export function tagsFor(symbol: string, ctx: WatchlistContext): string[] {
+export function tagsFor(
+  symbol: string,
+  ctx: WatchlistContext,
+  extras?: readonly string[],
+): string[] {
   const tags: string[] = [];
   if (ctx.revolutx.has(symbol)) tags.push("revolutx");
   if (ctx.pinned_always.has(symbol)) tags.push("always-include");
   if (ctx.pinned_open.has(symbol)) tags.push("open-position");
   if (ctx.hl_dynamic.has(symbol)) tags.push("hl-dynamic");
   if (ctx.core_fallback.has(symbol)) tags.push("core-fallback");
+  if (extras && extras.length > 0) {
+    for (const e of extras) {
+      if (e && !tags.includes(e)) tags.push(e);
+    }
+  }
   return tags.length > 0 ? tags : ["unknown"];
 }
 
@@ -118,7 +121,7 @@ export function tagsFor(symbol: string, ctx: WatchlistContext): string[] {
 
 interface HyperliquidUniverseVolume {
   all: Set<string>;
-  volume: Map<string, number>; // symbol → dayNtlVlm USD
+  volume: Map<string, number>;
   ts: number;
 }
 
@@ -149,7 +152,6 @@ async function fetchHyperliquidVolume(): Promise<HyperliquidUniverseVolume> {
 
     meta.universe.forEach((u, i) => {
       const name = u.name;
-      // Skip Hyperliquid internal spot-pair prefixes
       if (!name || name.startsWith("@")) return;
       all.add(name);
       const v = parseFloat(ctxs[i]?.dayNtlVlm ?? "0") || 0;
@@ -172,12 +174,12 @@ async function fetchHyperliquidVolume(): Promise<HyperliquidUniverseVolume> {
 /* ───────────── Binance symbol list ───────────── */
 
 interface BinanceSymbolSet {
-  symbols: Set<string>; // base assets with USDT pair
+  symbols: Set<string>;
   ts: number;
 }
 
 const BINANCE_EXCHANGE_INFO_URL = "https://api.binance.com/api/v3/exchangeInfo";
-const BINANCE_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+const BINANCE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 let binanceCache: BinanceSymbolSet | null = null;
 
 async function fetchBinanceUSDTBases(): Promise<Set<string>> {
@@ -212,7 +214,6 @@ async function fetchBinanceUSDTBases(): Promise<Set<string>> {
     return symbols;
   } catch (e) {
     console.error("[WATCHLIST_RESOLVER] Binance exchangeInfo failed:", e);
-    // Fall back to previous cache even if stale
     return binanceCache?.symbols ?? new Set();
   }
 }
@@ -240,7 +241,6 @@ async function loadLatestSnapshot(db: Admin): Promise<SnapshotRow | null> {
     .maybeSingle();
 
   if (error) {
-    // Table might not exist yet on first run — silently return null
     if (!error.message?.includes("does not exist")) {
       console.error("[WATCHLIST_RESOLVER] snapshot load failed:", error);
     }
@@ -259,9 +259,7 @@ async function loadPinnedOpenPositions(db: Admin): Promise<Set<string>> {
     console.error("[WATCHLIST_RESOLVER] open positions load failed:", error);
     return new Set();
   }
-  return new Set(
-    ((data ?? []) as { symbol: string }[]).map((r) => r.symbol),
-  );
+  return new Set(((data ?? []) as { symbol: string }[]).map((r) => r.symbol));
 }
 
 async function persistSnapshot(
@@ -286,7 +284,10 @@ async function persistSnapshot(
   }
 
   // Keep only last 30 snapshots to bound table growth
-  const { error: cleanupErr } = await (db.rpc as any)("delete_old_watchlist_snapshots", { keep: 30 });
+  const { error: cleanupErr } = await (db.rpc as any)(
+    "delete_old_watchlist_snapshots",
+    { keep: 30 },
+  );
   if (cleanupErr) {
     // Non-fatal — cleanup function may not exist yet
   }
@@ -307,7 +308,6 @@ async function resolveWatchlistContextFresh(
   const hlCandidates = hl.all.size;
   const prevSymbols = new Set(previousSnapshot?.symbols ?? []);
 
-  // ── Volume filter with hysteresis ──
   const aboveThreshold: { symbol: string; volume: number }[] = [];
   for (const [symbol, volume] of hl.volume) {
     const isExisting = prevSymbols.has(symbol);
@@ -318,21 +318,17 @@ async function resolveWatchlistContextFresh(
   }
   aboveThreshold.sort((a, b) => b.volume - a.volume);
 
-  // ── Binance listing filter ──
   const binanceFiltered = aboveThreshold.filter((c) =>
     binanceSet.has(c.symbol),
   );
 
-  // ── Pinned set ──
   const pinnedAlways = new Set(CORE_ALWAYS_INCLUDE);
   const coreFallback = new Set(CORE_FALLBACK_WATCHLIST);
   const pinnedAll = new Set([...pinnedAlways, ...pinnedOpen]);
 
-  // ── Compose final list ──
   const dynamicList: string[] = [];
   const seen = new Set<string>();
 
-  // 1. Pinned first (always survive the cap)
   for (const s of pinnedAll) {
     if (!seen.has(s)) {
       seen.add(s);
@@ -340,7 +336,6 @@ async function resolveWatchlistContextFresh(
     }
   }
 
-  // 2. Then by volume desc, up to MAX_COINS
   for (const { symbol } of binanceFiltered) {
     if (dynamicList.length >= MAX_COINS) break;
     if (seen.has(symbol)) continue;
@@ -348,7 +343,6 @@ async function resolveWatchlistContextFresh(
     dynamicList.push(symbol);
   }
 
-  // ── Compute dynamic set for tagging ──
   const hlDynamic = new Set<string>();
   for (const s of dynamicList) {
     if (!pinnedAll.has(s)) hlDynamic.add(s);
@@ -359,7 +353,6 @@ async function resolveWatchlistContextFresh(
   ).toISOString();
   const computedAt = new Date().toISOString();
 
-  // ── Persist ──
   await persistSnapshot(db, {
     symbols: dynamicList,
     source: "refreshed",
@@ -403,11 +396,9 @@ async function resolveWatchlistContextFromCache(
   db: Admin,
   snapshot: SnapshotRow,
 ): Promise<WatchlistContext> {
-  // Refresh ONLY pinned_open — open positions may have changed since snapshot.
   const pinnedOpen = await loadPinnedOpenPositions(db);
   const pinnedAlways = new Set(CORE_ALWAYS_INCLUDE);
 
-  // Merge any new open positions not in the snapshot
   const symbols = [...snapshot.symbols];
   const seen = new Set(symbols);
   for (const s of pinnedOpen) {
@@ -469,15 +460,8 @@ async function resolveWatchlistContextFallback(): Promise<WatchlistContext> {
 
 /* ───────────── Public API ───────────── */
 
-/**
- * Resolve the active watchlist context for this pipeline run.
- *
- * Prefers cached snapshot when fresh; otherwise refreshes from Hyperliquid.
- * Falls back to static core list only if both fail.
- */
 export async function resolveWatchlistContext(): Promise<WatchlistContext> {
   const db = await admin();
-
   const snapshot = await loadLatestSnapshot(db);
 
   if (snapshot) {
@@ -487,7 +471,6 @@ export async function resolveWatchlistContext(): Promise<WatchlistContext> {
     }
   }
 
-  // Snapshot missing or expired — try a fresh resolution
   try {
     return await resolveWatchlistContextFresh(db, snapshot);
   } catch (e) {
@@ -500,10 +483,6 @@ export async function resolveWatchlistContext(): Promise<WatchlistContext> {
 
 let memoryCache: { ctx: WatchlistContext; ts: number } | null = null;
 
-/**
- * Fast accessor — returns the same context for up to MEMORY_TTL_MS.
- * Use this from pipeline code to avoid re-resolving on every function.
- */
 export async function getActiveWatchlistContext(): Promise<WatchlistContext> {
   const now = Date.now();
   if (memoryCache && now - memoryCache.ts < MEMORY_TTL_MS) {
@@ -514,13 +493,11 @@ export async function getActiveWatchlistContext(): Promise<WatchlistContext> {
   return ctx;
 }
 
-/** Convenience — just the symbols. */
 export async function getActiveWatchlist(): Promise<string[]> {
   const ctx = await getActiveWatchlistContext();
   return ctx.symbols;
 }
 
-/** Force the next call to re-resolve. Use at pipeline start. */
 export function invalidateWatchlistCache(): void {
   memoryCache = null;
 }
