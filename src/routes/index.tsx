@@ -15,6 +15,7 @@ import { VariantComparisonPanel } from "@/components/trading/VariantComparisonPa
 import { TradesPanel } from "@/components/trading/TradesPanel";
 import { TradeAlertsPanel } from "@/components/trading/TradeAlertsPanel";
 import { CronHealthPanel } from "@/components/trading/CronHealthPanel";
+import { SystemResourcesPanel } from "@/components/trading/SystemResourcesPanel";
 import { AIRiskSummary } from "@/components/trading/AIRiskSummary";
 import { PortfolioPanel } from "@/components/trading/PortfolioPanel";
 import { SupportDeveloper } from "@/components/trading/SupportDeveloper";
@@ -325,6 +326,7 @@ function CommandCenter() {
         <VariantComparisonPanel />
         <AIRiskSummary />
         <CronHealthPanel />
+        <SystemResourcesPanel />
         <PortfolioPanel />
         <div className="lg:col-span-3">
           <TradesPanel />
