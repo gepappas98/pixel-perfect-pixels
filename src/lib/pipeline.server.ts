@@ -1858,34 +1858,84 @@ export async function combineSignals(): Promise<number> {
 
 /* ───────────── Variant resolution ───────────── */
 
-interface VariantCandle {
-  open: number; high: number; low: number;
-  close: number; closeTimeMs: number;
-}
+type VariantOutcome = "win" | "loss" | "expired" | "ambiguous";
+
+type VariantCandle = {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  openTimeMs: number;
+  closeTimeMs: number;
+};
+
+type ResolutionCandle = {
+  openTime: number;
+  closeTime: number;
+  high: number;
+  low: number;
+};
 
 async function fetchVariantResolutionCandles(
   coin: string,
+  timeframe: string,
+  openTimeMs?: number,
+  closeTimeMs?: number,
   limit = VARIANT_RESOLVE_CANDLE_LIMIT,
 ): Promise<VariantCandle[]> {
   const symbol = binanceSymbol(coin);
   try {
-    const result = await fetchCandlesUnified(coin, VARIANT_RESOLVE_TIMEFRAME);
+    const result = await fetchCandlesUnified(coin, timeframe);
     if (!result) return [];
-    const raw = result.candles.slice(-limit);
-    return raw
+    return result.candles
       .map((r) => ({
         open: Number(r[1]), high: Number(r[2]), low: Number(r[3]),
-        close: Number(r[4]), closeTimeMs: Number(r[6]),
+        close: Number(r[4]), openTimeMs: Number(r[0]), closeTimeMs: Number(r[6]),
       }))
       .filter((c) =>
         Number.isFinite(c.open) && Number.isFinite(c.high) &&
         Number.isFinite(c.low) && Number.isFinite(c.close) &&
-        Number.isFinite(c.closeTimeMs),
-      );
+        Number.isFinite(c.openTimeMs) && Number.isFinite(c.closeTimeMs) &&
+        (openTimeMs == null || c.closeTimeMs > openTimeMs) &&
+        (closeTimeMs == null || c.openTimeMs < closeTimeMs),
+      )
+      .sort((a, b) => a.openTimeMs - b.openTimeMs)
+      .slice(-limit);
   } catch (e) {
-    console.error(`[VARIANTS] klines fetch failed for ${symbol}:`, e);
+    console.warn(`[VARIANTS] ${timeframe} klines fetch failed for ${symbol}:`, e);
     return [];
   }
+}
+
+async function resolveAmbiguousCandle(
+  symbol: string,
+  side: "buy" | "sell",
+  tpPrice: number,
+  slPrice: number,
+  candle: ResolutionCandle,
+): Promise<VariantOutcome> {
+  for (const timeframe of ["5m", "15m"] as const) {
+    try {
+      const lowerCandles = await fetchVariantResolutionCandles(
+        symbol,
+        timeframe,
+        candle.openTime,
+        candle.closeTime,
+        VARIANT_RESOLVE_CANDLE_LIMIT,
+      );
+      if (lowerCandles.length === 0) continue;
+
+      for (const lower of lowerCandles) {
+        const hitTP = side === "buy" ? lower.high >= tpPrice : lower.low <= tpPrice;
+        const hitSL = side === "buy" ? lower.low <= slPrice : lower.high >= slPrice;
+        if (hitTP && !hitSL) return "win";
+        if (hitSL && !hitTP) return "loss";
+      }
+    } catch (error) {
+      console.warn(`[variant-resolution] ${timeframe} fallback failed`, { symbol, side, error });
+    }
+  }
+  return "ambiguous";
 }
 
 async function resolveVariantOutcomes(): Promise<number> {
@@ -1946,7 +1996,7 @@ async function resolveVariantOutcomes(): Promise<number> {
     [...bySymbol.entries()],
     async ([symbol, variants]) => ({
       symbol, variants,
-      candles: await fetchVariantResolutionCandles(symbol, VARIANT_RESOLVE_CANDLE_LIMIT),
+      candles: await fetchVariantResolutionCandles(symbol, VARIANT_RESOLVE_TIMEFRAME, undefined, undefined, VARIANT_RESOLVE_CANDLE_LIMIT),
     }),
     10,
   );
@@ -1956,7 +2006,7 @@ async function resolveVariantOutcomes(): Promise<number> {
 
   for (const result of symbolResults) {
     if (!result || result.candles.length === 0) continue;
-    const { variants, candles } = result;
+    const { symbol, variants, candles } = result;
 
     for (const variant of variants) {
       const entry = variant.entry_price;
@@ -1968,14 +2018,27 @@ async function resolveVariantOutcomes(): Promise<number> {
       const slPrice = rec === "buy" ? entry * (1 - variantSlPct) : entry * (1 + variantSlPct);
 
       const relevantCandles = candles.filter((c) => c.closeTimeMs > entryMs && c.closeTimeMs <= nowMs);
-      let outcome: "win" | "loss" | "expired" | null = null;
+      let outcome: VariantOutcome | null = null;
       let exitPrice: number | null = null;
 
       for (const candle of relevantCandles) {
         const hitTP = rec === "buy" ? candle.high >= tpPrice : candle.low <= tpPrice;
         const hitSL = rec === "buy" ? candle.low <= slPrice : candle.high >= slPrice;
-        if (hitSL) { outcome = "loss"; exitPrice = slPrice; break; }
+
+        if (hitTP && hitSL) {
+          outcome = await resolveAmbiguousCandle(symbol, rec, tpPrice, slPrice, {
+            openTime: candle.openTimeMs,
+            closeTime: candle.closeTimeMs,
+            high: candle.high,
+            low: candle.low,
+          });
+          if (outcome === "win") exitPrice = tpPrice;
+          if (outcome === "loss") exitPrice = slPrice;
+          break;
+        }
+
         if (hitTP) { outcome = "win"; exitPrice = tpPrice; break; }
+        if (hitSL) { outcome = "loss"; exitPrice = slPrice; break; }
       }
 
       if (!outcome) {
@@ -2502,7 +2565,7 @@ export async function runFullPipeline() {
       console.error("[GLOBAL_RISK] non-fatal error:", e);
     }
 
-    // ─── Trades ───
+    // ��── Trades ───
     step = "trades";
     const circuitBreakerOpen = health.indicatorsFailed || health.whalesFailed;
     let trades = 0;
