@@ -92,6 +92,13 @@
       "when": 1790916386290,
       "tag": "0012_strategy_config_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1790999329072,
+      "tag": "0013_shadow_regime_symbol_match",
+      "breakpoints": true
     }
   ]
 }
