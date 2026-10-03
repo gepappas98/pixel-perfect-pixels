@@ -29,7 +29,7 @@
 
 import { RISK_CONFIG } from "./risk.engine";
 import { computeFeeAwarePnl, TRADING_FEE_RATE } from "./fees";
-import type { MarketSession } from "./market-session";
+import type { SessionInfo } from "./market-session";
 
 type Admin = Awaited<
   typeof import("@/integrations/supabase/client.server")
