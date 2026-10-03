@@ -1897,26 +1897,35 @@ async function resolveVariantOutcomes(): Promise<number> {
 
   const minAgeMs = 60 * 60 * 1000;
   const maxAgeIso = new Date(Date.now() - minAgeMs).toISOString();
-  const PER_PRESET_BATCH = 300;
+  const PER_PRESET_OLDEST_BATCH = 300;
+  const PER_PRESET_NEWEST_BATCH = 300;
   const PRESETS = Object.keys(STRATEGY_PRESETS);
 
   const openVariants: { id: string; symbol: string; recommendation: string | null; entry_price: number | null; created_at: string; }[] = [];
 
   const presetFetchResults = await Promise.all(
-    PRESETS.map(async (preset) => {
-      const { data, error } = await db
-        .from("strategy_variant_signals")
-        .select("id, symbol, recommendation, entry_price, created_at")
-        .eq("strategy_name", preset)
-        .eq("outcome", "open")
-        .not("entry_price", "is", null)
-        .in("recommendation", ["buy", "sell"])
-        .lte("created_at", maxAgeIso)
-        .order("created_at", { ascending: true })
-        .limit(PER_PRESET_BATCH);
-      if (error) return [] as typeof openVariants;
-      return (data ?? []) as typeof openVariants;
-    }),
+  PRESETS.map(async (preset) => {
+  const baseQuery = () => db
+  .from("strategy_variant_signals")
+  .select("id, symbol, recommendation, entry_price, created_at")
+  .eq("strategy_name", preset)
+  .eq("outcome", "open")
+  .not("entry_price", "is", null)
+  .in("recommendation", ["buy", "sell"])
+  .lte("created_at", maxAgeIso);
+
+  const [oldestRes, newestRes] = await Promise.all([
+  baseQuery().order("created_at", { ascending: true }).limit(PER_PRESET_OLDEST_BATCH),
+  baseQuery().order("created_at", { ascending: false }).limit(PER_PRESET_NEWEST_BATCH),
+  ]);
+  if (oldestRes.error || newestRes.error) return [] as typeof openVariants;
+
+  const merged = [
+  ...((oldestRes.data ?? []) as typeof openVariants),
+  ...((newestRes.data ?? []) as typeof openVariants),
+  ];
+  return [...new Map(merged.map((row) => [row.id, row])).values()];
+  }),
   );
 
   for (const batch of presetFetchResults) openVariants.push(...batch);
