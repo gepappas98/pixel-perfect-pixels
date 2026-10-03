@@ -13,6 +13,7 @@ import { detectHardConflict } from "./watch-conflict";
 import { serializeError } from "./error-serialize";
 import { checkMtfGate, type MtfCounts, type MtfGateConfig } from "./mtf-gate";
 import { computeRegimeSnapshot } from "./regime-snapshot";
+import { computeAssetRegime } from "./asset-regime";
 import {
   fetchCoinLobsterWhales,
   normalizeCoinLobsterTrade,
@@ -1305,8 +1306,22 @@ export async function collectCouncilSignals(): Promise<number> {
     if (freshAiSymbols.has(symbol)) continue;
     const aiResult = aiResults.get(symbol);
     const usedAi = !!aiResult;
-    const result = aiResult ?? councilEvaluation(ctx.whale, ctx.mtf, ctx.prediction);
-    const sourceId = [symbol, ctx.whale?.["id"], ctx.mtfRaw.primary?.["id"], ctx.prediction?.["id"], usedAi ? "ai" : "rule", result.final_verdict, String(Math.round(Number(result.conviction) || 0))].join(":");
+  let result = aiResult ?? councilEvaluation(ctx.whale, ctx.mtf, ctx.prediction);
+  const assetMicroRegime = computeAssetRegime(ctx.mtfRaw.primary);
+  if (result.final_verdict === "SELL" && (assetMicroRegime.regime === "bull" || assetMicroRegime.regime === "strong_bull")) {
+    result = {
+      ...result,
+      final_verdict: "HOLD",
+      reflection: `${result.reflection} [ASSET_REGIME_FILTER: Short blocked due to ${assetMicroRegime.regime} on 4h]`,
+    };
+  } else if (result.final_verdict === "BUY" && (assetMicroRegime.regime === "bear" || assetMicroRegime.regime === "strong_bear")) {
+    result = {
+      ...result,
+      final_verdict: "HOLD",
+      reflection: `${result.reflection} [ASSET_REGIME_FILTER: Long blocked due to ${assetMicroRegime.regime} on 4h]`,
+    };
+  }
+  const sourceId = [symbol, ctx.whale?.["id"], ctx.mtfRaw.primary?.["id"], ctx.prediction?.["id"], usedAi ? "ai" : "rule", result.final_verdict, String(Math.round(Number(result.conviction) || 0))].join(":");
     rows.push({
       symbol, source_id: sourceId,
       final_verdict: result.final_verdict,
