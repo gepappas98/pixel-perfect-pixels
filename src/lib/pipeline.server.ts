@@ -1785,9 +1785,11 @@ export async function combineSignals(): Promise<number> {
         reasoning: altResult.reasoning,
         score: altResult.score,
         entry_price: mtfPrice,
-        outcome: "open",
-        regime_label: regime.label,
-        market_session: nowSession.session,
+  outcome: "open",
+  // Capture the classifier label at signal creation; shadow_regime is independent.
+  production_regime_label: regime.label,
+  regime_label: regime.label,
+  market_session: nowSession.session,
         source_tags: symbolTags,
         created_at: nowIso,
       });
@@ -1924,9 +1926,16 @@ async function resolveAmbiguousCandle(
         VARIANT_RESOLVE_CANDLE_LIMIT,
       );
 
-      if (lowerCandles.length === 0) continue;
+  if (lowerCandles.length === 0) {
+  console.warn("[variant-resolution] lower timeframe unavailable", {
+  symbol, side, timeframe,
+  candleOpenTime: candle.openTime,
+  candleCloseTime: candle.closeTime,
+  });
+  continue;
+  }
 
-      const orderedCandles = [...lowerCandles].sort(
+  const orderedCandles = [...lowerCandles].sort(
         (a, b) => a.openTimeMs - b.openTimeMs,
       );
 
@@ -1937,10 +1946,14 @@ async function resolveAmbiguousCandle(
         if (hitTP && hitSL) return "ambiguous";
         if (hitTP) return "win";
         if (hitSL) return "loss";
-      }
+  }
 
-      return "ambiguous";
-    } catch (error) {
+  console.log("[variant-resolution] no ordered hit; trying next timeframe", {
+  symbol, side, timeframe,
+  candleOpenTime: candle.openTime,
+  candleCloseTime: candle.closeTime,
+  });
+  } catch (error) {
       console.warn(`[variant-resolution] ${timeframe} fallback failed`, {
         symbol,
         side,
