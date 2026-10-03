@@ -98,10 +98,11 @@ export function VariantComparisonPanel() {
         .select("variant_max_hours, variant_tp_pct, variant_sl_pct")
         .single();
       if (error) throw error;
+      const row = (data ?? {}) as unknown as Record<string, unknown>;
       return {
-        variant_max_hours: Number(data?.variant_max_hours ?? 72),
-        variant_tp_pct: Number(data?.variant_tp_pct ?? 0.04),
-        variant_sl_pct: Number(data?.variant_sl_pct ?? 0.03),
+        variant_max_hours: Number(row["variant_max_hours"] ?? 72),
+        variant_tp_pct: Number(row["variant_tp_pct"] ?? 0.04),
+        variant_sl_pct: Number(row["variant_sl_pct"] ?? 0.03),
       };
     },
     refetchInterval: 300_000,

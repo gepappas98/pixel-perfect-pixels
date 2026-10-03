@@ -40,7 +40,7 @@ async function admin(): Promise<Admin> {
   return supabaseAdmin;
 }
 
-const STARTING_EQUITY = RISK_CONFIG.STARTING_EQUITY ?? 20_000;
+const STARTING_EQUITY = (RISK_CONFIG as { STARTING_EQUITY?: number }).STARTING_EQUITY ?? 20_000;
 
 /* ───────────── Types ───────────── */
 
@@ -359,7 +359,7 @@ export async function evaluateGlobalRisk(
   db: Admin,
   regimeLabel: string | null,
   regimeScore: number | null,
-  marketSession: MarketSession | null,
+  marketSession: SessionInfo | null,
   prices: Map<string, number>,
 ): Promise<GlobalRiskDecision> {
   const config = await getGlobalRiskControl();
@@ -701,10 +701,10 @@ export async function recordEquitySnapshot(
   db: Admin,
   snapshot: PortfolioSnapshot,
   regimeLabel: string | null,
-  marketSession: MarketSession | null,
+  marketSession: SessionInfo | null,
 ): Promise<void> {
   try {
-    await db.from("equity_snapshots").insert({
+    await (db as any).from("equity_snapshots").insert({
       equity: snapshot.current_equity,
       base_equity: snapshot.base_equity,
       realized_pnl: snapshot.realized_pnl,
@@ -745,7 +745,7 @@ export async function recordGlobalRiskEvent(
   },
 ): Promise<void> {
   try {
-    await db.from("global_risk_events").insert({
+    await (db as any).from("global_risk_events").insert({
       ...event,
       detected_at: new Date().toISOString(),
     } as never);
