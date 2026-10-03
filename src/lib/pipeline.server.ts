@@ -1648,6 +1648,9 @@ export async function combineSignals(): Promise<number> {
     const council = (latestCouncil.get(symbol) ?? null) as Row;
     if (!whale && !mtfRaw.primary && !prediction && !council) continue;
 
+    // 1. Υπολογισμός 4h Asset Shadow Regime για το συγκεκριμένο asset
+    const assetMicroRegime = computeAssetRegime(mtfRaw.primary);
+
     // Hot-whale aggregated direction override
     const hotAgg = hotSymbolSet.has(symbol) ? hotWhaleBatch.get(symbol) ?? null : null;
 
@@ -1671,10 +1674,34 @@ export async function combineSignals(): Promise<number> {
       );
     }
 
-    const result = ruleBased(whale, mtf, prediction, council, weights, {
+    let result = ruleBased(whale, mtf, prediction, council, weights, {
       conflictFixEnabled, mtfGateConfig, sessionConfig, symbol,
       hotWhaleAggregate: hotAgg,
     });
+
+    // 2. Asset Regime Gate: Εξάλειψη counter-trend & sideways shorts
+    if (
+      result.recommendation === "sell" &&
+      (assetMicroRegime.regime === "bull" ||
+        assetMicroRegime.regime === "strong_bull" ||
+        assetMicroRegime.regime === "sideways")
+    ) {
+      result = {
+        ...result,
+        recommendation: "hold",
+        reasoning: `${result.reasoning}; [ASSET_REGIME_GATE: Short blocked — 4h regime is ${assetMicroRegime.regime}]`,
+      };
+    } else if (
+      result.recommendation === "buy" &&
+      (assetMicroRegime.regime === "bear" ||
+        assetMicroRegime.regime === "strong_bear")
+    ) {
+      result = {
+        ...result,
+        recommendation: "hold",
+        reasoning: `${result.reasoning}; [ASSET_REGIME_GATE: Long blocked — 4h regime is ${assetMicroRegime.regime}]`,
+      };
+    }
 
     const symbolTags = tagsFor(
       symbol,
@@ -1791,6 +1818,24 @@ export async function combineSignals(): Promise<number> {
           }
         }
       }
+
+      // Asset Regime Filter: Αποκλεισμός τοξικών shorts/longs από τα benchmarks
+      if (
+        altResult.recommendation === "sell" &&
+        (assetMicroRegime.regime === "bull" ||
+          assetMicroRegime.regime === "strong_bull" ||
+          assetMicroRegime.regime === "sideways")
+      ) {
+        continue;
+      }
+      if (
+        altResult.recommendation === "buy" &&
+        (assetMicroRegime.regime === "bear" ||
+          assetMicroRegime.regime === "strong_bear")
+      ) {
+        continue;
+      }
+
       if (altResult.recommendation !== "buy" && altResult.recommendation !== "sell") continue;
       if (mtfPrice == null || mtfPrice <= 0) continue;
       variantRows.push({
