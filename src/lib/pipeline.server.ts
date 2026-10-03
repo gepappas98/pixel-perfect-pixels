@@ -2065,23 +2065,37 @@ async function resolveVariantOutcomes(): Promise<number> {
         }
       }
 
-      if (!outcome || exitPrice == null) continue;
+  /*
+   * AMBIGUOUS is a terminal resolution state. It intentionally has no
+   * deterministic exit price or PnL and must not remain OPEN.
+   */
+  if (!outcome) continue;
+  if (outcome !== "ambiguous" && exitPrice == null) continue;
 
-      const rawPnlPct = ((exitPrice - entry) / entry) * 100;
-      const pnlPct = rec === "buy" ? rawPnlPct : -rawPnlPct;
+  const pnlPct =
+  outcome === "ambiguous" || exitPrice == null
+  ? null
+  : rec === "buy"
+  ? ((exitPrice - entry) / entry) * 100
+  : ((entry - exitPrice) / entry) * 100;
 
-      const { data: updatedRows, error: updateErr } = await db
-        .from("strategy_variant_signals")
-        .update({
-          outcome, exit_price: exitPrice, pnl_pct: pnlPct,
-          resolved_at: new Date().toISOString(),
-        })
-        .eq("id", variant.id)
-        .eq("outcome", "open")
-        .select("id");
+  const { data: updatedRows, error: updateErr } = await db
+  .from("strategy_variant_signals")
+  .update({
+  outcome,
+  exit_price: outcome === "ambiguous" ? null : exitPrice,
+  pnl_pct: pnlPct,
+  resolved_at: new Date().toISOString(),
+  })
+  .eq("id", variant.id)
+  .eq("outcome", "open")
+  .select("id");
 
-      if (updateErr) continue;
-      if (updatedRows && updatedRows.length > 0) resolved += 1;
+  if (updateErr) {
+  console.error(`[VARIANTS] failed to persist ${outcome} for ${variant.id}:`, updateErr);
+  continue;
+  }
+  if (updatedRows && updatedRows.length > 0) resolved += 1;
     }
   }
 
