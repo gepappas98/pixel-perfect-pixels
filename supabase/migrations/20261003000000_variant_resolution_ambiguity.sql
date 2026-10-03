@@ -1,5 +1,8 @@
 -- Preserve ambiguous TP/SL outcomes instead of biasing them toward LOSS.
 ALTER TABLE public.strategy_variant_signals
+  ADD COLUMN IF NOT EXISTS shadow_regime text;
+
+ALTER TABLE public.strategy_variant_signals
   DROP CONSTRAINT IF EXISTS strategy_variant_signals_outcome_check;
 
 ALTER TABLE public.strategy_variant_signals
