@@ -243,3 +243,27 @@ export const getCronHealth = createServerFn({ method: "GET" }).handler(
     }
   },
 );
+
+export const getSystemResourceMetrics = createServerFn({ method: "GET" }).handler(async () => {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  const [{ data: resourceData, error: resourceError }, { data: runs, error: runError }] = await Promise.all([
+    (supabaseAdmin.rpc as any)("get_system_resource_stats"),
+    supabaseAdmin.from("pipeline_runs").select("started_at, completed_at, duration_ms, status, signals").order("started_at", { ascending: false }).limit(1),
+  ]);
+  if (resourceError) throw resourceError;
+  if (runError) throw runError;
+  const resource = (resourceData ?? {}) as Record<string, unknown>;
+  const run = (runs?.[0] ?? null) as Record<string, unknown> | null;
+  const current = Number(resource["current_connections"] ?? 0);
+  const max = Number(resource["max_connections"] ?? 0);
+  const connectionPct = max > 0 ? (current / max) * 100 : 0;
+  const durationMs = Number(run?.["duration_ms"] ?? 0);
+  return {
+    available: true,
+    connections: { current, max, percentage: connectionPct, level: connectionPct >= 85 ? "danger" : connectionPct >= 70 ? "warning" : "normal" },
+    storage: { pretty: String(resource["total_db_size_pretty"] ?? "—"), bytes: Number(resource["total_db_size_bytes"] ?? 0), variantSignals: Number(resource["variant_signals_count"] ?? 0) },
+    cacheHitPct: Number(resource["cache_hit_pct"] ?? 0),
+    pipeline: { status: String(run?.["status"] ?? "unknown"), durationMs, durationPct: Math.min(100, (durationMs / 60_000) * 100), signals: Number(run?.["signals"] ?? 0), startedAt: run?.["started_at"] ?? null, completedAt: run?.["completed_at"] ?? null },
+    checkedAt: new Date().toISOString(),
+  };
+});
