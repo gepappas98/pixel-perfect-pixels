@@ -626,6 +626,7 @@ export type Database = {
           market_session: string | null
           outcome: string | null
           pnl_pct: number | null
+          production_regime_label: string | null
           reasoning: string | null
           recommendation: string | null
           regime_label: string | null
@@ -652,6 +653,7 @@ export type Database = {
           market_session?: string | null
           outcome?: string | null
           pnl_pct?: number | null
+          production_regime_label?: string | null
           reasoning?: string | null
           recommendation?: string | null
           regime_label?: string | null
@@ -678,6 +680,7 @@ export type Database = {
           market_session?: string | null
           outcome?: string | null
           pnl_pct?: number | null
+          production_regime_label?: string | null
           reasoning?: string | null
           recommendation?: string | null
           regime_label?: string | null
