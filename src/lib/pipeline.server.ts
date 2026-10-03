@@ -1923,18 +1923,34 @@ async function resolveAmbiguousCandle(
         candle.closeTime,
         VARIANT_RESOLVE_CANDLE_LIMIT,
       );
+
       if (lowerCandles.length === 0) continue;
 
-      for (const lower of lowerCandles) {
+      const orderedCandles = [...lowerCandles].sort(
+        (a, b) => a.openTimeMs - b.openTimeMs,
+      );
+
+      for (const lower of orderedCandles) {
         const hitTP = side === "buy" ? lower.high >= tpPrice : lower.low <= tpPrice;
         const hitSL = side === "buy" ? lower.low <= slPrice : lower.high >= slPrice;
-        if (hitTP && !hitSL) return "win";
-        if (hitSL && !hitTP) return "loss";
+
+        if (hitTP && hitSL) return "ambiguous";
+        if (hitTP) return "win";
+        if (hitSL) return "loss";
       }
+
+      return "ambiguous";
     } catch (error) {
-      console.warn(`[variant-resolution] ${timeframe} fallback failed`, { symbol, side, error });
+      console.warn(`[variant-resolution] ${timeframe} fallback failed`, {
+        symbol,
+        side,
+        candleOpenTime: candle.openTime,
+        candleCloseTime: candle.closeTime,
+        error,
+      });
     }
   }
+
   return "ambiguous";
 }
 
