@@ -927,6 +927,7 @@ export type Database = {
           win_rate_pct: number
         }[]
       }
+      get_system_resource_stats: { Args: never; Returns: Json }
       get_variant_performance: {
         Args: { days?: number }
         Returns: {
