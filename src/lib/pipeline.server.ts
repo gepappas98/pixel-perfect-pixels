@@ -730,7 +730,7 @@ function detectSmc(opens: number[], highs: number[], lows: number[], closes: num
       const candleRange = highs[i]! - lows[i]!;
       const upperWick = highs[i]! - Math.max(opens[i]!, closes[i]!);
       if (highs[i]! > targetBsl && closes[i]! < targetBsl && candleRange > 0 && upperWick / candleRange >= 0.4) {
-        sweepTrap = { detected: true, type: "bsl_sweep", liquidityLevel: targetBsl, sweepWickHigh: highs[i], fvgConfirmed: fvgType === "bearish" || retesting };
+        sweepTrap = { detected: true, type: "bsl_sweep", liquidityLevel: targetBsl, sweepWickHigh: highs[i]!, fvgConfirmed: fvgType === "bearish" || retesting };
         break;
       }
     }
@@ -742,7 +742,7 @@ function detectSmc(opens: number[], highs: number[], lows: number[], closes: num
       const candleRange = highs[i]! - lows[i]!;
       const lowerWick = Math.min(opens[i]!, closes[i]!) - lows[i]!;
       if (lows[i]! < targetSsl && closes[i]! > targetSsl && candleRange > 0 && lowerWick / candleRange >= 0.4) {
-        sweepTrap = { detected: true, type: "ssl_sweep", liquidityLevel: targetSsl, sweepWickLow: lows[i], fvgConfirmed: fvgType === "bullish" || retesting };
+        sweepTrap = { detected: true, type: "ssl_sweep", liquidityLevel: targetSsl, sweepWickLow: lows[i]!, fvgConfirmed: fvgType === "bullish" || retesting };
         break;
       }
     }

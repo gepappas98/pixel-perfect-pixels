@@ -631,6 +631,14 @@ export type Database = {
           regime_label: string | null
           resolved_at: string | null
           score: number | null
+          shadow_aroon_osc: number | null
+          shadow_atr_pct: number | null
+          shadow_price: number | null
+          shadow_regime: string | null
+          shadow_score: number | null
+          shadow_signal_4h: string | null
+          shadow_smc_state: string | null
+          shadow_source_at: string | null
           source_tags: string[]
           strategy_name: string
           symbol: string
@@ -649,6 +657,14 @@ export type Database = {
           regime_label?: string | null
           resolved_at?: string | null
           score?: number | null
+          shadow_aroon_osc?: number | null
+          shadow_atr_pct?: number | null
+          shadow_price?: number | null
+          shadow_regime?: string | null
+          shadow_score?: number | null
+          shadow_signal_4h?: string | null
+          shadow_smc_state?: string | null
+          shadow_source_at?: string | null
           source_tags?: string[]
           strategy_name: string
           symbol: string
@@ -667,6 +683,14 @@ export type Database = {
           regime_label?: string | null
           resolved_at?: string | null
           score?: number | null
+          shadow_aroon_osc?: number | null
+          shadow_atr_pct?: number | null
+          shadow_price?: number | null
+          shadow_regime?: string | null
+          shadow_score?: number | null
+          shadow_signal_4h?: string | null
+          shadow_smc_state?: string | null
+          shadow_source_at?: string | null
           source_tags?: string[]
           strategy_name?: string
           symbol?: string
@@ -913,6 +937,17 @@ export type Database = {
           strategy_name: string
           total_pnl_pct: number
           wins: number
+        }[]
+      }
+      get_variant_summary: {
+        Args: never
+        Returns: {
+          by_outcome: Json
+          by_strategy: Json
+          by_symbol: Json
+          open_count: number
+          resolved_count: number
+          total_count: number
         }[]
       }
       reconcile_stuck_pipeline_runs: { Args: never; Returns: number }

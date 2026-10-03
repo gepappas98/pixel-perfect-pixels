@@ -66,7 +66,7 @@ export async function fetchTradingSettings(): Promise<TradingSettings> {
 
     if (error) throw error;
 
-    const row = (data ?? {}) as Record<string, unknown>;
+    const row = (data ?? {}) as unknown as Record<string, unknown>;
 
     const num = (key: string, fallback: number): number => {
       const v = Number(row[key]);
