@@ -933,22 +933,35 @@ export type Database = {
       }
       get_pipeline_cron_health: { Args: never; Returns: Json }
       get_portfolio_summary: {
-        Args: never
+        Args: { p_mark_prices?: Json }
         Returns: {
-          avg_loss_usd: number
+          avg_loss_usd: number | null
           avg_win_usd: number
+          best_trade_net_pnl: number | null
           closed_count: number
+          estimated_open_exit_fees: number
           gross_loss: number
           gross_profit: number
           last_24h_closed: number
-          last_24h_pnl: number
+          last_24h_realized_net_pnl: number
+          legacy_closed_sell_count: number
+          legacy_open_sell_count: number
           loss_count: number
+          marked_open_count: number
           open_count: number
-          open_notional: number
-          profit_factor: number
-          realized_pnl: number
+          open_entry_notional: number
+          open_market_value: number
+          open_symbols: string[] | null
+          profit_factor: number | null
+          realized_gross_pnl: number
+          realized_net_pnl: number
+          total_fees: number
+          unmarked_open_count: number
+          unrealized_gross_pnl: number
+          unrealized_net_pnl_est: number
           win_count: number
-          win_rate_pct: number
+          win_rate_pct: number | null
+          worst_trade_net_pnl: number | null
         }[]
       }
       get_runtime_identity: {
@@ -1098,35 +1111,6 @@ export type Enums<
   EnumName extends (DefaultSchemaEnumNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
-    ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
-    : never) = never,
-> = DefaultSchemaEnumNameOrOptions extends {
-  schema: keyof DatabaseWithoutInternals
-}
-  ? DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"][EnumName]
-  : DefaultSchemaEnumNameOrOptions extends keyof DefaultSchema["Enums"]
-    ? DefaultSchema["Enums"][DefaultSchemaEnumNameOrOptions]
-    : never
+    ? keyof Databa
 
-export type CompositeTypes<
-  PublicCompositeTypeNameOrOptions extends
-    | keyof DefaultSchema["CompositeTypes"]
-    | { schema: keyof DatabaseWithoutInternals },
-  CompositeTypeName extends (PublicCompositeTypeNameOrOptions extends {
-    schema: keyof DatabaseWithoutInternals
-  }
-    ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
-    : never) = never,
-> = PublicCompositeTypeNameOrOptions extends {
-  schema: keyof DatabaseWithoutInternals
-}
-  ? DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"][CompositeTypeName]
-  : PublicCompositeTypeNameOrOptions extends keyof DefaultSchema["CompositeTypes"]
-    ? DefaultSchema["CompositeTypes"][PublicCompositeTypeNameOrOptions]
-    : never
-
-export const Constants = {
-  public: {
-    Enums: {},
-  },
-} as const
+... [Content truncated]
