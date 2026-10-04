@@ -188,16 +188,11 @@ async function loadPortfolioSummary(): Promise<PortfolioSummary> {
   /*
    * First call:
    * obtain the list of currently open Spot BUY symbols.
-   *
-   * NOTE: src/integrations/supabase/types.ts still declares the
-   * legacy no-arg signature (Args: never) until it is regenerated;
-   * the live database already has get_portfolio_summary(jsonb).
-   * The "as never" cast compiles against both signatures.
    */
   const initial =
     await supabase.rpc(
       "get_portfolio_summary",
-      { p_mark_prices: {} } as never,
+      { p_mark_prices: {},
     );
 
   if (initial.error) {
@@ -242,7 +237,7 @@ async function loadPortfolioSummary(): Promise<PortfolioSummary> {
   const marked =
     await supabase.rpc(
       "get_portfolio_summary",
-      { p_mark_prices: marks } as never,
+      { p_mark_prices: marks },
     );
 
   if (marked.error) {
