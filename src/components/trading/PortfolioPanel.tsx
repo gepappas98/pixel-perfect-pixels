@@ -1,7 +1,10 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
 import { supabase } from "@/integrations/supabase/client";
+import { getTradingStatus } from "@/lib/pipeline.functions";
+
 import {
   Briefcase,
   TrendingUp,
@@ -9,28 +12,53 @@ import {
   Target,
   Activity,
   Loader2,
+  ShieldCheck,
+  CircleAlert,
 } from "lucide-react";
-
-/* ───────────── Types ───────────── */
 
 interface PortfolioSummary {
   open_count: number;
-  open_notional: number;
+  open_entry_notional: number;
+  open_market_value: number;
+
+  unrealized_gross_pnl: number;
+  unrealized_net_pnl_est: number;
+  estimated_open_exit_fees: number;
+
   closed_count: number;
-  realized_pnl: number;
-  win_rate_pct: number;
+  realized_gross_pnl: number;
+  realized_net_pnl: number;
+  total_fees: number;
+
   win_count: number;
   loss_count: number;
+  win_rate_pct: number | null;
+
   gross_profit: number;
   gross_loss: number;
   profit_factor: number | null;
+
   avg_win_usd: number;
-  avg_loss_usd: number;
+  avg_loss_usd: number | null;
+
   last_24h_closed: number;
-  last_24h_pnl: number;
+  last_24h_realized_net_pnl: number;
+
+  best_trade_net_pnl: number | null;
+  worst_trade_net_pnl: number | null;
+
+  open_symbols: string[] | null;
+  marked_open_count: number;
+  unmarked_open_count: number;
+
+  legacy_open_sell_count: number;
+  legacy_closed_sell_count: number;
 }
 
-/* ───────────── Formatters ───────────── */
+interface TradingStatus {
+  mode: "paper" | "live";
+  binanceConfigured: boolean;
+}
 
 const money = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -45,34 +73,264 @@ const moneyCompact = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 1,
 });
 
-function fmtSigned(value: number): string {
-  const sign = value >= 0 ? "+" : "-";
-  return `${sign}${money.format(Math.abs(value))}`;
+function fmtSigned(
+  value: number | null | undefined,
+): string {
+  if (
+    value == null ||
+    !Number.isFinite(value)
+  ) {
+    return "—";
+  }
+
+  const sign =
+    value >= 0 ? "+" : "-";
+
+  return `${sign}${money.format(
+    Math.abs(value),
+  )}`;
 }
 
-/* ───────────── Component ───────────── */
+function fmtMoney(
+  value: number | null | undefined,
+): string {
+  if (
+    value == null ||
+    !Number.isFinite(value)
+  ) {
+    return "—";
+  }
+
+  return money.format(value);
+}
+
+function binanceSymbol(
+  coin: string,
+): string {
+  const normalized =
+    String(coin).toUpperCase();
+
+  if (normalized === "MATIC") {
+    return "POLUSDT";
+  }
+
+  if (normalized === "RNDR") {
+    return "RENDERUSDT";
+  }
+
+  return `${normalized}USDT`;
+}
+
+async function fetchSpotMarks(
+  symbols: string[],
+): Promise<Record<string, number>> {
+  const unique = [
+    ...new Set(
+      symbols.filter(Boolean),
+    ),
+  ];
+
+  if (unique.length === 0) {
+    return {};
+  }
+
+  const results =
+    await Promise.all(
+      unique.map(
+        async (symbol) => {
+          const response =
+            await fetch(
+              `/api/binance/spot-price?symbol=${encodeURIComponent(
+                binanceSymbol(symbol),
+              )}`,
+              {
+                cache: "no-store",
+              },
+            );
+
+          if (!response.ok) {
+            throw new Error(
+              `Binance price HTTP ${response.status} for ${symbol}`,
+            );
+          }
+
+          const payload =
+            (await response.json()) as {
+              price?: string | number;
+            };
+
+          const price =
+            Number(payload.price);
+
+          if (
+            !Number.isFinite(price) ||
+            price <= 0
+          ) {
+            throw new Error(
+              `Invalid Binance mark for ${symbol}`,
+            );
+          }
+
+          return [
+            binanceSymbol(symbol),
+            price,
+          ] as const;
+        },
+      ),
+    );
+
+  return Object.fromEntries(
+    results,
+  );
+}
+
+async function loadPortfolioSummary(): Promise<PortfolioSummary> {
+  /*
+   * First call:
+   * obtain the list of currently open Spot BUY symbols.
+   *
+   * NOTE: src/integrations/supabase/types.ts still declares the
+   * legacy no-arg signature (Args: never) until it is regenerated;
+   * the live database already has get_portfolio_summary(jsonb).
+   * The "as never" cast compiles against both signatures.
+   */
+  const initial =
+    await supabase.rpc(
+      "get_portfolio_summary",
+      { p_mark_prices: {} } as never,
+    );
+
+  if (initial.error) {
+    throw initial.error;
+  }
+
+  const initialRow =
+    (
+      Array.isArray(initial.data)
+        ? initial.data[0]
+        : initial.data
+    ) as PortfolioSummary | null;
+
+  if (!initialRow) {
+    throw new Error(
+      "get_portfolio_summary returned no row",
+    );
+  }
+
+  const symbols =
+    initialRow.open_symbols ?? [];
+
+  /*
+   * No open positions:
+   * no market-price request required.
+   */
+  if (symbols.length === 0) {
+    return initialRow;
+  }
+
+  /*
+   * Fetch only the symbols that are
+   * actually open.
+   */
+  const marks =
+    await fetchSpotMarks(symbols);
+
+  /*
+   * Second RPC:
+   * calculate true mark-to-market values.
+   */
+  const marked =
+    await supabase.rpc(
+      "get_portfolio_summary",
+      { p_mark_prices: marks } as never,
+    );
+
+  if (marked.error) {
+    throw marked.error;
+  }
+
+  const markedRow =
+    (
+      Array.isArray(marked.data)
+        ? marked.data[0]
+        : marked.data
+    ) as PortfolioSummary | null;
+
+  if (!markedRow) {
+    throw new Error(
+      "Marked portfolio summary returned no row",
+    );
+  }
+
+  return markedRow;
+}
 
 export function PortfolioPanel() {
-  const { data, isLoading, error, dataUpdatedAt } = useQuery<PortfolioSummary | null>({
-    queryKey: ["portfolio-summary"],
-    queryFn: async () => {
-      // ✅ Καλεί τη νέα SQL function get_portfolio_summary()
-      const { data, error } = await supabase.rpc("get_portfolio_summary");
-      if (error) throw error;
-      // Το RPC επιστρέφει array — παίρνουμε το πρώτο row.
-      const row = Array.isArray(data) ? data[0] : data;
-      return (row ?? null) as PortfolioSummary | null;
-    },
-    refetchInterval: 30_000,
-    staleTime: 25_000,
-  });
+  const {
+    data,
+    isLoading,
+    error,
+    dataUpdatedAt,
+  } =
+    useQuery<PortfolioSummary>({
+      queryKey: [
+        "portfolio-summary",
+        "spot-long-only",
+      ],
+
+      queryFn:
+        loadPortfolioSummary,
+
+      refetchInterval:
+        30_000,
+
+      staleTime:
+        25_000,
+    });
+
+  /*
+   * Real trading mode (PAPER / LIVE) from the
+   * server environment via tradingMode().
+   */
+  const statusFn =
+    useServerFn(getTradingStatus);
+
+  const { data: status } =
+    useQuery<TradingStatus>({
+      queryKey: [
+        "trading-status",
+        "mode",
+      ],
+
+      queryFn: () =>
+        statusFn(),
+
+      staleTime:
+        60_000,
+    });
+
+  const tradingMode =
+    status?.mode;
+
+  const isLiveMode =
+    tradingMode === "live";
+
+  const modeBadgeLabel =
+    tradingMode === "live"
+      ? "LIVE · LONG-ONLY"
+      : tradingMode === "paper"
+        ? "PAPER · LONG-ONLY"
+        : "LONG-ONLY";
 
   if (isLoading) {
     return (
       <section className="panel">
         <div className="flex items-center gap-2 text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
-          <span className="text-sm">Loading portfolio summary…</span>
+
+          <span className="text-sm">
+            Loading Spot portfolio…
+          </span>
         </div>
       </section>
     );
@@ -83,11 +341,16 @@ export function PortfolioPanel() {
       <section className="panel border-destructive/30 bg-destructive/5">
         <div className="flex items-center gap-2 text-destructive">
           <Activity className="h-4 w-4" />
-          <h2 className="panel-title text-destructive">Portfolio Summary</h2>
+
+          <h2 className="panel-title text-destructive">
+            Portfolio Summary
+          </h2>
         </div>
+
         <p className="mt-3 text-xs text-destructive/80">
-          Failed to load portfolio stats. Confirm the `get_portfolio_summary()` function exists.
+          Failed to load Spot portfolio accounting.
         </p>
+
         <p className="mt-2 break-words font-mono text-[10px] text-destructive/60">
           {(error as Error).message}
         </p>
@@ -96,92 +359,231 @@ export function PortfolioPanel() {
   }
 
   if (!data) {
-    return (
-      <section className="panel">
-        <h2 className="panel-title">Portfolio Summary</h2>
-        <p className="mt-3 text-sm text-muted-foreground">
-          No portfolio data yet — run the pipeline to open positions.
-        </p>
-      </section>
-    );
+    return null;
   }
 
-  const realizedPositive = data.realized_pnl >= 0;
-  const last24Positive = data.last_24h_pnl >= 0;
-  const pf = data.profit_factor;
-  const pfLabel = pf == null ? "—" : pf.toFixed(2);
+  const hasClosed =
+    data.closed_count > 0;
+
+  const hasOpen =
+    data.open_count > 0;
+
+  const marksComplete =
+    data.unmarked_open_count === 0;
+
+  const realizedPositive =
+    data.realized_net_pnl >= 0;
+
+  const unrealizedPositive =
+    data.unrealized_net_pnl_est >= 0;
+
+  const last24Positive =
+    data.last_24h_realized_net_pnl >= 0;
+
+  const pf =
+    data.profit_factor;
 
   return (
     <section className="panel">
+
+      {/* ================================================== */}
+      {/* HEADER */}
+      {/* ================================================== */}
+
       <div className="mb-3 flex items-start justify-between gap-3">
+
         <div>
+
           <h2 className="panel-title flex items-center gap-2">
+
             <Briefcase className="h-4 w-4 text-accent" />
+
             Portfolio Summary
+
           </h2>
-          <p className="mt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-            Realized · open · 24h performance
-          </p>
+
+          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+
+            <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+              Spot · Long-only · Realized + Unrealized
+            </span>
+
+            <span
+              className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider ${
+                isLiveMode
+                  ? "border-warn/40 bg-warn/10 text-warn"
+                  : "border-accent/30 bg-accent/5 text-accent"
+              }`}
+            >
+
+              <ShieldCheck className="h-2.5 w-2.5" />
+
+              {modeBadgeLabel}
+
+            </span>
+
+          </div>
+
         </div>
+
         {dataUpdatedAt > 0 && (
-          <span className="text-[10px] text-muted-foreground">
-            Updated {new Date(dataUpdatedAt).toLocaleTimeString()}
+          <span className="whitespace-nowrap text-[10px] text-muted-foreground">
+            Updated{" "}
+            {new Date(
+              dataUpdatedAt,
+            ).toLocaleTimeString()}
           </span>
         )}
+
       </div>
 
+
+      {/* ================================================== */}
+      {/* PRIMARY METRICS */}
+      {/* ================================================== */}
+
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+
+
+        {/* REALIZED */}
+
         <div className="rounded-md border border-border/70 bg-background/30 p-3">
+
           <div className="flex items-center justify-between gap-2">
+
             <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-              Realized PnL
+              Realized Net PnL
             </span>
+
             {realizedPositive ? (
               <TrendingUp className="h-3.5 w-3.5 text-bull" />
             ) : (
               <TrendingDown className="h-3.5 w-3.5 text-bear" />
             )}
+
           </div>
+
           <p
             className={`mt-1 font-mono text-lg font-semibold ${
-              realizedPositive ? "text-bull" : "text-bear"
+              realizedPositive
+                ? "text-bull"
+                : "text-bear"
             }`}
           >
-            {fmtSigned(data.realized_pnl)}
+            {hasClosed
+              ? fmtSigned(
+                  data.realized_net_pnl,
+                )
+              : "—"}
           </p>
+
           <p className="mt-0.5 text-[10px] text-muted-foreground">
-            {data.closed_count} closed
+            {data.closed_count} closed · fees{" "}
+            {fmtMoney(data.total_fees)}
           </p>
+
         </div>
 
-        <div className="rounded-md border border-border/70 bg-background/30 p-3">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-              Open Positions
-            </span>
-            <Briefcase className="h-3.5 w-3.5 text-accent" />
-          </div>
-          <p className="mt-1 font-mono text-lg font-semibold text-foreground">
-            {data.open_count}
-          </p>
-          <p className="mt-0.5 text-[10px] text-muted-foreground">
-            {moneyCompact.format(data.open_notional)} notional
-          </p>
-        </div>
+
+        {/* UNREALIZED */}
 
         <div className="rounded-md border border-border/70 bg-background/30 p-3">
+
           <div className="flex items-center justify-between gap-2">
+
             <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-              Last 24h
+              Unrealized Net PnL
             </span>
-            {last24Positive ? (
+
+            {unrealizedPositive ? (
               <TrendingUp className="h-3.5 w-3.5 text-bull" />
             ) : (
               <TrendingDown className="h-3.5 w-3.5 text-bear" />
             )}
+
           </div>
+
           <p
             className={`mt-1 font-mono text-lg font-semibold ${
+              !hasOpen ||
+              !marksComplete
+                ? "text-muted-foreground"
+                : unrealizedPositive
+                  ? "text-bull"
+                  : "text-bear"
+            }`}
+          >
+            {!hasOpen ||
+            !marksComplete
+              ? "—"
+              : fmtSigned(
+                  data.unrealized_net_pnl_est,
+                )}
+          </p>
+
+          <p className="mt-0.5 text-[10px] text-muted-foreground">
+            {data.open_count} open · est. exit fees{" "}
+            {fmtMoney(
+              data.estimated_open_exit_fees,
+            )}
+          </p>
+
+        </div>
+
+
+        {/* MARKET VALUE */}
+
+        <div className="rounded-md border border-border/70 bg-background/30 p-3">
+
+          <div className="flex items-center justify-between gap-2">
+
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              Open Market Value
+            </span>
+
+            <Briefcase className="h-3.5 w-3.5 text-accent" />
+
+          </div>
+
+          <p className="mt-1 font-mono text-lg font-semibold text-foreground">
+
+            {!hasOpen ||
+            !marksComplete
+              ? "—"
+              : moneyCompact.format(
+                  data.open_market_value,
+                )}
+
+          </p>
+
+          <p className="mt-0.5 text-[10px] text-muted-foreground">
+            {data.open_count} positions · marked{" "}
+            {data.marked_open_count}/
+            {data.open_count}
+          </p>
+
+        </div>
+
+      </div>
+
+
+      {/* ================================================== */}
+      {/* SECONDARY METRICS */}
+      {/* ================================================== */}
+
+      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+
+
+        {/* 24H */}
+
+        <div className="rounded-md border border-border/70 bg-background/30 p-2.5">
+
+          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            24h Net Realized
+          </span>
+
+          <p
+            className={`mt-0.5 font-mono text-base font-semibold ${
               data.last_24h_closed === 0
                 ? "text-muted-foreground"
                 : last24Positive
@@ -189,47 +591,58 @@ export function PortfolioPanel() {
                   : "text-bear"
             }`}
           >
-            {data.last_24h_closed === 0 ? "—" : fmtSigned(data.last_24h_pnl)}
+            {data.last_24h_closed === 0
+              ? "—"
+              : fmtSigned(
+                  data.last_24h_realized_net_pnl,
+                )}
           </p>
-          <p className="mt-0.5 text-[10px] text-muted-foreground">
+
+          <p className="mt-0.5 text-[9px] text-muted-foreground">
             {data.last_24h_closed} closed
           </p>
-        </div>
-      </div>
 
-      <div className="mt-3 rounded-md border border-border/70 bg-background/30 p-3">
-        <div className="flex items-center justify-between gap-2">
-          <span className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
-            <Target className="h-3 w-3" />
-            Win Rate
-          </span>
-          <span className="font-mono text-sm font-semibold text-foreground">
-            {data.win_rate_pct.toFixed(1)}%
-          </span>
         </div>
-        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
-          <div
-            className={`h-full transition-all ${
-              data.win_rate_pct >= 50 ? "bg-bull" : "bg-warn"
-            }`}
-            style={{ width: `${Math.min(100, Math.max(0, data.win_rate_pct))}%` }}
-          />
-        </div>
-        <div className="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
-          <span className="text-bull">
-            {data.win_count} wins · {moneyCompact.format(data.gross_profit)}
-          </span>
-          <span className="text-bear">
-            {data.loss_count} losses · {moneyCompact.format(data.gross_loss)}
-          </span>
-        </div>
-      </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-2">
+
+        {/* WIN RATE */}
+
         <div className="rounded-md border border-border/70 bg-background/30 p-2.5">
+
+          <span className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+
+            <Target className="h-3 w-3" />
+
+            Win Rate
+
+          </span>
+
+          <p className="mt-0.5 font-mono text-base font-semibold">
+
+            {data.win_rate_pct == null
+              ? "—"
+              : `${data.win_rate_pct.toFixed(
+                  1,
+                )}%`}
+
+          </p>
+
+          <p className="mt-0.5 text-[9px] text-muted-foreground">
+            {data.win_count} wins ·{" "}
+            {data.loss_count} losses
+          </p>
+
+        </div>
+
+
+        {/* PROFIT FACTOR */}
+
+        <div className="rounded-md border border-border/70 bg-background/30 p-2.5">
+
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
             Profit Factor
           </span>
+
           <p
             className={`mt-0.5 font-mono text-base font-semibold ${
               pf == null
@@ -241,39 +654,295 @@ export function PortfolioPanel() {
                     : "text-bear"
             }`}
           >
-            {pfLabel}
+            {pf == null
+              ? "—"
+              : pf.toFixed(2)}
           </p>
+
           <p className="mt-0.5 text-[9px] text-muted-foreground">
             {pf == null
-              ? "no data"
-              : pf >= 1.5
-                ? "excellent"
-                : pf >= 1
-                  ? "profitable"
-                  : "unprofitable"}
+              ? "no resolved trades"
+              : "net PnL basis"}
           </p>
+
         </div>
 
+
+        {/* AVG */}
+
         <div className="rounded-md border border-border/70 bg-background/30 p-2.5">
+
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
             Avg Win / Loss
           </span>
+
           <p className="mt-0.5 font-mono text-base font-semibold">
-            <span className="text-bull">{moneyCompact.format(data.avg_win_usd)}</span>
-            <span className="text-muted-foreground mx-1">/</span>
-            <span className="text-bear">
-              {data.avg_loss_usd === 0 ? "—" : moneyCompact.format(data.avg_loss_usd)}
+
+            <span className="text-bull">
+              {data.avg_win_usd > 0
+                ? fmtSigned(
+                    data.avg_win_usd,
+                  )
+                : "—"}
             </span>
+
+            <span className="mx-1 text-muted-foreground">
+              /
+            </span>
+
+            <span className="text-bear">
+              {data.avg_loss_usd == null
+                ? "—"
+                : fmtSigned(
+                    data.avg_loss_usd,
+                  )}
+            </span>
+
           </p>
+
           <p className="mt-0.5 text-[9px] text-muted-foreground">
-            per trade (realized)
+            net per closed trade
           </p>
+
         </div>
+
       </div>
 
+
+      {/* ================================================== */}
+      {/* DETAIL */}
+      {/* ================================================== */}
+
+      <div className="mt-3 rounded-md border border-border/70 bg-background/30 p-3">
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+
+
+          {/* CLOSED */}
+
+          <div>
+
+            <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+              Closed Performance
+            </div>
+
+            <div className="text-[11px] text-muted-foreground">
+
+              Closed{" "}
+              <span className="font-mono text-foreground">
+                {data.closed_count}
+              </span>
+
+              {" · "}
+
+              Wins{" "}
+              <span className="font-mono text-bull">
+                {data.win_count}
+              </span>
+
+              {" · "}
+
+              Losses{" "}
+              <span className="font-mono text-bear">
+                {data.loss_count}
+              </span>
+
+            </div>
+
+            <div className="mt-1 text-[11px] text-muted-foreground">
+
+              Gross{" "}
+              <span className="font-mono text-foreground">
+                {fmtSigned(
+                  data.realized_gross_pnl,
+                )}
+              </span>
+
+              {" · "}
+
+              Fees{" "}
+              <span className="font-mono text-warn">
+                {fmtMoney(
+                  data.total_fees,
+                )}
+              </span>
+
+              {" · "}
+
+              Net{" "}
+              <span
+                className={`font-mono ${
+                  realizedPositive
+                    ? "text-bull"
+                    : "text-bear"
+                }`}
+              >
+                {fmtSigned(
+                  data.realized_net_pnl,
+                )}
+              </span>
+
+            </div>
+
+          </div>
+
+
+          {/* OPEN */}
+
+          <div>
+
+            <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+              Open Exposure
+            </div>
+
+            <div className="text-[11px] text-muted-foreground">
+
+              Entry cost{" "}
+              <span className="font-mono text-foreground">
+                {moneyCompact.format(
+                  data.open_entry_notional,
+                )}
+              </span>
+
+              {" · "}
+
+              Market value{" "}
+
+              <span className="font-mono text-foreground">
+
+                {hasOpen &&
+                marksComplete
+                  ? moneyCompact.format(
+                      data.open_market_value,
+                    )
+                  : "—"}
+
+              </span>
+
+            </div>
+
+            <div className="mt-1 text-[11px] text-muted-foreground">
+
+              Unrealized gross{" "}
+
+              <span
+                className={`font-mono ${
+                  data.unrealized_gross_pnl >= 0
+                    ? "text-bull"
+                    : "text-bear"
+                }`}
+              >
+                {hasOpen &&
+                marksComplete
+                  ? fmtSigned(
+                      data.unrealized_gross_pnl,
+                    )
+                  : "—"}
+              </span>
+
+              {" · "}
+
+              Est. exit fee{" "}
+
+              <span className="font-mono text-warn">
+
+                {hasOpen &&
+                marksComplete
+                  ? fmtMoney(
+                      data.estimated_open_exit_fees,
+                    )
+                  : "—"}
+
+              </span>
+
+              {" · "}
+
+              Net{" "}
+
+              <span
+                className={`font-mono ${
+                  unrealizedPositive
+                    ? "text-bull"
+                    : "text-bear"
+                }`}
+              >
+                {hasOpen &&
+                marksComplete
+                  ? fmtSigned(
+                      data.unrealized_net_pnl_est,
+                    )
+                  : "—"}
+              </span>
+
+            </div>
+
+          </div>
+
+        </div>
+
+      </div>
+
+
+      {/* ================================================== */}
+      {/* DATA QUALITY */}
+      {/* ================================================== */}
+
+      {(
+        data.unmarked_open_count > 0 ||
+        data.legacy_open_sell_count > 0 ||
+        data.legacy_closed_sell_count > 0
+      ) && (
+
+        <div className="mt-3 flex items-start gap-2 rounded-md border border-warn/30 bg-warn/5 p-2.5 text-[10px] text-muted-foreground">
+
+          <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
+
+          <div>
+
+            {data.unmarked_open_count > 0 && (
+              <div>
+                Mark unavailable for{" "}
+                {data.unmarked_open_count}{" "}
+                open position(s); unrealized
+                values are withheld.
+              </div>
+            )}
+
+            {(
+              data.legacy_open_sell_count > 0 ||
+              data.legacy_closed_sell_count > 0
+            ) && (
+
+              <div>
+                Legacy SELL rows excluded from
+                Spot accounting:{" "}
+                {data.legacy_open_sell_count}
+                {" "}open ·{" "}
+                {data.legacy_closed_sell_count}
+                {" "}closed.
+              </div>
+
+            )}
+
+          </div>
+
+        </div>
+
+      )}
+
+
+      {/* ================================================== */}
+      {/* FOOTER */}
+      {/* ================================================== */}
+
       <p className="mt-3 border-t border-border/70 pt-2 text-[10px] text-muted-foreground">
-        Realized = κλειστά trades (stop_loss / take_profit) · refreshes every 30s
+
+        Realized = all closed Spot BUY trades ·
+        Unrealized = mark-to-market open BUY
+        positions · refreshes every 30s
+
       </p>
+
     </section>
   );
 }
