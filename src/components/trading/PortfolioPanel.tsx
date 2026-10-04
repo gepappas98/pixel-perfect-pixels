@@ -192,7 +192,7 @@ async function loadPortfolioSummary(): Promise<PortfolioSummary> {
   const initial =
     await supabase.rpc(
       "get_portfolio_summary",
-      { p_mark_prices: {},
+      { p_mark_prices: {} },
     );
 
   if (initial.error) {
