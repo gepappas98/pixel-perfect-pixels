@@ -35,8 +35,8 @@ export const DEFAULT_TRADING_SETTINGS: TradingSettings = {
   max_hold_hours: 72,
   stale_exit_hours: 48,
   stale_exit_min_pnl_pct: 1.0,
-  real_tp_pct: 0.04,
-  real_sl_pct: 0.03,
+  real_tp_pct: 0.045,
+  real_sl_pct: 0.025,
 };
 
 let cache: { settings: TradingSettings; ts: number } | null = null;
