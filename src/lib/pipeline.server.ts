@@ -2511,8 +2511,22 @@ export async function executeTrades(opts?: {
     const signalPrice = Number(signal.price_at);
     if (Number.isFinite(signalPrice) && signalPrice > 0 && Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT) continue;
 
-    const side = signal.recommendation as "buy" | "sell";
-    const stopLoss = side === "buy" ? price * (1 - settings.real_sl_pct) : price * (1 + settings.real_sl_pct);
+  const side = signal.recommendation as "buy" | "sell";
+
+  // Crypto-native directional soft filter: avoid opening trades against a clear regime.
+  const regime = (currentRegimeLabel ?? "").toLowerCase();
+  const isBull = regime === "bull" || regime === "strong_bull";
+  const isBear = regime === "bear" || regime === "strong_bear";
+  if (isBull && side === "sell") {
+    console.log(`[REGIME_FILTER] skip SELL ${signal.symbol} — regime=${currentRegimeLabel}`);
+    continue;
+  }
+  if (isBear && side === "buy") {
+    console.log(`[REGIME_FILTER] skip BUY ${signal.symbol} — regime=${currentRegimeLabel}`);
+    continue;
+  }
+
+  const stopLoss = side === "buy" ? price * (1 - settings.real_sl_pct) : price * (1 + settings.real_sl_pct);
     const takeProfit = side === "buy" ? price * (1 + settings.real_tp_pct) : price * (1 - settings.real_tp_pct);
 
     if (signal.created_at && !isFresh(signal.created_at, 15 * 60 * 1000)) continue;
