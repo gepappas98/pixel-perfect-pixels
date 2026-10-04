@@ -1703,6 +1703,31 @@ export async function combineSignals(): Promise<number> {
       };
     }
 
+    // 3. Sideways Range Gate: in a 4h sideways regime only trade range extremes.
+    // Position = Bollinger %B on the primary timeframe. Long only in bottom 25%,
+    // short only in top 25%; mid-range (25–75%) has no edge → HOLD.
+    if (
+      assetMicroRegime.regime === "sideways" &&
+      (result.recommendation === "buy" || result.recommendation === "sell")
+    ) {
+      const p = Number(mtfRaw.primary?.["price"]);
+      const up = Number(mtfRaw.primary?.["bb_upper"]);
+      const lo = Number(mtfRaw.primary?.["bb_lower"]);
+      if (Number.isFinite(p) && Number.isFinite(up) && Number.isFinite(lo) && up > lo) {
+        const pos = (p - lo) / (up - lo);
+        const allowed =
+          (result.recommendation === "buy" && pos <= 0.25) ||
+          (result.recommendation === "sell" && pos >= 0.75);
+        if (!allowed) {
+          result = {
+            ...result,
+            recommendation: "hold",
+            reasoning: `${result.reasoning}; [SIDEWAYS_RANGE_GATE: ${result.recommendation} blocked at range position ${(pos * 100).toFixed(0)}%]`,
+          };
+        }
+      }
+    }
+
     const symbolTags = tagsFor(
       symbol,
       watchlistCtx,
@@ -2473,20 +2498,11 @@ export async function executeTrades(opts?: {
       symbol: signal.symbol, side, entryPrice: price, stopLoss, currentPrices: prices,
     });
 
+    // Rotation disabled: full portfolio waits for TP/SL — never force-close open trades.
     if (!risk.allowed && (risk.reason === "max_positions" || risk.reason === "portfolio_risk_limit") &&
       !rotationAttempted && signal.confidence >= ROTATION_MIN_NEW_CONFIDENCE) {
       rotationAttempted = true;
-      const rotatedSymbol = await attemptRotation(
-        db, { symbol: signal.symbol, confidence: signal.confidence },
-        prices, openTrades, openConfidenceMap,
-      );
-      if (rotatedSymbol) {
-        openSymbols.delete(rotatedSymbol);
-        cooldownSymbols.add(rotatedSymbol);
-        risk = await canOpenTrade(db as any, {
-          symbol: signal.symbol, side, entryPrice: price, stopLoss, currentPrices: prices,
-        });
-      }
+      console.log(`[ROTATION_DISABLED] ${signal.symbol} would have triggered rotation (conf=${signal.confidence.toFixed(2)}) — skipped`);
     }
 
     if (!risk.allowed) { console.log(`[RISK_REJECTED] ${signal.symbol} ${side}: ${risk.reason}`); continue; }
