@@ -122,9 +122,10 @@ const TREND_TIMEFRAME = "1d";
 const TIMEFRAMES = [PRIMARY_TIMEFRAME, FAST_TIMEFRAME, TREND_TIMEFRAME] as const;
 const KLINE_LIMIT = 100;
 
-const MIN_CONFIDENCE = 0.6;
+/* Entry / execution safety — P0/P1 tuning (Oct 2026). */
+const MIN_CONFIDENCE = 0.75;
 const FETCH_TIMEOUT_MS = 12_000;
-const MAX_ENTRY_DRIFT_PCT = 0.02;
+const MAX_ENTRY_DRIFT_PCT = 0.005;
 const SYMBOL_COOLDOWN_MINUTES = 15;
 const WHALE_LOOKBACK_HOURS = 6;
 
@@ -1351,6 +1352,40 @@ function compositeMaxScore(w: StrategyConfig): number {
   );
 }
 
+type AssetMicroRegime = "strong_bull" | "bull" | "sideways" | "bear" | "strong_bear" | "neutral" | "unknown";
+
+interface SidewaysMeanReversionDecision {
+  eligible: boolean;
+  rangePosition: number | null;
+  rsi: number | null;
+  vwap: number | null;
+  reason: string;
+}
+
+function evaluateSidewaysMeanReversion(primary: Row, side: "buy" | "sell"): SidewaysMeanReversionDecision {
+  const price = Number(primary?.["price"]);
+  const upper = Number(primary?.["bb_upper"]);
+  const lower = Number(primary?.["bb_lower"]);
+  const rsi = Number(primary?.["rsi"]);
+  const raw = primary?.["raw"] as Row;
+  const rawVwap = Number(raw?.["vwap"]);
+  const directVwap = Number(primary?.["vwap"]);
+  const vwap = Number.isFinite(rawVwap) && rawVwap > 0 ? rawVwap : Number.isFinite(directVwap) && directVwap > 0 ? directVwap : null;
+  if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(upper) || !Number.isFinite(lower) || upper <= lower) return { eligible: false, rangePosition: null, rsi: Number.isFinite(rsi) ? rsi : null, vwap, reason: "missing/invalid Bollinger range" };
+  const rangePosition = (price - lower) / (upper - lower);
+  if (!Number.isFinite(rangePosition)) return { eligible: false, rangePosition: null, rsi: Number.isFinite(rsi) ? rsi : null, vwap, reason: "invalid range position" };
+  if (!Number.isFinite(rsi)) return { eligible: false, rangePosition, rsi: null, vwap, reason: "RSI unavailable" };
+  const eligible = side === "buy" ? rangePosition <= 0.25 && rsi <= 40 : rangePosition >= 0.75 && rsi >= 60;
+  const reason = side === "buy"
+    ? eligible ? `sideways mean-reversion BUY: range ${(rangePosition * 100).toFixed(0)}%, RSI ${rsi.toFixed(1)}` : rangePosition > 0.25 ? `BUY blocked: range position ${(rangePosition * 100).toFixed(0)}% > lower 25%` : `BUY blocked: RSI ${rsi.toFixed(1)} is not sufficiently oversold`
+    : eligible ? `sideways mean-reversion SELL: range ${(rangePosition * 100).toFixed(0)}%, RSI ${rsi.toFixed(1)}` : rangePosition < 0.75 ? `SELL blocked: range position ${(rangePosition * 100).toFixed(0)}% < upper 25%` : `SELL blocked: RSI ${rsi.toFixed(1)} is not sufficiently overbought`;
+  return { eligible, rangePosition, rsi, vwap, reason };
+}
+
+function effectiveWhaleWeight(baseWeight: number, assetRegime?: AssetMicroRegime): number {
+  return assetRegime === "sideways" ? baseWeight * 0.5 : baseWeight;
+}
+
 export function ruleBased(
   whale: Row, mtf: MultiTfResult, prediction: Row, council: Row,
   weights: StrategyConfig,
@@ -1360,6 +1395,7 @@ export function ruleBased(
     sessionConfig?: MarketSessionConfig;
     symbol?: string;
     hotWhaleAggregate?: HotWhaleAggregate | null;
+    assetRegime?: AssetMicroRegime;
   },
 ) {
   let score = 0;
@@ -1369,12 +1405,13 @@ export function ruleBased(
   const predDir = predictionDirection(prediction);
   const conflict = detectHardConflict(whale, mtf.direction, predDir);
 
+  const whaleWeight = effectiveWhaleWeight(weights.whale_weight, options?.assetRegime);
   if (whale?.["direction"] === "accumulation") {
-    score += 1 * weights.whale_weight;
-    reasons.push(`whale accumulation ×${weights.whale_weight.toFixed(1)}`);
+    score += whaleWeight;
+    reasons.push(`whale accumulation ×${whaleWeight.toFixed(1)}${options?.assetRegime === "sideways" ? " [sideways discounted]" : ""}`);
   } else if (whale?.["direction"] === "distribution") {
-    score -= 1 * weights.whale_weight;
-    reasons.push(`whale distribution ×${weights.whale_weight.toFixed(1)}`);
+    score -= whaleWeight;
+    reasons.push(`whale distribution ×${whaleWeight.toFixed(1)}${options?.assetRegime === "sideways" ? " [sideways discounted]" : ""}`);
   }
 
   if (mtf.score !== 0) {
@@ -1437,16 +1474,9 @@ export function ruleBased(
     );
   }
 
-  // ─── Dynamic thresholds for sparse hot-whale symbols ───
-  const hasMtf = mtf.direction !== "neutral" || mtf.score !== 0;
-  const hasCouncil = !!council?.["final_verdict"];
-  const isSparse = !hasMtf || !hasCouncil;
-  const hotBoostActive = qualifiesForConvictionBoost(hotAgg);
-  const lowerThresholds = hotBoostActive && isSparse;
-
-  const buyThreshold = lowerThresholds ? 0.75 : 1.5;
-  const sellThreshold = lowerThresholds ? -0.75 : -1.5;
-  const holdThreshold = lowerThresholds ? 0.25 : 0.5;
+  const buyThreshold = 1.5;
+  const sellThreshold = -1.5;
+  const holdThreshold = 0.5;
 
   let recommendation: "buy" | "sell" | "hold" | "watch" = "hold";
   let mtfGateDecision: ReturnType<typeof checkMtfGate> | null = null;
@@ -1677,14 +1707,14 @@ export async function combineSignals(): Promise<number> {
     let result = ruleBased(whale, mtf, prediction, council, weights, {
       conflictFixEnabled, mtfGateConfig, sessionConfig, symbol,
       hotWhaleAggregate: hotAgg,
+      assetRegime: assetMicroRegime.regime as AssetMicroRegime,
     });
 
-    // 2. Asset Regime Gate: Εξάλειψη counter-trend & sideways shorts
+    // 2. Asset Regime Gate: trend-only counter-trend protection
     if (
       result.recommendation === "sell" &&
       (assetMicroRegime.regime === "bull" ||
-        assetMicroRegime.regime === "strong_bull" ||
-        assetMicroRegime.regime === "sideways")
+        assetMicroRegime.regime === "strong_bull")
     ) {
       result = {
         ...result,
@@ -1703,29 +1733,18 @@ export async function combineSignals(): Promise<number> {
       };
     }
 
-    // 3. Sideways Range Gate: in a 4h sideways regime only trade range extremes.
-    // Position = Bollinger %B on the primary timeframe. Long only in bottom 25%,
-    // short only in top 25%; mid-range (25–75%) has no edge → HOLD.
+    // 3. Sideways mean-reversion gate: extremes plus RSI confirmation.
     if (
       assetMicroRegime.regime === "sideways" &&
       (result.recommendation === "buy" || result.recommendation === "sell")
     ) {
-      const p = Number(mtfRaw.primary?.["price"]);
-      const up = Number(mtfRaw.primary?.["bb_upper"]);
-      const lo = Number(mtfRaw.primary?.["bb_lower"]);
-      if (Number.isFinite(p) && Number.isFinite(up) && Number.isFinite(lo) && up > lo) {
-        const pos = (p - lo) / (up - lo);
-        const allowed =
-          (result.recommendation === "buy" && pos <= 0.25) ||
-          (result.recommendation === "sell" && pos >= 0.75);
-        if (!allowed) {
-          result = {
-            ...result,
-            recommendation: "hold",
-            reasoning: `${result.reasoning}; [SIDEWAYS_RANGE_GATE: ${result.recommendation} blocked at range position ${(pos * 100).toFixed(0)}%]`,
-          };
-        }
-      }
+      const requestedSide = result.recommendation as "buy" | "sell";
+      const meanReversion = evaluateSidewaysMeanReversion(mtfRaw.primary, requestedSide);
+      result = {
+        ...result,
+        ...(meanReversion.eligible ? {} : { recommendation: "hold" as const }),
+        reasoning: `${result.reasoning}; [SIDEWAYS_MEAN_REVERSION_GATE: ${meanReversion.reason}]`,
+      };
     }
 
     const symbolTags = tagsFor(
@@ -1799,6 +1818,13 @@ export async function combineSignals(): Promise<number> {
       const altResult = ruleBased(whale, mtf, prediction, council, {
         ...presetWeights,
         updated_at: nowIso,
+      }, {
+        assetRegime: assetMicroRegime.regime as AssetMicroRegime,
+        symbol,
+        hotWhaleAggregate: hotAgg,
+        conflictFixEnabled,
+        mtfGateConfig,
+        sessionConfig,
       });
       if (presetName === "volatility-timing") {
         const primaryRaw = mtfRaw.primary?.["raw"] as Row;
@@ -1848,8 +1874,7 @@ export async function combineSignals(): Promise<number> {
       if (
         altResult.recommendation === "sell" &&
         (assetMicroRegime.regime === "bull" ||
-          assetMicroRegime.regime === "strong_bull" ||
-          assetMicroRegime.regime === "sideways")
+          assetMicroRegime.regime === "strong_bull")
       ) {
         continue;
       }
@@ -2093,7 +2118,11 @@ async function resolveVariantOutcomes(): Promise<number> {
   );
 
   for (const batch of presetFetchResults) openVariants.push(...batch);
-  if (openVariants.length === 0) return 0;
+  if (openVariants.length === 0) {
+    console.log("[VARIANTS] resolver queue empty");
+    return 0;
+  }
+  console.log(`[VARIANTS] resolver queue=${openVariants.length}`);
 
   const bySymbol = new Map<string, { id: string; recommendation: "buy" | "sell"; entry_price: number; created_at: string; }[]>();
   for (const raw of openVariants) {
@@ -2119,7 +2148,10 @@ async function resolveVariantOutcomes(): Promise<number> {
   let resolved = 0;
 
   for (const result of symbolResults) {
-    if (!result || result.candles.length === 0) continue;
+    if (!result || result.candles.length === 0) {
+      if (result) console.warn(`[VARIANTS] no resolution candles for ${result.symbol}; variants=${result.variants.length}`);
+      continue;
+    }
     const { symbol, variants, candles } = result;
 
     for (const variant of variants) {
@@ -2197,11 +2229,12 @@ async function resolveVariantOutcomes(): Promise<number> {
     }
   }
 
+  console.log(`[VARIANTS] resolution pass complete queue=${openVariants.length} resolved=${resolved}`);
   if (resolved > 0) console.log(`[VARIANTS] Resolved ${resolved} outcomes`);
   return resolved;
 }
 
-/* ───────────── Trade executor ───────────── */
+/* ��──────────── Trade executor ───────────── */
 
 export function tradingMode(): "paper" | "live" {
   const mode = process.env["TRADING_MODE"];
@@ -2452,15 +2485,6 @@ export async function executeTrades(opts?: {
   const openSymbols = new Set(openTrades.map((t) => t.symbol));
   const cooldownSymbols = new Set(((recentlyClosedRes.data ?? []) as { symbol: string }[]).map((t) => t.symbol));
 
-  const openSignalIds = openTrades.map((t) => t.composite_signal_id).filter((id): id is string => id != null);
-  const openConfidenceMap = new Map<string, number>();
-  if (openSignalIds.length > 0) {
-    const { data: openSignals } = await db.from("composite_signals").select("id, confidence").in("id", openSignalIds);
-    for (const s of (openSignals ?? []) as { id: string; confidence: number }[]) {
-      openConfidenceMap.set(s.id, Number(s.confidence));
-    }
-  }
-
   let prices: Map<string, number>;
   try { prices = await allBinancePrices(); }
   catch (e) { console.error("batch price fetch failed", e); return 0; }
@@ -2470,7 +2494,6 @@ export async function executeTrades(opts?: {
   const hotSymbolSet = new Set(hotSymbolsNow);
 
   let opened = 0;
-  let rotationAttempted = false;
 
   for (const signal of (signalsRes.data ?? []) as {
     id: string; symbol: string; recommendation: string;
@@ -2494,17 +2517,11 @@ export async function executeTrades(opts?: {
 
     if (signal.created_at && !isFresh(signal.created_at, 15 * 60 * 1000)) continue;
 
-    let risk = await canOpenTrade(db as any, {
+    const risk = await canOpenTrade(db as any, {
       symbol: signal.symbol, side, entryPrice: price, stopLoss, currentPrices: prices,
     });
 
-    // Rotation disabled: full portfolio waits for TP/SL — never force-close open trades.
-    if (!risk.allowed && (risk.reason === "max_positions" || risk.reason === "portfolio_risk_limit") &&
-      !rotationAttempted && signal.confidence >= ROTATION_MIN_NEW_CONFIDENCE) {
-      rotationAttempted = true;
-      console.log(`[ROTATION_DISABLED] ${signal.symbol} would have triggered rotation (conf=${signal.confidence.toFixed(2)}) — skipped`);
-    }
-
+    // Rotation is disabled: capacity rejection never closes an open position.
     if (!risk.allowed) { console.log(`[RISK_REJECTED] ${signal.symbol} ${side}: ${risk.reason}`); continue; }
     if (!Number.isFinite(risk.quantity) || risk.quantity <= 0) continue;
 
