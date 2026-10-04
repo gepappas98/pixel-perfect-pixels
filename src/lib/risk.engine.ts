@@ -2,25 +2,26 @@
  * Risk Management Safety Layer — Paper Mode Only
  *
  * Safety rules:
- * - 0.25% max economic risk per trade, INCLUDING estimated entry + stop fees.
- * - 2.0% max aggregate open stop-risk, INCLUDING estimated fees.
- * - 2.0% daily economic loss limit = realized PnL today + current unrealized
+ * - 0.15% max economic risk per trade, INCLUDING estimated entry + stop fees.
+ * - 1.2% max aggregate open stop-risk, INCLUDING estimated fees.
+ * - 1.2% daily economic loss limit = realized PnL today + current unrealized
  *   PnL on all open paper trades (net of estimated exit fees).
- * - 8 maximum open paper positions.
+ * - 3 maximum open paper positions.
  *
- * NOTE: Per-trade risk reduced from 0.5% → 0.25% so the 2.0% portfolio cap
- * fits 8 concurrent trades (was 4). Total portfolio risk is unchanged.
+ * Loss-streak kill switch: if 3+ of last 5 closed trades are losses, halt new entries.
  */
 
-type Admin = Awaited<typeof import("@/integrations/supabase/client.server")>["supabaseAdmin"];
+type Admin = Awaited<typeof import("@/integrations/supabase/client.server")["supabaseAdmin"]>;
 
 export const RISK_CONFIG = {
-  MAX_RISK_PER_TRADE_PCT: 0.0025,
-  MAX_PORTFOLIO_RISK_PCT: 0.02,
-  DAILY_LOSS_LIMIT_PCT: 0.02,
-  MAX_OPEN_POSITIONS: 8,
+  MAX_RISK_PER_TRADE_PCT: 0.0015,
+  MAX_PORTFOLIO_RISK_PCT: 0.012,
+  DAILY_LOSS_LIMIT_PCT: 0.012,
+  MAX_OPEN_POSITIONS: 3,
   TIMEZONE: "Europe/Athens",
   FEE_RATE: 0.0005,
+  LOSS_STREAK_HALT: 3,
+  LOSS_STREAK_LOOKBACK: 5,
 } as const;
 
 export const PAPER_STARTING_EQUITY = 20_000;
@@ -226,6 +227,35 @@ export async function canOpenTrade(db: Admin, req: TradeRequest): Promise<RiskDe
     if (dailyPnL <= dailyLossLimit) {
       return { ...base, allowed: false, reason: "daily_loss_limit", message: `${req.symbol} ${side}: daily economic loss limit hit (${dailyPnL.toFixed(2)} <= ${dailyLossLimit.toFixed(2)})` };
     }
+
+    // ── Loss-streak kill switch ─────────────────────────────────────
+    {
+      const { data: recentClosed } = await db
+        .from("trades")
+        .select("pnl")
+        .eq("status", "closed")
+        .eq("mode", "paper")
+        .order("closed_at", { ascending: false })
+        .limit(RISK_CONFIG.LOSS_STREAK_LOOKBACK);
+
+      if (recentClosed && recentClosed.length >= RISK_CONFIG.LOSS_STREAK_HALT) {
+        let streak = 0;
+        for (const t of recentClosed) {
+          if (Number(t.pnl) < 0) streak += 1;
+          else break;
+        }
+        if (streak >= RISK_CONFIG.LOSS_STREAK_HALT) {
+          return {
+            ...base,
+            allowed: false,
+            reason: "loss_streak_halt",
+            message: `${req.symbol} ${side}: HALT — ${streak} consecutive losses. No new entries.`,
+          };
+        }
+      }
+    }
+    // ───────────────────────────────────────────────────────────────
+
     if (currentPortfolioRisk + requestedRisk > maxPortfolioRisk) {
       return { ...base, allowed: false, reason: "portfolio_risk_limit", message: `${req.symbol} ${side}: portfolio economic risk full (${(currentPortfolioRisk + requestedRisk).toFixed(2)} > ${maxPortfolioRisk.toFixed(2)})` };
     }
@@ -234,7 +264,7 @@ export async function canOpenTrade(db: Admin, req: TradeRequest): Promise<RiskDe
       ...base,
       allowed: true,
       reason: "allowed",
-      message: `${req.symbol} ${side}: approved qty=${quantity.toFixed(8)} notional=${notional.toFixed(2)} economicRisk=${requestedRisk.toFixed(2)} fees=${estimatedRoundTripFees.toFixed(2)} dailyPnL=${dailyPnL.toFixed(2)}`,
+      message: `${req.symbol} ${side}: approved qty=${quantity.toFixed(8)} notional=${notional.toFixed(2)} economicRisk=${requestedRisk.toFixed(2)} fees=${estimatedRoundTripFees.toFixed(2)} daily=${dailyPnL.toFixed(2)}`,
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
