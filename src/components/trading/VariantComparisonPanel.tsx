@@ -203,7 +203,7 @@ export function VariantComparisonPanel() {
         <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent" />
         <p className="text-[10px] leading-relaxed text-muted-foreground">
           If you had traded{" "}
-          <strong className="text-foreground">every buy/sell signal</strong>{" "}
+          <strong className="text-foreground">every executable BUY signal</strong>{" "}
           from each preset with{" "}
           <strong className="text-foreground">
             ${POSITION_SIZE_USD.toLocaleString()}

@@ -1826,27 +1826,23 @@ export async function combineSignals(): Promise<number> {
         mtfGateConfig,
         sessionConfig,
       });
+      // Production is long-only: SELL variants are not executable and must
+      // never enter the primary shadow-performance benchmark.
+      if (altResult.recommendation !== "buy") continue;
       if (presetName === "volatility-timing") {
         const primaryRaw = mtfRaw.primary?.["raw"] as Row;
         const aroonData = primaryRaw?.["aroon"] as Row;
         const osc = Number(aroonData?.["osc"] ?? 0);
-        const confirmed =
-          (altResult.recommendation === "buy" && osc >= 20) ||
-          (altResult.recommendation === "sell" && osc <= -20);
+        const confirmed = osc >= 20;
         if (!confirmed) continue;
       }
       if (presetName === "smc-reversal" || presetName === "smc-structure") {
         const primaryRaw = mtfRaw.primary?.["raw"] as Row;
         const smc = primaryRaw?.["smc"] as SmcResult | undefined;
         const confirmed =
-          (altResult.recommendation === "sell" &&
-            (smc?.signal === "bsl_sweep_trap" ||
-              smc?.signal === "bearish_continuation" ||
-              smc?.signal === "bearish_reversal")) ||
-          (altResult.recommendation === "buy" &&
-            (smc?.signal === "ssl_sweep_trap" ||
-              smc?.signal === "bullish_continuation" ||
-              smc?.signal === "bullish_reversal"));
+          smc?.signal === "ssl_sweep_trap" ||
+          smc?.signal === "bullish_continuation" ||
+          smc?.signal === "bullish_reversal";
         if (!confirmed) continue;
       }
       if (presetName === "vwap-momentum") {
@@ -1854,9 +1850,7 @@ export async function combineSignals(): Promise<number> {
         const fastPrice = Number(mtfRaw.fast?.["price"] ?? 0);
         const fastVwap = Number(fastRaw?.["vwap"] ?? 0);
         const fastRsi = Number(mtfRaw.fast?.["rsi"] ?? 50);
-        const confirmed =
-          (altResult.recommendation === "buy" && fastRsi >= 60 && fastPrice > fastVwap) ||
-          (altResult.recommendation === "sell" && fastRsi <= 40 && fastPrice < fastVwap);
+        const confirmed = fastRsi >= 60 && fastPrice > fastVwap;
         if (!confirmed) continue;
 
         if (vwapGate && (vwapGate.enabled || vwapGate.shadow_mode)) {
@@ -1870,14 +1864,7 @@ export async function combineSignals(): Promise<number> {
         }
       }
 
-      // Asset Regime Filter: Αποκλεισμός τοξικών shorts/longs από τα benchmarks
-      if (
-        altResult.recommendation === "sell" &&
-        (assetMicroRegime.regime === "bull" ||
-          assetMicroRegime.regime === "strong_bull")
-      ) {
-        continue;
-      }
+      // Asset Regime Filter: αποκλεισμός long entries σε bearish regimes.
       if (
         altResult.recommendation === "buy" &&
         (assetMicroRegime.regime === "bear" ||
@@ -1886,7 +1873,6 @@ export async function combineSignals(): Promise<number> {
         continue;
       }
 
-      if (altResult.recommendation !== "buy" && altResult.recommendation !== "sell") continue;
       if (mtfPrice == null || mtfPrice <= 0) continue;
       variantRows.push({
         strategy_name: presetName, symbol,
