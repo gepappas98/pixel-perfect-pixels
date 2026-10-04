@@ -46,11 +46,11 @@ import {
   HOT_THRESHOLD_USD,
   type HotWhaleAggregate,
 } from "./hot-whale.server";
-import {
-  evaluateGlobalRisk,
+import { evaluateGlobalRisk,
   getGlobalRiskControl,
   getGlobalRiskState,
 } from "./global-risk.server";
+import { evaluateAIRiskBatch, type AIRiskDecision } from "./ai-risk.functions";
 
 /* ───────────── Types ───────────── */
 
@@ -2493,12 +2493,66 @@ export async function executeTrades(opts?: {
   const hotSymbolsNow = await getHotWhaleSymbols();
   const hotSymbolSet = new Set(hotSymbolsNow);
 
+  type ExecutionSignal = {
+    id: string;
+    symbol: string;
+    recommendation: string;
+    confidence: number;
+    price_at?: number | null;
+    created_at?: string | null;
+    reasoning?: string | null;
+    regime_label?: string | null;
+  };
+  const executionSignals = (signalsRes.data ?? []) as ExecutionSignal[];
+  const parseAIRiskAnnotation = (reasoning: string | null | undefined): AIRiskDecision | null => {
+    const match = String(reasoning ?? "").match(
+      /\[AI_RISK_GATE: (ALLOW|BLOCK) (low|medium|high|critical)\/(fresh|stale|insufficient) — ([^\]]+)\]/,
+    );
+    if (!match) return null;
+    return {
+      symbol: "",
+      risk_level: match[2] as AIRiskDecision["risk_level"],
+      trade_allowed: match[1] === "ALLOW",
+      data_quality: match[3] as AIRiskDecision["data_quality"],
+      reasons: [match[4] ?? "previously evaluated"],
+    };
+  };
+  const riskCandidates = executionSignals.filter((signal) => {
+    if (signal.recommendation !== "buy") return false;
+    if (openSymbols.has(signal.symbol) || cooldownSymbols.has(signal.symbol)) return false;
+    if (signal.confidence < MIN_CONFIDENCE) return false;
+    const price = prices.get(binanceSymbol(signal.symbol));
+    if (price == null) return false;
+    const signalPrice = Number(signal.price_at);
+    if (Number.isFinite(signalPrice) && signalPrice > 0 && Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT) return false;
+    if (signal.created_at && !isFresh(signal.created_at, 15 * 60 * 1000)) return false;
+    const regime = String(signal.regime_label ?? currentRegimeLabel ?? "").toLowerCase();
+    if (regime === "bear" || regime === "strong_bear") return false;
+    if (/1d bear\s*·\s*conflict/i.test(String(signal.reasoning ?? ""))) return false;
+    return !parseAIRiskAnnotation(signal.reasoning);
+  });
+  const aiRiskBySignalId = new Map<string, AIRiskDecision>();
+  for (const signal of executionSignals) {
+    const previous = parseAIRiskAnnotation(signal.reasoning);
+    if (previous) aiRiskBySignalId.set(signal.id, { ...previous, symbol: signal.symbol });
+  }
+  const aiRiskDecisions = await evaluateAIRiskBatch(
+    riskCandidates.map((signal) => ({
+      symbol: signal.symbol,
+      confidence: signal.confidence,
+      price: prices.get(binanceSymbol(signal.symbol)) ?? null,
+      regime: signal.regime_label ?? currentRegimeLabel,
+      reasoning: String(signal.reasoning ?? ""),
+    })),
+  );
+  riskCandidates.forEach((signal, index) => {
+    const decision = aiRiskDecisions[index];
+    if (decision) aiRiskBySignalId.set(signal.id, decision);
+  });
+
   let opened = 0;
 
-  for (const signal of (signalsRes.data ?? []) as {
-    id: string; symbol: string; recommendation: string;
-    confidence: number; price_at?: number | null; created_at?: string | null;
-  }[]) {
+  for (const signal of executionSignals) {
     if (openSymbols.has(signal.symbol)) continue;
     if (cooldownSymbols.has(signal.symbol)) continue;
 
@@ -2522,6 +2576,24 @@ export async function executeTrades(opts?: {
     console.log(
       `[QUALITY] skip ${signal.symbol}: conf=${signal.confidence.toFixed(2)}`,
     );
+    continue;
+  }
+  const aiRisk = aiRiskBySignalId.get(signal.id);
+  if (!aiRisk) {
+    console.warn(`[AI_RISK_GATE] no decision for ${signal.symbol} — fail-closed`);
+    continue;
+  }
+  const aiRiskNote = `[AI_RISK_GATE: ${aiRisk.trade_allowed ? "ALLOW" : "BLOCK"} ${aiRisk.risk_level}/${aiRisk.data_quality} — ${aiRisk.reasons.join("; ")}]`;
+  const { error: riskAnnotationError } = await db
+    .from("composite_signals")
+    .update({ reasoning: `${String(signal.reasoning ?? "")}; ${aiRiskNote}` } as never)
+    .eq("id", signal.id);
+  if (riskAnnotationError) {
+    console.error(`[AI_RISK_GATE] annotation failed for ${signal.symbol}`, riskAnnotationError);
+    continue;
+  }
+  if (!aiRisk.trade_allowed) {
+    console.log(`[AI_RISK_GATE] blocked ${signal.symbol}: ${aiRiskNote}`);
     continue;
   }
   const reasoning = String((signal as { reasoning?: string }).reasoning ?? "");
