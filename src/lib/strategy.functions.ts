@@ -167,6 +167,7 @@ const VARIANT_MIN_TRUSTWORTHY_SAMPLE = 40;
  */
 const FALLBACK_MIN_SAMPLE = 15;
 const AUTO_DEMOTE_WINRATE_THRESHOLD = 0.4; // 40%
+const SWITCH_SCORE_MARGIN = 1.3;
 
 interface MarketSnapshot {
   whale: { buy_usd: number; sell_usd: number; net_pct: number; sample: number };
@@ -373,7 +374,7 @@ async function gatherSnapshot(): Promise<MarketSnapshot> {
  * get_variant_performance(days). Επιστρέφει normalized rows.
  *
  * Non-fatal: ��ν αποτύχει, επιστρέφει empty array και το prompt
- * θα τρέξει χωρίς historical performance.
+ * θα τρέ��ει χωρίς historical performance.
  */
 async function fetchVariantPerformance(
   days = 7,
@@ -463,7 +464,7 @@ function selectBestPresetDeterministic(
   if (currentPerf) {
     const wr = (currentPerf.win_rate_pct ?? 0) / 100;
     const badWinRate = wr < AUTO_DEMOTE_WINRATE_THRESHOLD;
-    const badPnl = currentPerf.total_pnl_pct < 0;
+    const badPnl = (currentPerf.avg_pnl_pct ?? currentPerf.total_pnl_pct) < 0;
 
     if (badWinRate || badPnl) {
       // Auto-demote: force switch away from a proven-losing preset
@@ -472,10 +473,10 @@ function selectBestPresetDeterministic(
         reasoning:
           `AUTO_DEMOTE: current=${currentPerf.strategy_name} ` +
           `(winRate=${currentPerf.win_rate_pct ?? "?"}%, ` +
-          `pnl=${currentPerf.total_pnl_pct.toFixed(1)}%, n=${currentPerf.resolved}) ` +
+          `avgPnl=${(currentPerf.avg_pnl_pct ?? 0).toFixed(2)}%, n=${currentPerf.resolved}) ` +
           `→ switching to ${best.perf.strategy_name} ` +
           `(winRate=${best.perf.win_rate_pct}%, ` +
-          `pnl=${best.perf.total_pnl_pct.toFixed(1)}%, n=${best.perf.resolved})`,
+`avgPnl=${(best.perf.avg_pnl_pct ?? 0).toFixed(2)}%, n=${best.perf.resolved})`,
         forced: true,
       };
     }
@@ -485,7 +486,7 @@ function selectBestPresetDeterministic(
     const currentAvgPnl = currentPerf.avg_pnl_pct ?? 0;
     const currentSampleFactor = Math.min(1, currentPerf.resolved / 50);
     const currentScore = wr * currentAvgPnl * (0.7 + 0.3 * currentSampleFactor);
-    if (best.score <= currentScore * 1.2) {
+    if (best.score <= currentScore * SWITCH_SCORE_MARGIN) {
       return null;
     }
   }
@@ -515,7 +516,7 @@ function checkGroqChoiceAgainstPerformance(
 
   const wr = (targetPerf.win_rate_pct ?? 0) / 100;
   const badWinRate = wr < AUTO_DEMOTE_WINRATE_THRESHOLD;
-  const badPnl = targetPerf.total_pnl_pct < 0;
+  const badPnl = (targetPerf.avg_pnl_pct ?? targetPerf.total_pnl_pct) < 0;
 
   if (!badWinRate && !badPnl) return null;
 
@@ -526,11 +527,9 @@ function checkGroqChoiceAgainstPerformance(
     preset: fallback.preset,
     reasoning:
       `OVERRIDE: Groq picked ${groqPreset} but it has negative expectancy ` +
-      `(winRate=${targetPerf.win_rate_pct}%, pnl=${targetPerf.total_pnl_pct.toFixed(1)}%, ` +
-      `n=${targetPerf.resolved}). ` +
-      `Deterministic pick: ${fallback.preset} ` +
-      `(winRate=${fallback.reasoning.match(/winRate=([\d.]+)%/)?.[1] ?? "?"}%, ` +
-      `n=${fallback.reasoning.match(/n=(\d+)/)?.[1] ?? "?"})`,
+`(winRate=${targetPerf.win_rate_pct}%, avgPnl=${(targetPerf.avg_pnl_pct ?? 0).toFixed(2)}%, ` +
+          `n=${targetPerf.resolved}). ` +
+          `Deterministic pick: ${fallback.preset}`,
   };
 }
 
