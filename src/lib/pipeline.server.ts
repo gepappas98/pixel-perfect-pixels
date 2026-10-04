@@ -1,5 +1,8 @@
-import { createHmac } from "crypto";
 import { canOpenTrade } from "./risk.engine";
+import {
+  placeBinanceSpotMarketOrder,
+  getExecutableSpotSellQuantity,
+} from "./binance-spot.server";
 import { computeFeeAwarePnl, TRADING_FEE_RATE } from "./fees";
 import { fetchRelevantLessons, generatePostMortems } from "./council-learning";
 import {
@@ -2257,23 +2260,13 @@ async function allBinancePrices(): Promise<Map<string, number>> {
   return fallback;
 }
 
-async function placeLiveOrder(coin: string, side: "buy" | "sell", quantity: number) {
-  const apiKey = process.env["BINANCE_API_KEY"];
-  const apiSecret = process.env["BINANCE_API_SECRET"];
-  if (!apiKey || !apiSecret) throw new Error("Binance API credentials not configured");
-  const symbol = binanceSymbol(coin);
-  const params = new URLSearchParams({
-    symbol, side: side.toUpperCase(), type: "MARKET",
-    quantity: quantity.toFixed(6), timestamp: String(Date.now()), recvWindow: "5000",
-  });
-  const signature = createHmac("sha256", apiSecret).update(params.toString()).digest("hex");
-  const res = await fetch(
-    `https://api.binance.com/api/v3/order?${params.toString()}&signature=${signature}`,
-    { method: "POST", headers: { "X-MBX-APIKEY": apiKey } },
-  );
-  const body = (await res.json()) as { orderId?: number; msg?: string };
-  if (!res.ok) throw new Error(`Binance order rejected: ${body.msg ?? res.status}`);
-  return String(body.orderId ?? "");
+async function placeLiveOrder(
+  coin: string,
+  side: "buy" | "sell",
+  quantity: number,
+): Promise<string> {
+  const order = await placeBinanceSpotMarketOrder(coin, side, quantity);
+  return String(order.orderId);
 }
 
 async function closeTriggeredTrades(): Promise<number> {
@@ -2322,9 +2315,37 @@ async function closeTriggeredTrades(): Promise<number> {
     if (!hitStopLoss && !hitTakeProfit && !stale && !expired) continue;
 
     if (trade.mode === "live") {
-      const opposite: "buy" | "sell" = trade.side === "buy" ? "sell" : "buy";
-      try { await placeLiveOrder(trade.symbol, opposite, Number(trade.quantity)); }
-      catch { continue; }
+      // Binance Spot is long-only: only a DB BUY can be closed with a SELL.
+      if (trade.side !== "buy") {
+        console.error(
+          `[BINANCE_SPOT] FAIL-CLOSED: refusing live close for non-BUY trade ` +
+            `id=${trade.id} symbol=${trade.symbol} side=${trade.side}`,
+        );
+        continue;
+      }
+
+      try {
+        const executableQuantity = await getExecutableSpotSellQuantity(
+          trade.symbol,
+          Number(trade.quantity),
+        );
+        if (executableQuantity <= 0) {
+          console.error(
+            `[BINANCE_SPOT] SELL close blocked: zero executable quantity ` +
+              `trade=${trade.id} symbol=${trade.symbol}`,
+          );
+          continue;
+        }
+        await placeLiveOrder(trade.symbol, "sell", executableQuantity);
+      } catch (error) {
+        console.error(
+          `[BINANCE_SPOT] live close failed ` +
+            `trade=${trade.id} symbol=${trade.symbol}:`,
+          error,
+        );
+        // Do not mark the DB trade closed without confirmed exchange execution.
+        continue;
+      }
     }
 
     const closeReason = hitStopLoss ? "stop_loss" : hitTakeProfit ? "take_profit" : expired ? "expired" : "stale_exit";
@@ -2624,8 +2645,20 @@ export async function executeTrades(opts?: {
     const quantity = risk.quantity;
     let exchangeOrderId: string | null = null;
     if (mode === "live") {
-      try { exchangeOrderId = await placeLiveOrder(signal.symbol, side, quantity); }
-      catch (e) { console.error("live order failed", e); continue; }
+      // Production Spot entries are BUY-only; SELL is an exit operation.
+      if (side !== "buy") {
+        console.warn(
+          `[BINANCE_SPOT] refusing non-BUY live entry ` +
+            `symbol=${signal.symbol} side=${side}`,
+        );
+        continue;
+      }
+      try {
+        exchangeOrderId = await placeLiveOrder(signal.symbol, "buy", quantity);
+      } catch (error) {
+        console.error(`[BINANCE_SPOT] live BUY failed symbol=${signal.symbol}:`, error);
+        continue;
+      }
     }
     const entryFee = price * quantity * TRADING_FEE_RATE;
     const tradeSession = classifyMarketSession(new Date());
