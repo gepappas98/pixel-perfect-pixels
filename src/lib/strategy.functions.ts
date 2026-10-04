@@ -152,7 +152,7 @@ const AUTO_SWITCH_MIN_COOLDOWN_MIN = 30;
  * Minimum resolved signals για να εμπιστευτούμε το win rate ενός preset.
  * Κάτω από αυτό το όριο, το preset θεωρείται "insufficient data".
  */
-const VARIANT_MIN_TRUSTWORTHY_SAMPLE = 20;
+const VARIANT_MIN_TRUSTWORTHY_SAMPLE = 40;
 
 /**
  * Deterministic fallback thresholds.
@@ -165,7 +165,7 @@ const VARIANT_MIN_TRUSTWORTHY_SAMPLE = 20;
  * from remaining stuck on a losing preset (e.g. Whale-Focused at 0/18)
  * simply because the AI layer is rate-limited.
  */
-const FALLBACK_MIN_SAMPLE = 10;
+const FALLBACK_MIN_SAMPLE = 15;
 const AUTO_DEMOTE_WINRATE_THRESHOLD = 0.4; // 40%
 
 interface MarketSnapshot {
@@ -372,7 +372,7 @@ async function gatherSnapshot(): Promise<MarketSnapshot> {
  * Φορτώνει shadow performance για όλα τα presets από το RPC
  * get_variant_performance(days). Επιστρέφει normalized rows.
  *
- * Non-fatal: αν αποτύχει, επιστρέφει empty array και το prompt
+ * Non-fatal: ��ν αποτύχει, επιστρέφει empty array και το prompt
  * θα τρέξει χωρίς historical performance.
  */
 async function fetchVariantPerformance(
@@ -444,16 +444,14 @@ function selectBestPresetDeterministic(
   );
   if (eligible.length === 0) return null;
 
-  // Score = win_rate (0..1) × total_pnl_pct.
-  // Using total PnL (not avg) rewards presets that have both high win-rate
-  // AND meaningful sample — a single lucky trade does not dominate.
+  // Expectancy-style score avoids explosive total-PnL values dominating selection.
   const scored = eligible
     .map((p) => {
       const wr = (p.win_rate_pct ?? 0) / 100;
-      return {
-        perf: p,
-        score: wr * p.total_pnl_pct,
-      };
+      const avgPnl = p.avg_pnl_pct ?? 0;
+      const sampleFactor = Math.min(1, p.resolved / 50);
+      const score = wr * avgPnl * (0.7 + 0.3 * sampleFactor);
+      return { perf: p, score };
     })
     .sort((a, b) => b.score - a.score);
 
@@ -484,7 +482,9 @@ function selectBestPresetDeterministic(
 
     // Current preset healthy — no switch unless best is materially better.
     // Require best score to exceed current by at least 20% to avoid churn.
-    const currentScore = wr * currentPerf.total_pnl_pct;
+    const currentAvgPnl = currentPerf.avg_pnl_pct ?? 0;
+    const currentSampleFactor = Math.min(1, currentPerf.resolved / 50);
+    const currentScore = wr * currentAvgPnl * (0.7 + 0.3 * currentSampleFactor);
     if (best.score <= currentScore * 1.2) {
       return null;
     }
@@ -494,7 +494,7 @@ function selectBestPresetDeterministic(
   return {
     preset: best.perf.strategy_name,
     reasoning:
-      `DETERMINISTIC_FALLBACK: best by winRate×totalPnl = ${best.perf.strategy_name} ` +
+      `DETERMINISTIC_FALLBACK: best by expectancy score = ${best.perf.strategy_name} ` +
       `(winRate=${best.perf.win_rate_pct}%, ` +
       `pnl=${best.perf.total_pnl_pct.toFixed(1)}%, n=${best.perf.resolved})`,
     forced: false,
@@ -561,8 +561,12 @@ async function askGroqForPreset(
     "",
     "Decision policy:",
     "- Weigh BOTH current market regime AND historical performance.",
-    "- Strongly prefer presets with proven positive expectancy (win_rate >= 55% and total_pnl_pct > 0).",
+    "- Prefer avg_pnl_pct and win_rate over total_pnl_pct (total is a sum and can explode).",
+    "- Treat any preset with resolved < 40 as low-confidence data.",
+    "- Strongly prefer presets with proven positive expectancy (win_rate >= 55% and avg_pnl_pct > 0).",
     "- Strongly avoid presets with proven negative expectancy (win_rate < 45% with meaningful sample) UNLESS current market strongly favors their thesis.",
+    "- If the real paper portfolio shows win rate < 35% and negative PnL, be extremely conservative.",
+    "- Never justify a switch solely on total_pnl_pct values above 200%.",
     "- When historical sample is insufficient (trustworthy=false), rely more on the market snapshot.",
     "- When multiple presets have identical or near-identical performance (e.g. balanced, conservative, ai-driven), prefer the one that best matches the current market regime.",
     "",
@@ -785,7 +789,31 @@ async function applyPreset(
   return true;
 }
 
-/* ───────────── Maybe auto-switch ───────────── */
+  async function fetchRealPortfolioStats(): Promise<{
+    closed: number;
+    win_rate_pct: number | null;
+    net_pnl: number;
+  } | null> {
+    try {
+      const { supabaseAdmin: db } = await import("@/integrations/supabase/client.server");
+      const { data, error } = await db
+        .from("trades")
+        .select("pnl, status")
+        .eq("status", "closed")
+        .eq("mode", "paper")
+        .gte("closed_at", new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString());
+      if (error || !data) return null;
+      const closed = data.length;
+      if (closed < 8) return { closed, win_rate_pct: null, net_pnl: 0 };
+      const wins = data.filter((trade) => Number(trade.pnl) > 0).length;
+      const net_pnl = data.reduce((sum, trade) => sum + Number(trade.pnl ?? 0), 0);
+      return { closed, win_rate_pct: Math.round((wins / closed) * 1000) / 10, net_pnl: Math.round(net_pnl * 100) / 100 };
+    } catch {
+      return null;
+    }
+  }
+
+  /* ───────────── Maybe auto-switch ───────────── */
 
 export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
   .handler(
@@ -841,9 +869,22 @@ export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
 
       // 5. Gather historical performance (shadow variants)
       const performance = await fetchVariantPerformance(7);
+      const realStats = await fetchRealPortfolioStats();
+      const realPortfolioWeak = Boolean(
+        realStats &&
+        realStats.closed >= 10 &&
+        realStats.win_rate_pct != null &&
+        realStats.win_rate_pct < 35 &&
+        realStats.net_pnl < 0,
+      );
       console.log(
         `[AUTO_SWITCH] variant performance loaded: ${performance.length} presets`,
       );
+      if (realPortfolioWeak) {
+        console.warn(
+          `[AUTO_SWITCH] Real portfolio weak (WR=${realStats?.win_rate_pct}%, PnL=${realStats?.net_pnl}); requiring conservative switching.`,
+        );
+      }
 
       const currentPreset = (row["preset_name"] as string | null) ?? null;
 
@@ -950,6 +991,28 @@ export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
       const finalPreset = override?.preset ?? decision.preset;
       const finalReasoning = override?.reasoning ?? decision.reasoning;
       const source: "groq" | "override" = override ? "override" : "groq";
+
+      // A weak real paper portfolio must not be switched by shadow/Groq evidence alone.
+      if (realPortfolioWeak && finalPreset !== currentPreset) {
+        const guardedReasoning =
+          `${finalReasoning} REAL_PORTFOLIO_GUARD: retained ${currentPreset ?? "current preset"} ` +
+          `(WR=${realStats?.win_rate_pct}%, PnL=${realStats?.net_pnl}).`;
+        await db
+          .from("strategy_config")
+          .update({
+            last_auto_switch_at: new Date().toISOString(),
+            last_auto_reasoning: guardedReasoning,
+          })
+          .eq("id", 1);
+        return {
+          switched: false,
+          reason: "real_portfolio_guard",
+          ...(currentPreset ? { preset: currentPreset } : {}),
+          reasoning: guardedReasoning,
+          source,
+          performance_snapshot: performance,
+        };
+      }
 
       // 11. Same preset → just log
       if (finalPreset === currentPreset) {
