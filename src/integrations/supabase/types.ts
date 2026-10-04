@@ -469,6 +469,27 @@ export type Database = {
         }
         Relationships: []
       }
+      runtime_identity: {
+        Row: {
+          expected_project_ref: string
+          expected_project_url: string
+          singleton: boolean
+          updated_at: string
+        }
+        Insert: {
+          expected_project_ref: string
+          expected_project_url: string
+          singleton?: boolean
+          updated_at?: string
+        }
+        Update: {
+          expected_project_ref?: string
+          expected_project_url?: string
+          singleton?: boolean
+          updated_at?: string
+        }
+        Relationships: []
+      }
       shadow_conflicts: {
         Row: {
           confidence: number | null
@@ -928,6 +949,15 @@ export type Database = {
           realized_pnl: number
           win_count: number
           win_rate_pct: number
+        }[]
+      }
+      get_runtime_identity: {
+        Args: never
+        Returns: {
+          actual_database: string
+          expected_project_ref: string
+          expected_project_url: string
+          postgres_version: string
         }[]
       }
       get_system_resource_stats: { Args: never; Returns: Json }
