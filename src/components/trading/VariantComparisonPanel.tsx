@@ -154,14 +154,27 @@ export function VariantComparisonPanel() {
   );
 
   // ── Best strategy ──
-  let bestStrategy: { name: string; pnl: number } | null = null;
-  for (const s2 of strategies) {
-    const a = agg.get(s2) ?? ZERO_STATS;
-    const pnlUsd = a.totalPnlPct * (POSITION_SIZE_USD / 100);
-    if (a.resolved >= 5 && (!bestStrategy || pnlUsd > bestStrategy.pnl)) {
-      bestStrategy = { name: s2, pnl: pnlUsd };
-    }
-  }
+  // A negative total can still be the least-bad preset. Do not label it BEST.
+  const MIN_BEST_SAMPLE = 25;
+  const maxPositiveAvg = Math.max(
+    0,
+    ...strategies.map((s2) => {
+      const a = agg.get(s2) ?? ZERO_STATS;
+      return a.resolved >= MIN_BEST_SAMPLE && a.resolved > 0
+        ? a.totalPnlPct / a.resolved
+        : 0;
+    }),
+  );
+  const bestStrategy =
+    maxPositiveAvg > 0
+      ? strategies.find((s2) => {
+          const a = agg.get(s2) ?? ZERO_STATS;
+          return (
+            a.resolved >= MIN_BEST_SAMPLE &&
+            a.totalPnlPct / a.resolved === maxPositiveAvg
+          );
+        }) ?? null
+      : null;
 
   // ── Dynamic labels ──
   const tpLabel = `TP +${(s.variant_tp_pct * 100).toFixed(0)}%`;
@@ -240,7 +253,7 @@ export function VariantComparisonPanel() {
                 const totalPnlUsd =
                   a.totalPnlPct * (POSITION_SIZE_USD / 100);
                 const pnlPositive = totalPnlUsd >= 0;
-                const isBest = bestStrategy?.name === s2;
+                const isBest = bestStrategy === s2;
                 const hasData = a.resolved > 0 || a.open > 0;
 
                 return (
@@ -319,15 +332,9 @@ export function VariantComparisonPanel() {
       {bestStrategy && (
         <p className="mt-3 rounded-md border border-bull/30 bg-bull/5 p-2 text-[11px] text-foreground">
           <strong className="text-bull">📊 Top performer:</strong>{" "}
-          {PRESET_LABEL[bestStrategy.name] ?? bestStrategy.name} with{" "}
-          <span
-            className={bestStrategy.pnl >= 0 ? "text-bull" : "text-bear"}
-          >
-            {bestStrategy.pnl >= 0 ? "+" : "-"}$
-            {Math.abs(bestStrategy.pnl).toFixed(0)}
-          </span>{" "}
-          hypothetical PnL across{" "}
-          {agg.get(bestStrategy.name)?.resolved ?? 0} resolved signals.
+          {PRESET_LABEL[bestStrategy] ?? bestStrategy} with positive average
+          expectancy across {agg.get(bestStrategy)?.resolved ?? 0} resolved
+          signals.
         </p>
       )}
 

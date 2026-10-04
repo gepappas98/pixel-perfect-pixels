@@ -123,7 +123,7 @@ const TIMEFRAMES = [PRIMARY_TIMEFRAME, FAST_TIMEFRAME, TREND_TIMEFRAME] as const
 const KLINE_LIMIT = 100;
 
 /* Entry / execution safety — P0/P1 tuning (Oct 2026). */
-const MIN_CONFIDENCE = 0.75;
+const MIN_CONFIDENCE = 0.85;
 const FETCH_TIMEOUT_MS = 12_000;
 const MAX_ENTRY_DRIFT_PCT = 0.005;
 const SYMBOL_COOLDOWN_MINUTES = 15;
@@ -1474,8 +1474,8 @@ export function ruleBased(
     );
   }
 
-  const buyThreshold = 1.5;
-  const sellThreshold = -1.5;
+  const buyThreshold = 2.2;
+  const sellThreshold = -2.2;
   const holdThreshold = 0.5;
 
   let recommendation: "buy" | "sell" | "hold" | "watch" = "hold";
@@ -2511,7 +2511,31 @@ export async function executeTrades(opts?: {
     const signalPrice = Number(signal.price_at);
     if (Number.isFinite(signalPrice) && signalPrice > 0 && Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT) continue;
 
-  const side = signal.recommendation as "buy" | "sell";
+  let side = signal.recommendation as "buy" | "sell";
+
+  // Spot / paper survival: do not open short entries.
+  if (side === "sell") {
+    console.log(`[LONG_ONLY] skip SELL ${signal.symbol}`);
+    continue;
+  }
+  if (signal.confidence < MIN_CONFIDENCE) {
+    console.log(
+      `[QUALITY] skip ${signal.symbol}: conf=${signal.confidence.toFixed(2)}`,
+    );
+    continue;
+  }
+  const reasoning = String((signal as { reasoning?: string }).reasoning ?? "");
+  if (/1d bear\s*·\s*conflict/i.test(reasoning)) {
+    const hasWhaleAcc = /whale accumulation/i.test(reasoning);
+    const hasPredBull = /prediction market bullish/i.test(reasoning);
+    if (!hasWhaleAcc && !hasPredBull) {
+      console.log(
+        `[QUALITY] skip ${signal.symbol}: 1d conflict without whale/pred support`,
+      );
+      continue;
+    }
+  }
+  side = signal.recommendation as "buy" | "sell";
 
   // Crypto-native directional soft filter: avoid opening trades against a clear regime.
   const regime = (currentRegimeLabel ?? "").toLowerCase();

@@ -869,6 +869,22 @@ export const maybeAutoSwitchStrategy = createServerFn({ method: "POST" })
         `[AUTO_SWITCH] variant performance loaded: ${performance.length} presets`,
       );
 
+      // Do not switch on small or negative shadow samples.
+      const MIN_SWITCH_SAMPLE = 25;
+      const positiveTrusted = performance.filter(
+        (p) => p.resolved >= MIN_SWITCH_SAMPLE && (p.avg_pnl_pct ?? 0) > 0,
+      );
+      if (positiveTrusted.length === 0) {
+        console.warn(
+          `[AUTO_SWITCH] blocked — no preset with resolved>=${MIN_SWITCH_SAMPLE} and avg_pnl>0`,
+        );
+        return {
+          switched: false,
+          reason: "insufficient_positive_sample",
+          performance_snapshot: performance,
+        };
+      }
+
       const realStats = await fetchRealPortfolioStats();
       if (realStats) {
         console.log(
