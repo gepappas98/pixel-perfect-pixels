@@ -2534,17 +2534,92 @@ export async function executeTrades(opts?: {
   };
   const riskCandidates = executionSignals.filter((signal) => {
     if (signal.recommendation !== "buy") return false;
-    if (openSymbols.has(signal.symbol) || cooldownSymbols.has(signal.symbol)) return false;
-    if (signal.confidence < MIN_CONFIDENCE) return false;
+
+    if (openSymbols.has(signal.symbol) || cooldownSymbols.has(signal.symbol)) {
+      return false;
+    }
+
+    if (signal.confidence < MIN_CONFIDENCE) {
+      return false;
+    }
+
     const price = prices.get(binanceSymbol(signal.symbol));
-    if (price == null) return false;
+
+    if (price == null) {
+      console.warn(
+        `[AI_RISK_CANDIDATE] skip ${signal.symbol}: no executable price`,
+      );
+      return false;
+    }
+
     const signalPrice = Number(signal.price_at);
-    if (Number.isFinite(signalPrice) && signalPrice > 0 && Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT) return false;
-    if (signal.created_at && !isFresh(signal.created_at, 15 * 60 * 1000)) return false;
-    const regime = String(signal.regime_label ?? currentRegimeLabel ?? "").toLowerCase();
-    if (regime === "bear" || regime === "strong_bear") return false;
-    if (/1d bear\s*·\s*conflict/i.test(String(signal.reasoning ?? ""))) return false;
-    return !parseAIRiskAnnotation(signal.reasoning);
+
+    if (
+      Number.isFinite(signalPrice) &&
+      signalPrice > 0 &&
+      Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT
+    ) {
+      console.log(
+        `[AI_RISK_CANDIDATE] skip ${signal.symbol}: entry drift exceeded ` +
+        `signal=${signalPrice} current=${price}`,
+      );
+      return false;
+    }
+
+    if (
+      signal.created_at &&
+      !isFresh(signal.created_at, 15 * 60 * 1000)
+    ) {
+      console.log(
+        `[AI_RISK_CANDIDATE] skip ${signal.symbol}: signal stale`,
+      );
+      return false;
+    }
+
+    const regime = String(
+      signal.regime_label ?? currentRegimeLabel ?? "",
+    ).toLowerCase();
+
+    // Hard market-regime protection remains intact.
+    if (regime === "bear" || regime === "strong_bear") {
+      console.log(
+        `[AI_RISK_CANDIDATE] skip ${signal.symbol}: ` +
+        `hard bearish regime=${regime}`,
+      );
+      return false;
+    }
+
+    /*
+     * IMPORTANT:
+     *
+     * Do NOT reject 1d-bear/conflict here.
+     *
+     * Downstream execution already contains the correct conditional:
+     * 1d bear + conflict is allowed when there is whale accumulation
+     * OR bullish prediction support.
+     *
+     * Filtering it here would prevent evaluateAIRiskBatch() from ever
+     * evaluating the signal and would incorrectly trigger the later
+     * fail-closed "no AI risk decision" path.
+     */
+
+    const existingAIRisk = parseAIRiskAnnotation(signal.reasoning);
+
+    if (existingAIRisk) {
+      console.log(
+        `[AI_RISK_CANDIDATE] ${signal.symbol}: existing AI risk annotation`,
+      );
+      return false;
+    }
+
+    console.log(
+      `[AI_RISK_CANDIDATE] ACCEPT ${signal.symbol} ` +
+      `conf=${signal.confidence.toFixed(3)} ` +
+      `regime=${regime || "unknown"} ` +
+      `reasoning=${String(signal.reasoning ?? "").slice(0, 180)}`,
+    );
+
+    return true;
   });
   const aiRiskBySignalId = new Map<string, AIRiskDecision>();
   for (const signal of executionSignals) {
@@ -2562,8 +2637,32 @@ export async function executeTrades(opts?: {
   );
   riskCandidates.forEach((signal, index) => {
     const decision = aiRiskDecisions[index];
-    if (decision) aiRiskBySignalId.set(signal.id, decision);
+
+    if (decision) {
+      aiRiskBySignalId.set(signal.id, decision);
+
+      console.log(
+        `[AI_RISK_RESULT] ${signal.symbol} ` +
+        `conf=${signal.confidence.toFixed(3)} ` +
+        `risk=${decision.risk_level} ` +
+        `quality=${decision.data_quality} ` +
+        `allowed=${decision.trade_allowed} ` +
+        `reasons=${decision.reasons.join("; ")}`,
+      );
+    } else {
+      console.warn(
+        `[AI_RISK_RESULT] MISSING ${signal.symbol} ` +
+        `signal_id=${signal.id}`,
+      );
+    }
   });
+
+  console.log(
+    `[EXECUTION] signals=${executionSignals.length} ` +
+    `riskCandidates=${riskCandidates.length} ` +
+    `openPositions=${openSymbols.size} ` +
+    `cooldowns=${cooldownSymbols.size}`,
+  );
 
   let opened = 0;
 
@@ -2711,12 +2810,40 @@ export async function executeTrades(opts?: {
     } as never);
 
     if (tradeErr) {
-      if ((tradeErr as { code?: string }).code === "23505") continue;
+      const errorCode = (tradeErr as { code?: string }).code ?? "UNKNOWN";
+
+      console.error(
+        `[TRADE_INSERT_FAILED] ${signal.symbol} ` +
+        `signal_id=${signal.id} ` +
+        `mode=${mode} ` +
+        `side=${side} ` +
+        `quantity=${quantity} ` +
+        `price=${price} ` +
+        `code=${errorCode}`,
+        tradeErr,
+      );
+
+      // Duplicate signal/trade is harmless and remains idempotent.
+      if (errorCode === "23505") {
+        console.warn(
+          `[TRADE_INSERT_DUPLICATE] ${signal.symbol} ` +
+          `signal_id=${signal.id}`,
+        );
+        continue;
+      }
+
+      // Do NOT swallow real DB errors.
       throw tradeErr;
     }
     openSymbols.add(signal.symbol);
     opened += 1;
   }
+  console.log(
+    `[EXECUTION_DONE] opened=${opened} ` +
+    `riskCandidates=${riskCandidates.length} ` +
+    `openPositions=${openSymbols.size}`,
+  );
+
   return opened;
 }
 
