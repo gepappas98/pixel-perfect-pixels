@@ -71,6 +71,11 @@ CREATE INDEX IF NOT EXISTS idx_shadow_v2_open_symbol
 CREATE INDEX IF NOT EXISTS idx_shadow_v2_created_at
   ON public.shadow_v2_positions (created_at DESC);
 
+-- Database-level guard: never allow two active Shadow V2 LONGs for the same symbol.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_shadow_v2_one_open_long_per_symbol
+  ON public.shadow_v2_positions (symbol)
+  WHERE status = 'OPEN';
+
 CREATE INDEX IF NOT EXISTS idx_shadow_v2_expiry
   ON public.shadow_v2_positions (expiry_timestamp)
   WHERE status = 'OPEN';
