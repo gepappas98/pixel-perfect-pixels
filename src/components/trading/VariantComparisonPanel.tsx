@@ -89,38 +89,8 @@ export function VariantComparisonPanel() {
     staleTime: 30_000,
   });
 
-  // ── Fetch dynamic settings ──
-  const { data: settings } = useQuery<TradingSettings>({
-    queryKey: ["trading-settings-variant"],
-    queryFn: async () => {
-      try {
-        const { data, error } = await supabase
-          .from("pipeline_settings")
-          .select("variant_max_hours, variant_tp_pct, variant_sl_pct")
-          .eq("id", 1)
-          .maybeSingle();
-
-        if (error || !data) return FALLBACK_SETTINGS;
-
-        const row = data as unknown as Record<string, unknown>;
-        return {
-          variant_max_hours: Number(
-            row["variant_max_hours"] ?? FALLBACK_SETTINGS.variant_max_hours,
-          ),
-          variant_tp_pct: Number(
-            row["variant_tp_pct"] ?? FALLBACK_SETTINGS.variant_tp_pct,
-          ),
-          variant_sl_pct: Number(
-            row["variant_sl_pct"] ?? FALLBACK_SETTINGS.variant_sl_pct,
-          ),
-        };
-      } catch {
-        return FALLBACK_SETTINGS;
-      }
-    },
-    refetchInterval: 300_000,
-    staleTime: 60_000,
-  });
+  // ── Settings (stable defaults avoid the pipeline_settings schema query) ──
+  const settings = FALLBACK_SETTINGS;
 
   if (isLoading) {
     return (
