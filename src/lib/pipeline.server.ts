@@ -55,6 +55,16 @@ import {
   getGlobalRiskState,
 } from "./global-risk.server";
 import { evaluateAIRiskBatch, type AIRiskDecision } from "./ai-risk.functions";
+import {
+  buildShadowV2ClosedPosition,
+  buildShadowV2OpenPosition,
+  getShadowV2Decision,
+  getShadowV2Fingerprint,
+  resolveShadowV2Candle,
+  calculateShadowV2Expiry,
+  type ShadowV2Position,
+  type ShadowV2Signal,
+} from "./shadow-v2";
 
 /* ───────────── Types ───────────── */
 
@@ -1581,6 +1591,290 @@ export function ruleBased(
   };
 }
 
+async function runShadowV2Observer(variantRows: Record<string, unknown>[]): Promise<void> {
+  try {
+    const db = await admin();
+
+    const buySignals = variantRows
+      .filter((row) => String(row["recommendation"] ?? "").toLowerCase() === "buy")
+      .map((row) => ({
+        id: typeof row["id"] === "string" ? String(row["id"]) : null,
+        symbol: String(row["symbol"] ?? "").toUpperCase(),
+        strategy: String(row["strategy_name"] ?? "unknown"),
+        recommendation: "buy",
+        confidence: Number(row["confidence"] ?? 0),
+        created_at: String(row["created_at"] ?? ""),
+        entry_price: Number(row["entry_price"] ?? 0),
+      }))
+      .filter((row) =>
+        row.symbol &&
+        Number.isFinite(row.entry_price) &&
+        row.entry_price > 0 &&
+        Number.isFinite(new Date(row.created_at).getTime()),
+      );
+
+    const { data: existingRows, error: existingError } = await db
+      .from("shadow_v2_positions" as never)
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(5000);
+
+    if (existingError) throw existingError;
+
+    // DB uses snake_case; convert explicitly to the Shadow V2 domain shape.
+    // Never cast raw database rows directly to ShadowV2Position.
+    const existing = ((existingRows ?? []) as unknown as Record<string, unknown>[]).map(
+      (row): ShadowV2Position => ({
+        fingerprint: String(row["fingerprint"]),
+        signalId: row["signal_id"] ? String(row["signal_id"]) : null,
+        symbol: String(row["symbol"]),
+        strategy: String(row["strategy"]),
+        signalCreatedAt: String(row["signal_created_at"]),
+        entryTimestamp: String(row["entry_timestamp"]),
+        entryPrice: Number(row["entry_price"]),
+        takeProfitPrice: Number(row["take_profit_price"]),
+        stopLossPrice: Number(row["stop_loss_price"]),
+        expiryTimestamp: String(row["expiry_timestamp"]),
+        status: String(row["status"]).toUpperCase() === "CLOSED" ? "CLOSED" : "OPEN",
+        exitTimestamp: row["exit_timestamp"] ? String(row["exit_timestamp"]) : null,
+        exitPrice: row["exit_price"] == null ? null : Number(row["exit_price"]),
+        exitReason: (() => {
+          const reason = String(row["exit_reason"] ?? "");
+          return reason === "TP" || reason === "SL" || reason === "EXPIRED"
+            ? (reason as ShadowV2Position["exitReason"])
+            : null;
+        })(),
+        grossPnlUsd: Number(row["gross_pnl_usd"] ?? 0),
+        entryFeeUsd: Number(row["entry_fee_usd"] ?? 0),
+        exitFeeUsd: Number(row["exit_fee_usd"] ?? 0),
+        feesUsd: Number(row["fees_usd"] ?? 0),
+        netPnlUsd: Number(row["net_pnl_usd"] ?? 0),
+        grossPnlPct: Number(row["gross_pnl_pct"] ?? 0),
+        feesPct: Number(row["fees_pct"] ?? 0),
+        netPnlPct: Number(row["net_pnl_pct"] ?? 0),
+        ambiguousIntrabar: Boolean(row["ambiguous_intrabar"]),
+        ambiguityReason: row["ambiguity_reason"] ? String(row["ambiguity_reason"]) : null,
+        details: (row["details"] ?? {}) as ShadowV2Position["details"],
+      }),
+    );
+
+    const active = existing.filter((row) => row.status === "OPEN");
+    const processedFingerprints = new Set(existing.map((row) => row.fingerprint));
+
+    const latestExitBySymbol = new Map<string, string>();
+    for (const row of existing) {
+      if (row.status !== "CLOSED" || !row.exitTimestamp) continue;
+      const key = row.symbol.toUpperCase();
+      const prev = latestExitBySymbol.get(key);
+      if (!prev || new Date(row.exitTimestamp).getTime() > new Date(prev).getTime()) {
+        latestExitBySymbol.set(key, row.exitTimestamp);
+      }
+    }
+
+    // Deterministic ordering: strongest BUY first, then strategy name.
+    buySignals.sort((a, b) =>
+      b.confidence - a.confidence ||
+      a.symbol.localeCompare(b.symbol) ||
+      a.strategy.localeCompare(b.strategy),
+    );
+
+    const auditRows: Record<string, unknown>[] = [];
+    const openRows: Record<string, unknown>[] = [];
+
+    for (const row of buySignals) {
+      const signal: ShadowV2Signal = {
+        id: row.id,
+        symbol: row.symbol,
+        strategy: row.strategy,
+        recommendation: "buy",
+        confidence: row.confidence,
+        created_at: row.created_at,
+      };
+      const fingerprint = getShadowV2Fingerprint(signal);
+
+      if (processedFingerprints.has(fingerprint)) continue;
+
+      const decision = getShadowV2Decision({
+        signal,
+        activePositions: active,
+        processedFingerprints,
+        lastExitTimestamp: latestExitBySymbol.get(row.symbol),
+        mode: "DEDUPLICATED",
+      });
+
+      auditRows.push({
+        fingerprint,
+        signal_id: row.id,
+        symbol: row.symbol,
+        strategy: row.strategy,
+        decision: decision.accepted ? "OPEN" : "SUPPRESSED",
+        reason: decision.reason,
+        details: {
+          confidence: row.confidence,
+          entry_price: row.entry_price,
+          execution_policy: "one_active_long_per_symbol",
+        },
+      });
+
+      if (!decision.accepted) continue;
+
+      const position = buildShadowV2OpenPosition({
+        signal,
+        fingerprint,
+        entryPrice: row.entry_price,
+        entryPriceSource: "provided_entry_price",
+        mode: "DEDUPLICATED",
+      });
+
+      openRows.push({
+        fingerprint: position.fingerprint,
+        signal_id: position.signalId,
+        symbol: position.symbol,
+        strategy: position.strategy,
+        signal_created_at: position.signalCreatedAt,
+        entry_timestamp: position.entryTimestamp,
+        entry_price: position.entryPrice,
+        take_profit_price: position.takeProfitPrice,
+        stop_loss_price: position.stopLossPrice,
+        expiry_timestamp: position.expiryTimestamp,
+        status: position.status,
+        exit_timestamp: position.exitTimestamp,
+        exit_price: position.exitPrice,
+        exit_reason: position.exitReason,
+        gross_pnl_usd: position.grossPnlUsd,
+        entry_fee_usd: position.entryFeeUsd,
+        exit_fee_usd: position.exitFeeUsd,
+        fees_usd: position.feesUsd,
+        net_pnl_usd: position.netPnlUsd,
+        gross_pnl_pct: position.grossPnlPct,
+        fees_pct: position.feesPct,
+        net_pnl_pct: position.netPnlPct,
+        ambiguous_intrabar: position.ambiguousIntrabar,
+        ambiguity_reason: position.ambiguityReason,
+        performance_mode: position.details.performance_mode,
+        details: position.details,
+      });
+
+      // Reserve the symbol immediately so another preset cannot open a second LONG.
+      active.push(position);
+      processedFingerprints.add(fingerprint);
+    }
+
+    if (openRows.length > 0) {
+      const { error } = await db
+        .from("shadow_v2_positions" as never)
+        .insert(openRows as never);
+      if (error) throw error;
+    }
+
+    if (auditRows.length > 0) {
+      const { error } = await db
+        .from("shadow_v2_audit" as never)
+        .insert(auditRows as never);
+      if (error) throw error;
+    }
+
+    // Resolve existing OPEN positions independently of the main execution path.
+    const positionsToResolve = active.filter((row) => {
+      const age = Date.now() - new Date(row.entryTimestamp).getTime();
+      return Number.isFinite(age) && age >= 0;
+    });
+
+    let resolved = 0;
+    for (const position of positionsToResolve) {
+      const candles = await fetchVariantResolutionCandles(
+        position.symbol,
+        VARIANT_RESOLVE_TIMEFRAME,
+        new Date(position.entryTimestamp).getTime(),
+        Math.min(Date.now(), new Date(position.expiryTimestamp).getTime()),
+        VARIANT_RESOLVE_CANDLE_LIMIT,
+      );
+      if (candles.length === 0) continue;
+
+      let closed: ShadowV2Position | null = null;
+      const expiryMs = new Date(position.expiryTimestamp).getTime();
+
+      for (const candle of candles) {
+        if (candle.closeTimeMs > expiryMs) break;
+
+        const hit = resolveShadowV2Candle({
+          high: candle.high,
+          low: candle.low,
+          takeProfitPrice: position.takeProfitPrice,
+          stopLossPrice: position.stopLossPrice,
+        });
+        if (!hit) continue;
+
+        closed = buildShadowV2ClosedPosition({
+          position,
+          exitTimestamp: new Date(candle.closeTimeMs).toISOString(),
+          exitPrice: hit.price,
+          exitReason: hit.reason,
+          ambiguousIntrabar: hit.ambiguousIntrabar,
+          ambiguityReason: hit.ambiguityReason,
+        });
+        break;
+      }
+
+      if (!closed && Date.now() >= expiryMs) {
+        let expiryCandle: VariantCandle | null = null;
+        for (const candle of candles) {
+          if (candle.closeTimeMs <= expiryMs) {
+            if (!expiryCandle || candle.closeTimeMs > expiryCandle.closeTimeMs) {
+              expiryCandle = candle;
+            }
+          }
+        }
+
+        // Never fabricate an expiry price. Keep OPEN until historical data exists.
+        if (expiryCandle) {
+          closed = buildShadowV2ClosedPosition({
+            position,
+            exitTimestamp: new Date(expiryCandle.closeTimeMs).toISOString(),
+            exitPrice: expiryCandle.close,
+            exitReason: "EXPIRED",
+          });
+        }
+      }
+
+      if (!closed) continue;
+
+      const { error } = await db
+        .from("shadow_v2_positions" as never)
+        .update({
+          status: closed.status,
+          exit_timestamp: closed.exitTimestamp,
+          exit_price: closed.exitPrice,
+          exit_reason: closed.exitReason,
+          gross_pnl_usd: closed.grossPnlUsd,
+          entry_fee_usd: closed.entryFeeUsd,
+          exit_fee_usd: closed.exitFeeUsd,
+          fees_usd: closed.feesUsd,
+          net_pnl_usd: closed.netPnlUsd,
+          gross_pnl_pct: closed.grossPnlPct,
+          fees_pct: closed.feesPct,
+          net_pnl_pct: closed.netPnlPct,
+          ambiguous_intrabar: closed.ambiguousIntrabar,
+          ambiguity_reason: closed.ambiguityReason,
+          details: closed.details,
+        } as never)
+        .eq("fingerprint", closed.fingerprint);
+
+      if (error) throw error;
+      resolved += 1;
+    }
+
+    if (openRows.length || auditRows.length || resolved) {
+      console.log(
+        `[SHADOW_V2] opened=${openRows.length} audited=${auditRows.length} resolved=${resolved}`,
+      );
+    }
+  } catch (error) {
+    // Shadow is strictly observational: never block the normal pipeline.
+    console.error("[SHADOW_V2] observer failed (isolated):", error);
+  }
+}
+
 function signalFingerprint(
   symbol: string, whale: Row, mtf: MultiTfResult, mtfRaw: MultiTfInput,
   prediction: Row, council: Row, weights: StrategyConfig,
@@ -1995,6 +2289,9 @@ export async function combineSignals(): Promise<number> {
     if (variantErr) console.error("[VARIANTS] insert failed:", variantErr);
     else console.log(`[VARIANTS] Recorded ${variantRows.length} shadow signals (regime=${regime.label}, session=${nowSession.session})`);
   }
+
+  // Shadow V2 observer: isolated from V1 metrics and real/paper execution.
+  await runShadowV2Observer(variantRows);
 
   if (shadowConflictBuffer.length > 0) {
     const { error: shadowErr } = await db.from("shadow_conflicts" as never).insert(shadowConflictBuffer as never);
