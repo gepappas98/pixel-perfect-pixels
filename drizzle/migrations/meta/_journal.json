@@ -106,6 +106,13 @@
       "when": 1791000655125,
       "tag": "0014_system_resource_stats",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1791160845801,
+      "tag": "0015_spot_long_only_portfolio_summary",
+      "breakpoints": true
     }
   ]
 }
