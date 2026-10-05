@@ -173,7 +173,7 @@ export function VariantComparisonPanel() {
             Variant Performance (7d)
           </h2>
           <p className="mt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-            Shadow mode · hypothetical results per preset
+            Shadow V2 · deduplicated hypothetical results per preset
           </p>
         </div>
         <span className="text-[10px] text-muted-foreground">
@@ -323,7 +323,7 @@ export function VariantComparisonPanel() {
 
       <p className="mt-3 border-t border-border/70 pt-2 text-[10px] text-muted-foreground">
         Assumptions: {tpLabel} · {slLabel} · {expiryLabel} · $
-        {POSITION_SIZE_USD} per trade · entry at 4h candle close.
+        {POSITION_SIZE_USD} per trade · entry at the historical candle close at signal time.
       </p>
     </section>
   );
