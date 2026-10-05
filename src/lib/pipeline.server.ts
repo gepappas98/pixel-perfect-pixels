@@ -287,6 +287,38 @@ interface BybitKlineResult {
   result?: { category: string; symbol: string; list: string[][] };
 }
 
+interface BybitRecentTradeResult {
+  retCode: number;
+  retMsg: string;
+  result?: {
+    category: string;
+    list: Array<{
+      execId?: string;
+      symbol?: string;
+      price?: string;
+      size?: string;
+      side?: "Buy" | "Sell" | string;
+      time?: string;
+    }>;
+  };
+}
+
+async function bybitRecentTrades(symbol: string, limit = 60): Promise<BybitRecentTradeResult["result"]["list"]> {
+  const url = new URL(`${BYBIT_HOST}/v5/market/recent-trade`);
+  url.searchParams.set("category", "spot");
+  url.searchParams.set("symbol", symbol);
+  url.searchParams.set("limit", String(Math.min(limit, 60)));
+  try {
+    const res = await fetchWithTimeout(url.toString());
+    if (!res.ok) return [];
+    const json = (await res.json()) as BybitRecentTradeResult;
+    if (json.retCode !== 0 || !json.result?.list) return [];
+    return json.result.list;
+  } catch {
+    return [];
+  }
+}
+
 async function bybitPublicGet(symbol: string, interval: string, limit: number): Promise<unknown[][] | null> {
   const url = new URL(`${BYBIT_HOST}/v5/market/kline`);
   url.searchParams.set("category", "spot");
@@ -526,6 +558,9 @@ export async function collectWhaleAlerts(): Promise<number> {
   );
 
   const rows = perCoinRows.flat();
+  if (binanceFailCount > 0) {
+    console.warn(`[WHALE_FALLBACK] Binance unavailable for ${binanceFailCount}/${watchlist.length} symbols; Bybit recent-trade fallback was attempted.`);
+  }
   if (rows.length === 0) return 0;
 
   // Hot whale queue feeding
@@ -582,23 +617,47 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
       const floor = whaleFloor(coin);
       try {
         const res = await binancePublicGet(`/api/v3/aggTrades?symbol=${symbol}&limit=1000`);
-        if (!res.ok) { binanceFailCount++; return out; }
-        const parsed = (await res.json()) as BinanceAggTrade[];
-        if (!Array.isArray(parsed)) { binanceFailCount++; return out; }
-        binanceSuccessCount++;
-        for (const t of parsed) {
-          const usd = parseFloat(t.p) * parseFloat(t.q);
+        if (res.ok) {
+          const parsed = (await res.json()) as BinanceAggTrade[];
+          if (Array.isArray(parsed)) {
+            binanceSuccessCount++;
+            for (const t of parsed) {
+              const usd = parseFloat(t.p) * parseFloat(t.q);
+              if (!Number.isFinite(usd) || usd < floor) continue;
+              out.push({
+                symbol: coin, chain: "binance-spot",
+                direction: t.m ? "distribution" : "accumulation",
+                usd_value: usd, tx_hash: String(t.a),
+                source: "binance-agg-trades",
+                created_at: new Date(t.T).toISOString(),
+                raw: t as unknown as Record<string, unknown>,
+              });
+            }
+            return out;
+          }
+        }
+
+        // Binance is geo-blocked (403) from the deployed runtime. Fall back
+        // to Bybit spot recent trades so a Binance outage does not erase the
+        // whale feed. This is observational market data only.
+        const fallback = await bybitRecentTrades(symbol, 60);
+        for (const t of fallback) {
+          const usd = Number(t.price) * Number(t.size);
           if (!Number.isFinite(usd) || usd < floor) continue;
           out.push({
-            symbol: coin, chain: "binance-spot",
-            direction: t.m ? "distribution" : "accumulation",
-            usd_value: usd, tx_hash: String(t.a),
-            source: "binance-agg-trades",
-            created_at: new Date(t.T).toISOString(),
+            symbol: coin,
+            chain: "bybit-spot",
+            direction: String(t.side).toLowerCase() === "buy" ? "accumulation" : "distribution",
+            usd_value: usd,
+            tx_hash: String(t.execId ?? `bybit-${symbol}-${t.time}-${t.price}-${t.size}`),
+            source: "bybit-recent-trades",
+            created_at: new Date(Number(t.time ?? Date.now())).toISOString(),
             raw: t as unknown as Record<string, unknown>,
           });
         }
-      } catch { binanceFailCount++; }
+      } catch {
+        binanceFailCount++;
+      }
       return out;
     },
     10,
