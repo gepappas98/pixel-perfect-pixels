@@ -49,7 +49,8 @@ import {
   HOT_THRESHOLD_USD,
   type HotWhaleAggregate,
 } from "./hot-whale.server";
-import { evaluateGlobalRisk,
+import {
+  evaluateGlobalRisk,
   getGlobalRiskControl,
   getGlobalRiskState,
 } from "./global-risk.server";
@@ -60,6 +61,62 @@ import { evaluateAIRiskBatch, type AIRiskDecision } from "./ai-risk.functions";
 type Row = Record<string, unknown> | null;
 type CouncilVerdict = "BUY" | "SELL" | "HOLD" | "AVOID";
 type SignalDir = "bullish" | "bearish" | "neutral";
+
+/* ───────────── Execution Audit ───────────── */
+
+export type ExecutionAuditStage =
+  | "CIRCUIT_BREAKER"
+  | "GLOBAL_RISK"
+  | "CANDIDATE_FILTER"
+  | "AI_RISK"
+  | "ENTRY_GATE"
+  | "QUALITY"
+  | "REGIME"
+  | "RISK_ENGINE"
+  | "POSITION_SIZE"
+  | "TRADE_INSERT"
+  | "EXECUTION";
+
+export type ExecutionAuditDecision =
+  | "ACCEPT"
+  | "REJECT"
+  | "OPEN"
+  | "ERROR"
+  | "SKIP";
+
+export type ExecutionAuditEvent = {
+  ts: string;
+  symbol: string;
+  signal_id?: string;
+  stage: ExecutionAuditStage;
+  decision: ExecutionAuditDecision;
+  reason: string;
+  confidence?: number;
+  details?: Record<string, unknown>;
+};
+
+function createExecutionAuditEvent(
+  symbol: string,
+  stage: ExecutionAuditStage,
+  decision: ExecutionAuditDecision,
+  reason: string,
+  opts?: {
+    signalId?: string;
+    confidence?: number;
+    details?: Record<string, unknown>;
+  },
+): ExecutionAuditEvent {
+  return {
+    ts: new Date().toISOString(),
+    symbol,
+    signal_id: opts?.signalId,
+    stage,
+    decision,
+    reason,
+    confidence: opts?.confidence,
+    details: opts?.details,
+  };
+}
 
 /* ───────────── pMap ───────────── */
 
@@ -2451,15 +2508,64 @@ async function attemptRotation(
 
 export async function executeTrades(opts?: {
   skipNewEntries?: boolean;
-}): Promise<number> {
+}): Promise<{
+  opened: number;
+  audit: ExecutionAuditEvent[];
+}> {
   const db = await admin();
   const mode = tradingMode();
   const settings = await fetchTradingSettings();
+
+  const audit: ExecutionAuditEvent[] = [];
+
+  const auditReject = (
+    symbol: string,
+    stage: ExecutionAuditStage,
+    reason: string,
+    opts?: {
+      signalId?: string;
+      confidence?: number;
+      details?: Record<string, unknown>;
+    },
+  ) => {
+    const event = createExecutionAuditEvent(symbol, stage, "REJECT", reason, opts);
+    audit.push(event);
+    console.log(`[EXEC_AUDIT] REJECT ${symbol} stage=${stage} reason=${reason}`);
+  };
+
+  const auditAccept = (
+    symbol: string,
+    stage: ExecutionAuditStage,
+    reason: string,
+    opts?: {
+      signalId?: string;
+      confidence?: number;
+      details?: Record<string, unknown>;
+    },
+  ) => {
+    const event = createExecutionAuditEvent(symbol, stage, "ACCEPT", reason, opts);
+    audit.push(event);
+    console.log(`[EXEC_AUDIT] ACCEPT ${symbol} stage=${stage} reason=${reason}`);
+  };
+
   await closeTriggeredTrades();
 
   if (opts?.skipNewEntries) {
     console.warn("[CIRCUIT_BREAKER] skipNewEntries=true — closed-only mode");
-    return 0;
+
+    audit.push(
+      createExecutionAuditEvent(
+        "SYSTEM",
+        "CIRCUIT_BREAKER",
+        "SKIP",
+        "new entries disabled",
+      ),
+    );
+
+    return {
+      opened: 0,
+      audit,
+    };
   }
 
   // ─── Global-risk cooldown gate ───
@@ -2472,7 +2578,26 @@ export async function executeTrades(opts?: {
         `[GLOBAL_RISK_COOLDOWN] skipping new entries — ${remaining}min left ` +
           `(last trigger: ${globalRiskState.last_trigger_type ?? "?"})`,
       );
-      return 0;
+
+      audit.push(
+        createExecutionAuditEvent(
+          "SYSTEM",
+          "GLOBAL_RISK",
+          "SKIP",
+          "global risk cooldown active",
+          {
+            details: {
+              remaining_minutes: remaining,
+              last_trigger_type: globalRiskState.last_trigger_type ?? null,
+            },
+          },
+        ),
+      );
+
+      return {
+        opened: 0,
+        audit,
+      };
     }
   }
 
@@ -2494,7 +2619,7 @@ export async function executeTrades(opts?: {
 
   let prices: Map<string, number>;
   try { prices = await allBinancePrices(); }
-  catch (e) { console.error("batch price fetch failed", e); return 0; }
+  catch (e) { console.error("batch price fetch failed", e); return { opened: 0, audit }; }
 
   const execCtx = await getActiveWatchlistContext();
   const hotSymbolsNow = await getHotWhaleSymbols();
@@ -2534,24 +2659,56 @@ export async function executeTrades(opts?: {
   };
 
   // ═══════════════════════════════════════════════════════════════════════
-  // ΔΙΟΡΘΩΣΗ 1: riskCandidates — Επιτρέπει σε 1d-conflict signals να φτάσουν
-  // στο AI Risk για αξιολόγηση. Δεν φιλτράρουμε εδώ το 1d bear/conflict.
-  // Ο downstream έλεγχος (whale/pred support) παραμένει στο execution loop.
+  // riskCandidates: επιτρέπει σε 1d-conflict signals να φτάσουν στο AI Risk.
+  // Δεν φιλτράρουμε εδώ το 1d bear/conflict — ο downstream έλεγχος παραμένει
+  // στο execution loop.
   // ═══════════════════════════════════════════════════════════════════════
   const riskCandidates = executionSignals.filter((signal) => {
     if (signal.recommendation !== "buy") return false;
 
-    if (openSymbols.has(signal.symbol) || cooldownSymbols.has(signal.symbol)) {
+    if (openSymbols.has(signal.symbol)) {
+      auditReject(
+        signal.symbol,
+        "CANDIDATE_FILTER",
+        "symbol already has open position",
+        { signalId: signal.id, confidence: signal.confidence },
+      );
+      return false;
+    }
+
+    if (cooldownSymbols.has(signal.symbol)) {
+      auditReject(
+        signal.symbol,
+        "CANDIDATE_FILTER",
+        "symbol is in cooldown",
+        { signalId: signal.id, confidence: signal.confidence },
+      );
       return false;
     }
 
     if (signal.confidence < MIN_CONFIDENCE) {
+      auditReject(
+        signal.symbol,
+        "CANDIDATE_FILTER",
+        `confidence below minimum ${MIN_CONFIDENCE}`,
+        {
+          signalId: signal.id,
+          confidence: signal.confidence,
+          details: { min_confidence: MIN_CONFIDENCE },
+        },
+      );
       return false;
     }
 
     const price = prices.get(binanceSymbol(signal.symbol));
 
     if (price == null) {
+      auditReject(
+        signal.symbol,
+        "CANDIDATE_FILTER",
+        "no executable Binance price",
+        { signalId: signal.id, confidence: signal.confidence },
+      );
       console.warn(
         `[AI_RISK_CANDIDATE] skip ${signal.symbol}: no executable price`,
       );
@@ -2565,6 +2722,22 @@ export async function executeTrades(opts?: {
       signalPrice > 0 &&
       Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT
     ) {
+      const driftPct = Math.abs(price - signalPrice) / signalPrice;
+      auditReject(
+        signal.symbol,
+        "CANDIDATE_FILTER",
+        "entry price drift exceeded limit",
+        {
+          signalId: signal.id,
+          confidence: signal.confidence,
+          details: {
+            signal_price: signalPrice,
+            current_price: price,
+            drift_pct: driftPct,
+            max_drift_pct: MAX_ENTRY_DRIFT_PCT,
+          },
+        },
+      );
       console.log(
         `[AI_RISK_CANDIDATE] skip ${signal.symbol}: entry drift exceeded ` +
           `signal=${signalPrice} current=${price}`,
@@ -2576,6 +2749,19 @@ export async function executeTrades(opts?: {
       signal.created_at &&
       !isFresh(signal.created_at, 15 * 60 * 1000)
     ) {
+      auditReject(
+        signal.symbol,
+        "CANDIDATE_FILTER",
+        "signal stale",
+        {
+          signalId: signal.id,
+          confidence: signal.confidence,
+          details: {
+            created_at: signal.created_at,
+            max_age_minutes: 15,
+          },
+        },
+      );
       console.log(
         `[AI_RISK_CANDIDATE] skip ${signal.symbol}: signal stale`,
       );
@@ -2586,8 +2772,17 @@ export async function executeTrades(opts?: {
       signal.regime_label ?? currentRegimeLabel ?? "",
     ).toLowerCase();
 
-    // Hard market-regime protection remains intact.
     if (regime === "bear" || regime === "strong_bear") {
+      auditReject(
+        signal.symbol,
+        "CANDIDATE_FILTER",
+        "hard bearish market regime",
+        {
+          signalId: signal.id,
+          confidence: signal.confidence,
+          details: { regime },
+        },
+      );
       console.log(
         `[AI_RISK_CANDIDATE] skip ${signal.symbol}: ` +
           `hard bearish regime=${regime}`,
@@ -2612,11 +2807,31 @@ export async function executeTrades(opts?: {
     const existingAIRisk = parseAIRiskAnnotation(signal.reasoning);
 
     if (existingAIRisk) {
+      auditReject(
+        signal.symbol,
+        "CANDIDATE_FILTER",
+        "existing AI risk annotation",
+        { signalId: signal.id, confidence: signal.confidence },
+      );
       console.log(
         `[AI_RISK_CANDIDATE] ${signal.symbol}: existing AI risk annotation`,
       );
       return false;
     }
+
+    auditAccept(
+      signal.symbol,
+      "CANDIDATE_FILTER",
+      "passed candidate filters",
+      {
+        signalId: signal.id,
+        confidence: signal.confidence,
+        details: {
+          regime,
+          reasoning_excerpt: String(signal.reasoning ?? "").slice(0, 180),
+        },
+      },
+    );
 
     console.log(
       `[AI_RISK_CANDIDATE] ACCEPT ${signal.symbol} ` +
@@ -2644,7 +2859,7 @@ export async function executeTrades(opts?: {
   );
 
   // ═══════════════════════════════════════════════════════════════════════
-  // ΔΙΟΡΘΩΣΗ 3: AI Risk visibility — logging για κάθε απόφαση
+  // AI Risk visibility + audit
   // ═══════════════════════════════════════════════════════════════════════
   riskCandidates.forEach((signal, index) => {
     const decision = aiRiskDecisions[index];
@@ -2660,17 +2875,55 @@ export async function executeTrades(opts?: {
           `allowed=${decision.trade_allowed} ` +
           `reasons=${decision.reasons.join("; ")}`,
       );
+
+      if (decision.trade_allowed) {
+        auditAccept(
+          signal.symbol,
+          "AI_RISK",
+          "AI risk gate allowed candidate",
+          {
+            signalId: signal.id,
+            confidence: signal.confidence,
+            details: {
+              risk_level: decision.risk_level,
+              data_quality: decision.data_quality,
+              trade_allowed: decision.trade_allowed,
+              reasons: decision.reasons,
+            },
+          },
+        );
+      } else {
+        auditReject(
+          signal.symbol,
+          "AI_RISK",
+          "AI risk gate blocked candidate",
+          {
+            signalId: signal.id,
+            confidence: signal.confidence,
+            details: {
+              risk_level: decision.risk_level,
+              data_quality: decision.data_quality,
+              trade_allowed: decision.trade_allowed,
+              reasons: decision.reasons,
+            },
+          },
+        );
+      }
     } else {
       console.warn(
         `[AI_RISK_RESULT] MISSING ${signal.symbol} ` +
           `signal_id=${signal.id}`,
       );
+
+      auditReject(
+        signal.symbol,
+        "AI_RISK",
+        "AI risk decision missing — fail closed",
+        { signalId: signal.id, confidence: signal.confidence },
+      );
     }
   });
 
-  // ═══════════════════════════════════════════════════════════════════════
-  // ΔΙΟΡΘΩΣΗ 5: Execution summary — visibility πριν το trade loop
-  // ═══════════════════════════════════════════════════════════════════════
   console.log(
     `[EXECUTION] signals=${executionSignals.length} ` +
       `riskCandidates=${riskCandidates.length} ` +
@@ -2695,8 +2948,6 @@ export async function executeTrades(opts?: {
 
   let side = signal.recommendation as "buy" | "sell";
 
-  // composite_signals does not persist entry_state. Derive the Spot gate
-  // from persisted fields and leave all downstream risk gates intact.
   const confidence = Number(signal.confidence ?? 0);
   const recommendation = String(signal.recommendation ?? "").toLowerCase();
   const isLongOnly = recommendation === "buy";
@@ -2721,7 +2972,6 @@ export async function executeTrades(opts?: {
       `confidence=${confidence.toFixed(3)}`,
   );
 
-  // Spot / paper survival: do not open short entries.
   if (side === "sell") {
     console.log(`[LONG_ONLY] skip SELL ${signal.symbol}`);
     continue;
@@ -2735,6 +2985,12 @@ export async function executeTrades(opts?: {
   const aiRisk = aiRiskBySignalId.get(signal.id);
   if (!aiRisk) {
     console.warn(`[AI_RISK_GATE] no decision for ${signal.symbol} — fail-closed`);
+    auditReject(
+      signal.symbol,
+      "AI_RISK",
+      "no AI risk decision (fail-closed)",
+      { signalId: signal.id, confidence: signal.confidence },
+    );
     continue;
   }
   const aiRiskNote = `[AI_RISK_GATE: ${aiRisk.trade_allowed ? "ALLOW" : "BLOCK"} ${aiRisk.risk_level}/${aiRisk.data_quality} — ${aiRisk.reasons.join("; ")}]`;
@@ -2748,14 +3004,27 @@ export async function executeTrades(opts?: {
   }
   if (!aiRisk.trade_allowed) {
     console.log(`[AI_RISK_GATE] blocked ${signal.symbol}: ${aiRiskNote}`);
+
+    auditReject(
+      signal.symbol,
+      "AI_RISK",
+      "AI risk veto",
+      {
+        signalId: signal.id,
+        confidence: signal.confidence,
+        details: {
+          risk_level: aiRisk.risk_level,
+          data_quality: aiRisk.data_quality,
+          reasons: aiRisk.reasons,
+        },
+      },
+    );
+
     continue;
   }
   const reasoning = String((signal as { reasoning?: string }).reasoning ?? "");
 
-  // ═══════════════════════════════════════════════════════════════════════
-  // ΔΙΟΡΘΩΣΗ 2 (Downstream): 1d bear + conflict protection — ΠΑΡΑΜΕΝΕΙ ΕΔΩ
-  // Επιτρέπεται μόνο αν υπάρχει whale accumulation Ή prediction bullish.
-  // ═══════════════════════════════════════════════════════════════════════
+  // 1d bear + conflict protection — επιτρέπεται μόνο με whale/pred support.
   if (/1d bear\s*·\s*conflict/i.test(reasoning)) {
     const hasWhaleAcc = /whale accumulation/i.test(reasoning);
     const hasPredBull = /prediction market bullish/i.test(reasoning);
@@ -2763,21 +3032,59 @@ export async function executeTrades(opts?: {
       console.log(
         `[QUALITY] skip ${signal.symbol}: 1d conflict without whale/pred support`,
       );
+
+      auditReject(
+        signal.symbol,
+        "QUALITY",
+        "1d bear conflict without whale or prediction support",
+        {
+          signalId: signal.id,
+          confidence: signal.confidence,
+          details: {
+            whale_accumulation: hasWhaleAcc,
+            prediction_bullish: hasPredBull,
+          },
+        },
+      );
+
       continue;
     }
   }
   side = signal.recommendation as "buy" | "sell";
 
-  // Crypto-native directional soft filter: avoid opening trades against a clear regime.
   const regime = (currentRegimeLabel ?? "").toLowerCase();
   const isBull = regime === "bull" || regime === "strong_bull";
   const isBear = regime === "bear" || regime === "strong_bear";
   if (isBull && side === "sell") {
     console.log(`[REGIME_FILTER] skip SELL ${signal.symbol} — regime=${currentRegimeLabel}`);
+
+    auditReject(
+      signal.symbol,
+      "REGIME",
+      "SELL rejected by bullish regime",
+      {
+        signalId: signal.id,
+        confidence: signal.confidence,
+        details: { regime: currentRegimeLabel },
+      },
+    );
+
     continue;
   }
   if (isBear && side === "buy") {
     console.log(`[REGIME_FILTER] skip BUY ${signal.symbol} — regime=${currentRegimeLabel}`);
+
+    auditReject(
+      signal.symbol,
+      "REGIME",
+      "BUY rejected by bearish regime",
+      {
+        signalId: signal.id,
+        confidence: signal.confidence,
+        details: { regime: currentRegimeLabel },
+      },
+    );
+
     continue;
   }
 
@@ -2790,14 +3097,44 @@ export async function executeTrades(opts?: {
       symbol: signal.symbol, side, entryPrice: price, stopLoss, currentPrices: prices,
     });
 
-    // Rotation is disabled: capacity rejection never closes an open position.
-    if (!risk.allowed) { console.log(`[RISK_REJECTED] ${signal.symbol} ${side}: ${risk.reason}`); continue; }
-    if (!Number.isFinite(risk.quantity) || risk.quantity <= 0) continue;
+    if (!risk.allowed) {
+      console.log(`[RISK_REJECTED] ${signal.symbol} ${side}: ${risk.reason}`);
+
+      auditReject(
+        signal.symbol,
+        "RISK_ENGINE",
+        String(risk.reason),
+        {
+          signalId: signal.id,
+          confidence: signal.confidence,
+          details: {
+            side,
+            entry_price: price,
+            stop_loss: stopLoss,
+          },
+        },
+      );
+
+      continue;
+    }
+    if (!Number.isFinite(risk.quantity) || risk.quantity <= 0) {
+      auditReject(
+        signal.symbol,
+        "POSITION_SIZE",
+        "risk engine returned invalid position quantity",
+        {
+          signalId: signal.id,
+          confidence: signal.confidence,
+          details: { quantity: risk.quantity },
+        },
+      );
+
+      continue;
+    }
 
     const quantity = risk.quantity;
     let exchangeOrderId: string | null = null;
   if (String(mode) === "live") {
-      // Production Spot entries are BUY-only; SELL is an exit operation.
       if (side !== "buy") {
         console.warn(
           `[BINANCE_SPOT] refusing non-BUY live entry ` +
@@ -2809,6 +3146,27 @@ export async function executeTrades(opts?: {
         exchangeOrderId = await placeLiveOrder(signal.symbol, "buy", quantity);
       } catch (error) {
         console.error(`[BINANCE_SPOT] live BUY failed symbol=${signal.symbol}:`, error);
+
+        audit.push(
+          createExecutionAuditEvent(
+            signal.symbol,
+            "TRADE_INSERT",
+            "ERROR",
+            "live BUY order failed",
+            {
+              signalId: signal.id,
+              confidence: signal.confidence,
+              details: {
+                message: error instanceof Error ? error.message : String(error),
+                mode,
+                side,
+                quantity,
+                price,
+              },
+            },
+          ),
+        );
+
         continue;
       }
     }
@@ -2828,11 +3186,30 @@ export async function executeTrades(opts?: {
       ),
     } as never);
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // ΔΙΟΡΘΩΣΗ 4: Trade INSERT logging — full error context
-    // ═══════════════════════════════════════════════════════════════════════
     if (tradeErr) {
       const errorCode = (tradeErr as { code?: string }).code ?? "UNKNOWN";
+
+      audit.push(
+        createExecutionAuditEvent(
+          signal.symbol,
+          "TRADE_INSERT",
+          "ERROR",
+          "trade insert failed",
+          {
+            signalId: signal.id,
+            confidence: signal.confidence,
+            details: {
+              code: errorCode,
+              message:
+                tradeErr instanceof Error ? tradeErr.message : String(tradeErr),
+              mode,
+              side,
+              quantity,
+              price,
+            },
+          },
+        ),
+      );
 
       console.error(
         `[TRADE_INSERT_FAILED] ${signal.symbol} ` +
@@ -2845,7 +3222,6 @@ export async function executeTrades(opts?: {
         tradeErr,
       );
 
-      // Duplicate signal/trade is harmless and remains idempotent.
       if (errorCode === "23505") {
         console.warn(
           `[TRADE_INSERT_DUPLICATE] ${signal.symbol} ` +
@@ -2854,23 +3230,44 @@ export async function executeTrades(opts?: {
         continue;
       }
 
-      // Do NOT swallow real DB errors.
       throw tradeErr;
     }
     openSymbols.add(signal.symbol);
     opened += 1;
+
+    audit.push(
+      createExecutionAuditEvent(
+        signal.symbol,
+        "EXECUTION",
+        "OPEN",
+        "trade opened successfully",
+        {
+          signalId: signal.id,
+          confidence: signal.confidence,
+          details: {
+            mode,
+            side,
+            quantity,
+            entry_price: price,
+            stop_loss: stopLoss,
+            take_profit: takeProfit,
+            exchange_order_id: exchangeOrderId,
+          },
+        },
+      ),
+    );
   }
 
-  // ═══════════════════════════════════════════════════════════════════════
-  // ΔΙΟΡΘΩΣΗ 5 (συνέχεια): Execution summary — μετά το trade loop
-  // ═══════════════════════════════════════════════════════════════════════
   console.log(
     `[EXECUTION_DONE] opened=${opened} ` +
       `riskCandidates=${riskCandidates.length} ` +
       `openPositions=${openSymbols.size}`,
   );
 
-  return opened;
+  return {
+    opened,
+    audit,
+  };
 }
 
 /* ───────────── Full pipeline ───────────── */
@@ -3023,6 +3420,7 @@ export async function runFullPipeline() {
   // failure should force close-only execution mode.
   const circuitBreakerOpen = health.indicatorsFailed;
     let trades = 0;
+    let executionAudit: ExecutionAuditEvent[] = [];
     if (circuitBreakerOpen) {
       console.warn(`[CIRCUIT_BREAKER] OPEN — skipping new entries. Reasons: ${health.degradedReasons.join("; ")}`);
       await emitFeedAlert(
@@ -3032,7 +3430,13 @@ export async function runFullPipeline() {
         { symbol: null, tags: [] },
       );
     }
-    trades = await executeTrades({ skipNewEntries: circuitBreakerOpen });
+
+    const executionResult = await executeTrades({
+      skipNewEntries: circuitBreakerOpen,
+    });
+    trades = executionResult.opened;
+    executionAudit = executionResult.audit;
+
     const mode = tradingMode();
 
     // ─── Post-mortem ───
@@ -3058,14 +3462,37 @@ export async function runFullPipeline() {
       ai_lessons_generated: learning.generated,
     };
 
+    const executionAuditPayload = {
+      version: 1,
+      generated_at: completedAt.toISOString(),
+      summary: {
+        opened: trades,
+        audit_events: executionAudit.length,
+        rejected: executionAudit.filter((x) => x.decision === "REJECT").length,
+        errors: executionAudit.filter((x) => x.decision === "ERROR").length,
+      },
+      events: executionAudit,
+    };
+
     if (globalRiskTriggered) console.warn(`[GLOBAL_RISK] trigger fired this run — cooldown active`);
     console.log(`[PIPELINE_DONE] watchlist_size=${watchlistCtx.symbols.length} source=${watchlistCtx.meta.source}`);
 
     if (runId) {
-      const { error: updateError } = await db.from("pipeline_runs").update(summary as never).eq("id", runId);
+      const { error: updateError } = await db
+        .from("pipeline_runs")
+        .update({
+          ...summary,
+          result: {
+            execution_audit: executionAuditPayload,
+          },
+        } as never)
+        .eq("id", runId);
+
       if (updateError) {
         console.error("failed to update pipeline run", updateError);
         if (health.degraded) {
+          // Fallback: χωρίς result, μόνο summary — σε περίπτωση που το
+          // result column δεν είναι διαθέσιμο ή έχει schema conflict.
           const fallback = { ...summary, status: "success" };
           await db.from("pipeline_runs").update(fallback as never).eq("id", runId);
         }
