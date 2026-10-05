@@ -17,11 +17,23 @@ type ExecutionHealth = {
   status: ExecutionStatus;
   buy_signals: number;
   eligible_buy_signals: number;
+  audited_eligible_signals: number;
+  uncovered_eligible_signals: number;
+  uncovered_symbols: string[];
   risk_candidates: number | null;
   ai_risk_allowed: number | null;
   ai_risk_blocked: number | null;
   opened_trades: number;
   execution_audit_runs: number;
+  total_audit_events: number;
+  /**
+   * Signal-level coverage:
+   *   eligible signals that appear in execution_audit.events[].signal_id
+   *   ---------------------------------------------------------------
+   *   eligible signals total
+   *
+   * Not run-level. A run-level number is available via execution_audit_runs.
+   */
   execution_audit_coverage_pct: number;
   issue: string | null;
 };
@@ -124,7 +136,7 @@ export default function AIReport() {
         Date.now() - EXECUTION_WINDOW_HOURS * 60 * 60 * 1000,
       ).toISOString();
 
-      // 1. BUY signals
+      // ── 1. BUY signals in window ──────────────────────────────
       const { data: recentSignals, error: signalsError } = await supabase
         .from("composite_signals")
         .select("id,symbol,recommendation,confidence,created_at")
@@ -144,13 +156,13 @@ export default function AIReport() {
         (s) => Number(s.confidence ?? 0) >= EXECUTION_CONFIDENCE_THRESHOLD,
       );
 
-      // 2. Pipeline execution audits
+      // ── 2. Pipeline execution audits in window ───────────────
       const { data: recentRuns, error: runsError } = await supabase
         .from("pipeline_runs")
         .select("id,started_at,status,result")
         .gte("started_at", executionSince)
         .order("started_at", { ascending: false })
-        .limit(200);
+        .limit(500);
 
       if (runsError) {
         console.warn(
@@ -177,26 +189,85 @@ export default function AIReport() {
         }))
         .filter((x) => x.audit);
 
-      const executionAuditCoveragePct =
-        runs.length > 0
-          ? Math.round((auditedRuns.length / runs.length) * 100)
-          : 100;
+      // ── 3. Extract signal IDs + aggregate events ─────────────
+      //        (the run-level summary from pipeline.server.ts only
+      //        contains: opened / audit_events / rejected / errors.
+      //        risk_candidates / ai_risk_allowed / ai_risk_blocked
+      //        must be reconstructed from events.)
+      const auditedSignalIds = new Set<string>();
+      const uncoveredCandidates = new Map<string, string>(); // id -> symbol
 
-      // 3. Aggregate audit information
       let riskCandidates = 0;
       let aiRiskAllowed = 0;
       let aiRiskBlocked = 0;
       let openedFromAudit = 0;
+      let totalAuditEvents = 0;
 
       for (const { audit } of executionAudits) {
         const summary = (audit?.["summary"] ?? {}) as Record<string, unknown>;
-        riskCandidates += Number(summary["risk_candidates"] ?? 0);
-        aiRiskAllowed += Number(summary["ai_risk_allowed"] ?? 0);
-        aiRiskBlocked += Number(summary["ai_risk_blocked"] ?? 0);
         openedFromAudit += Number(summary["opened"] ?? 0);
+
+        const events = (audit?.["events"] ?? []) as Array<
+          Record<string, unknown>
+        >;
+        totalAuditEvents += events.length;
+
+        for (const ev of events) {
+          const sid = ev["signal_id"];
+          if (typeof sid === "string" && sid.length > 0) {
+            auditedSignalIds.add(sid);
+          }
+
+          const stage = String(ev["stage"] ?? "");
+          const decision = String(ev["decision"] ?? "");
+
+          if (stage === "CANDIDATE_FILTER" && decision === "ACCEPT") {
+            riskCandidates++;
+          }
+          if (stage === "AI_RISK" && decision === "ACCEPT") {
+            aiRiskAllowed++;
+          }
+          if (stage === "AI_RISK" && decision === "REJECT") {
+            aiRiskBlocked++;
+          }
+        }
       }
 
-      // 4. Real trades opened in same period
+      // ── 4. Signal-level coverage ─────────────────────────────
+      //        How many of the eligible BUY signals actually appear
+      //        in an execution_audit.events[].signal_id ?
+      let auditedEligibleSignals = 0;
+      for (const sig of eligibleBuySignals) {
+        const id = String(sig.id ?? "");
+        if (id && auditedSignalIds.has(id)) {
+          auditedEligibleSignals++;
+        } else if (id) {
+          const sym = String(sig.symbol ?? "unknown");
+          uncoveredCandidates.set(id, sym);
+        }
+      }
+
+      const uncoveredEligibleSignals = Math.max(
+        0,
+        eligibleBuySignals.length - auditedEligibleSignals,
+      );
+
+      const uncoveredSymbols = [...new Set(uncoveredCandidates.values())].slice(
+        0,
+        10,
+      );
+
+      const executionAuditCoveragePct =
+        eligibleBuySignals.length === 0
+          ? 100
+          : Math.min(
+              100,
+              Math.round(
+                (auditedEligibleSignals / eligibleBuySignals.length) * 100,
+              ),
+            );
+
+      // ── 5. Real trades opened in same period ─────────────────
       const { data: recentTrades, error: tradesError } = await supabase
         .from("trades")
         .select("id,symbol,status,opened_at,created_at")
@@ -210,14 +281,22 @@ export default function AIReport() {
         (trade) => trade.status === "open" || trade.opened_at != null,
       ).length;
 
-      // 5. Determine execution health
+      // ── 6. Determine execution health ────────────────────────
       let executionStatus: ExecutionStatus = "ok";
       let executionIssue: string | null = null;
 
-      if (eligibleBuySignals.length > 0 && executionAuditCoveragePct < 100) {
+      if (
+        eligibleBuySignals.length > 0 &&
+        executionAuditCoveragePct < 100
+      ) {
         executionStatus = "critical";
         executionIssue =
-          "Eligible BUY signals exist but execution audit coverage is incomplete.";
+          `${uncoveredEligibleSignals} of ${eligibleBuySignals.length} ` +
+          `eligible BUY signals never reached the execution audit ` +
+          `(coverage ${executionAuditCoveragePct}%).` +
+          (uncoveredSymbols.length > 0
+            ? ` Uncovered symbols: ${uncoveredSymbols.join(", ")}.`
+            : "");
       } else if (
         eligibleBuySignals.length > 0 &&
         openedTrades === 0 &&
@@ -236,16 +315,20 @@ export default function AIReport() {
           "AI Risk allowed one or more signals but execution opened zero trades.";
       }
 
-      // 6. Build execution health object
+      // ── 7. Build execution health object ─────────────────────
       const executionHealth: ExecutionHealth = {
         status: executionStatus,
         buy_signals: buySignals.length,
         eligible_buy_signals: eligibleBuySignals.length,
+        audited_eligible_signals: auditedEligibleSignals,
+        uncovered_eligible_signals: uncoveredEligibleSignals,
+        uncovered_symbols: uncoveredSymbols,
         risk_candidates: executionAudits.length > 0 ? riskCandidates : null,
         ai_risk_allowed: executionAudits.length > 0 ? aiRiskAllowed : null,
         ai_risk_blocked: executionAudits.length > 0 ? aiRiskBlocked : null,
         opened_trades: openedTrades,
         execution_audit_runs: auditedRuns.length,
+        total_audit_events: totalAuditEvents,
         execution_audit_coverage_pct: executionAuditCoveragePct,
         issue: executionIssue,
       };
@@ -256,7 +339,7 @@ export default function AIReport() {
       );
 
       /* ============================================================
-       * OVERALL HEALTH (με execution subsystem)
+       * OVERALL HEALTH
        * ============================================================ */
 
       const databaseStatus: ExecutionStatus = "ok";
@@ -294,7 +377,11 @@ export default function AIReport() {
         });
       }
 
-      if (executionHealth.status === "warning") {
+      if (
+        executionHealth.status !== "critical" &&
+        executionHealth.eligible_buy_signals > 0 &&
+        executionHealth.opened_trades === 0
+      ) {
         anomalies.push({
           severity: "warning",
           code: "ELIGIBLE_BUY_WITH_ZERO_TRADES",
@@ -330,18 +417,45 @@ export default function AIReport() {
       }
 
       if (executionHealth.status !== "ok") {
-        suggestedActions.push({
-          priority: executionHealth.status === "critical" ? "P0" : "P1",
-          action: "Inspect execution audit",
-          reason:
-            executionHealth.issue ??
-            "Execution diagnostics flagged an issue.",
-          evidence: [
-            `eligible=${executionHealth.eligible_buy_signals}`,
-            `opened=${executionHealth.opened_trades}`,
-            `audit_coverage=${executionHealth.execution_audit_coverage_pct}%`,
-          ],
-        });
+        const priority =
+          executionHealth.status === "critical" ? "P0" : "P1";
+
+        if (
+          executionHealth.execution_audit_coverage_pct < 100 &&
+          executionHealth.eligible_buy_signals > 0
+        ) {
+          suggestedActions.push({
+            priority,
+            action: "Investigate signal → audit gap",
+            reason:
+              `${executionHealth.uncovered_eligible_signals} eligible BUY signals ` +
+              `did not appear in the execution audit. Signals may be dropped ` +
+              `between composite_signals INSERT and executeTrades().`,
+            evidence: [
+              `eligible=${executionHealth.eligible_buy_signals}`,
+              `audited=${executionHealth.audited_eligible_signals}`,
+              `coverage=${executionHealth.execution_audit_coverage_pct}%`,
+              ...(executionHealth.uncovered_symbols.length > 0
+                ? [
+                    `symbols=${executionHealth.uncovered_symbols.join(",")}`,
+                  ]
+                : []),
+            ],
+          });
+        } else {
+          suggestedActions.push({
+            priority,
+            action: "Inspect execution audit",
+            reason:
+              executionHealth.issue ??
+              "Execution diagnostics flagged an issue.",
+            evidence: [
+              `eligible=${executionHealth.eligible_buy_signals}`,
+              `opened=${executionHealth.opened_trades}`,
+              `coverage=${executionHealth.execution_audit_coverage_pct}%`,
+            ],
+          });
+        }
       }
 
       /* ============================================================
@@ -397,8 +511,9 @@ export default function AIReport() {
             q: "Are eligible BUY signals being executed?",
             a:
               `${executionHealth.eligible_buy_signals} eligible BUY signals; ` +
-              `${executionHealth.opened_trades} trades opened; ` +
-              `audit coverage ${executionHealth.execution_audit_coverage_pct}%.`,
+              `${executionHealth.audited_eligible_signals} reached the execution ` +
+              `audit; ${executionHealth.opened_trades} trades opened; ` +
+              `coverage ${executionHealth.execution_audit_coverage_pct}%.`,
             confidence:
               executionHealth.execution_audit_coverage_pct === 100
                 ? "high"
@@ -457,21 +572,35 @@ Unrealized PnL: ${unrealized.toFixed(2)}
 EXECUTION HEALTH
 Status: ${executionHealth.status}
 BUY signals: ${executionHealth.buy_signals}
-Eligible BUY >= 60%: ${executionHealth.eligible_buy_signals}
-Risk candidates: ${executionHealth.risk_candidates ?? "unknown"}
+Eligible BUY >= ${EXECUTION_CONFIDENCE_THRESHOLD}: ${executionHealth.eligible_buy_signals}
+Signals reaching execution audit: ${executionHealth.audited_eligible_signals}
+Uncovered eligible signals: ${executionHealth.uncovered_eligible_signals}${
+          executionHealth.uncovered_symbols.length > 0
+            ? ` (${executionHealth.uncovered_symbols.join(", ")})`
+            : ""
+        }
+Signal-level audit coverage: ${executionHealth.execution_audit_coverage_pct}%
+Risk candidates (CANDIDATE_FILTER ACCEPT): ${executionHealth.risk_candidates ?? "unknown"}
 AI Risk allowed: ${executionHealth.ai_risk_allowed ?? "unknown"}
 AI Risk blocked: ${executionHealth.ai_risk_blocked ?? "unknown"}
 Trades opened: ${executionHealth.opened_trades}
-Execution audit coverage: ${executionHealth.execution_audit_coverage_pct}%
+Runs with execution audit: ${executionHealth.execution_audit_runs}
+Total audit events: ${executionHealth.total_audit_events}
 
 Execution issue:
 ${executionHealth.issue ?? "none"}
 
-Interpretation:
-Do NOT report the system as fully healthy merely because the pipeline
-and database are operational. If eligible BUY signals exist but zero
-trades opened, explicitly identify this as an execution-path issue and
-recommend inspecting the execution audit.
+Interpretation rules:
+- Coverage here is SIGNAL-LEVEL, not run-level. It measures how many
+  eligible BUY signals appear inside execution_audit.events[].signal_id.
+- If coverage < 100% while eligible_buy_signals > 0, the execution
+  pipeline is losing signals between composite_signals INSERT and
+  executeTrades(). This is a critical observability failure regardless
+  of how many runs wrote an audit row.
+- Do NOT report the system as fully healthy merely because the pipeline
+  and database are operational. If eligible BUY signals exist but zero
+  trades opened, explicitly identify this as an execution-path issue and
+  recommend inspecting the execution audit.
 `,
       };
 
@@ -561,8 +690,8 @@ recommend inspecting the execution audit.
             <h3 className="text-lg font-medium">System findings</h3>
             {report.health?.issues?.length ? (
               <ul className="list-disc pl-5 text-sm">
-                {report.health.issues.map((issue: string, i: number) => (
-                  <li key={i}>{issue}</li>
+                {report.health.issues.map((issue, i: number) => (
+                  <li key={i}>{String(issue)}</li>
                 ))}
               </ul>
             ) : (
