@@ -359,7 +359,7 @@ async function gatherSnapshot(): Promise<MarketSnapshot> {
 /* ───────────── Variant performance ───────────── */
 
 /**
- * Φορτώνει shadow performance για όλα τα presets από το RPC
+ * Φορτώνει variant performance για όλα τα presets από το legacy RPC
  * get_variant_performance(days). Επιστρέφει normalized rows.
  *
  * Non-fatal: ��ν αποτύχει, επιστρέφει empty array και το prompt
@@ -372,7 +372,7 @@ async function fetchVariantPerformance(
     const { supabaseAdmin: db } = await import(
       "@/integrations/supabase/client.server"
     );
-    const { data, error } = await (db.rpc as any)("get_shadow_v2_performance", {
+    const { data, error } = await (db.rpc as any)("get_variant_performance", {
       days,
     });
     if (error) throw error;
