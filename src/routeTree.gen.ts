@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AboutRouteImport } from './routes/about'
 import { Route as AiReportRouteImport } from './routes/ai-report'
 import { Route as ApiDiagnosticRouteImport } from './routes/api/diagnostic'
+import { Route as ApiBinanceSpotPriceRouteImport } from './routes/api/binance/spot-price'
 import { Route as ApiPublicCronRouteImport } from './routes/api/public/cron'
 
 const IndexRoute = IndexRouteImport.update({
@@ -35,6 +36,11 @@ const ApiDiagnosticRoute = ApiDiagnosticRouteImport.update({
   path: '/api/diagnostic',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiBinanceSpotPriceRoute = ApiBinanceSpotPriceRouteImport.update({
+  id: '/api/binance/spot-price',
+  path: '/api/binance/spot-price',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiPublicCronRoute = ApiPublicCronRouteImport.update({
   id: '/api/public/cron',
   path: '/api/public/cron',
@@ -46,6 +52,7 @@ export interface FileRoutesByFullPath {
   '/about': typeof AboutRoute
   '/ai-report': typeof AiReportRoute
   '/api/diagnostic': typeof ApiDiagnosticRoute
+  '/api/binance/spot-price': typeof ApiBinanceSpotPriceRoute
   '/api/public/cron': typeof ApiPublicCronRoute
 }
 export interface FileRoutesByTo {
@@ -53,6 +60,7 @@ export interface FileRoutesByTo {
   '/about': typeof AboutRoute
   '/ai-report': typeof AiReportRoute
   '/api/diagnostic': typeof ApiDiagnosticRoute
+  '/api/binance/spot-price': typeof ApiBinanceSpotPriceRoute
   '/api/public/cron': typeof ApiPublicCronRoute
 }
 export interface FileRoutesById {
@@ -61,20 +69,33 @@ export interface FileRoutesById {
   '/about': typeof AboutRoute
   '/ai-report': typeof AiReportRoute
   '/api/diagnostic': typeof ApiDiagnosticRoute
+  '/api/binance/spot-price': typeof ApiBinanceSpotPriceRoute
   '/api/public/cron': typeof ApiPublicCronRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/about' | '/ai-report' | '/api/diagnostic' | '/api/public/cron'
+    | '/'
+    | '/about'
+    | '/ai-report'
+    | '/api/diagnostic'
+    | '/api/binance/spot-price'
+    | '/api/public/cron'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/about' | '/ai-report' | '/api/diagnostic' | '/api/public/cron'
+  to:
+    | '/'
+    | '/about'
+    | '/ai-report'
+    | '/api/diagnostic'
+    | '/api/binance/spot-price'
+    | '/api/public/cron'
   id:
     | '__root__'
     | '/'
     | '/about'
     | '/ai-report'
     | '/api/diagnostic'
+    | '/api/binance/spot-price'
     | '/api/public/cron'
   fileRoutesById: FileRoutesById
 }
@@ -83,6 +104,7 @@ export interface RootRouteChildren {
   AboutRoute: typeof AboutRoute
   AiReportRoute: typeof AiReportRoute
   ApiDiagnosticRoute: typeof ApiDiagnosticRoute
+  ApiBinanceSpotPriceRoute: typeof ApiBinanceSpotPriceRoute
   ApiPublicCronRoute: typeof ApiPublicCronRoute
 }
 
@@ -116,6 +138,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiDiagnosticRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/binance/spot-price': {
+      id: '/api/binance/spot-price'
+      path: '/api/binance/spot-price'
+      fullPath: '/api/binance/spot-price'
+      preLoaderRoute: typeof ApiBinanceSpotPriceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/cron': {
       id: '/api/public/cron'
       path: '/api/public/cron'
@@ -131,6 +160,7 @@ const rootRouteChildren: RootRouteChildren = {
   AboutRoute: AboutRoute,
   AiReportRoute: AiReportRoute,
   ApiDiagnosticRoute: ApiDiagnosticRoute,
+  ApiBinanceSpotPriceRoute: ApiBinanceSpotPriceRoute,
   ApiPublicCronRoute: ApiPublicCronRoute,
 }
 export const routeTree = rootRouteImport

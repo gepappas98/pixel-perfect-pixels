@@ -75,6 +75,23 @@ export function SignalFeed() {
                     </span>
                   )}
                 </div>
+                {s.entry_state && (
+                  <div className="mt-2 rounded border border-border bg-background/40 px-2 py-1.5 text-[10px] uppercase tracking-wider">
+                    <span className={s.entry_state === "ENTRY_READY" ? "text-bull" : s.entry_state === "INVALIDATED" ? "text-bear" : "text-warn"}>
+                      {s.entry_state.replace("_", " ")}
+                    </span>
+                    {s.entry_state === "ENTRY_READY" && (
+                      <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 normal-case tracking-normal text-muted-foreground">
+                        <span>Trigger: {s.entry_trigger ?? "—"}</span>
+                        <span>Size: {(s.position_multiplier ?? 0).toFixed(2)}x</span>
+                        <span>Entry: ${s.entry_min?.toFixed(4)} – ${s.entry_max?.toFixed(4)}</span>
+                        <span>SL: ${s.stop_loss?.toFixed(4)}</span>
+                        <span>TP1: ${s.take_profit_1?.toFixed(4)}</span>
+                        <span>TP2: ${s.take_profit_2?.toFixed(4)}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {s.reasoning && (
                   <p className="mt-1 text-xs text-muted-foreground">{s.reasoning}</p>
                 )}
