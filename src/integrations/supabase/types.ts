@@ -933,35 +933,22 @@ export type Database = {
       }
       get_pipeline_cron_health: { Args: never; Returns: Json }
       get_portfolio_summary: {
-        Args: { p_mark_prices?: Json }
+        Args: never
         Returns: {
-          avg_loss_usd: number | null
+          avg_loss_usd: number
           avg_win_usd: number
-          best_trade_net_pnl: number | null
           closed_count: number
-          estimated_open_exit_fees: number
           gross_loss: number
           gross_profit: number
           last_24h_closed: number
-          last_24h_realized_net_pnl: number
-          legacy_closed_sell_count: number
-          legacy_open_sell_count: number
+          last_24h_pnl: number
           loss_count: number
-          marked_open_count: number
           open_count: number
-          open_entry_notional: number
-          open_market_value: number
-          open_symbols: string[] | null
-          profit_factor: number | null
-          realized_gross_pnl: number
-          realized_net_pnl: number
-          total_fees: number
-          unmarked_open_count: number
-          unrealized_gross_pnl: number
-          unrealized_net_pnl_est: number
+          open_notional: number
+          profit_factor: number
+          realized_pnl: number
           win_count: number
-          win_rate_pct: number | null
-          worst_trade_net_pnl: number | null
+          win_rate_pct: number
         }[]
       }
       get_runtime_identity: {
