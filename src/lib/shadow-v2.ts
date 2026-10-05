@@ -33,7 +33,7 @@ export const SHADOW_V2_NOTIONAL_USD = 1000;
 export type ShadowV2ExitReason = "TP" | "SL" | "EXPIRED";
 
 export type ShadowV2SuppressionReason =
-  | "SHADOW_ACTIVE_POSITION"
+  | "POSITION_ALREADY_OPEN"
   | "SHADOW_SYMBOL_COOLDOWN"
   | "SHADOW_DUPLICATE_SIGNAL";
 
