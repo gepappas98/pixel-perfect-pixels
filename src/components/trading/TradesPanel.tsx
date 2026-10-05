@@ -39,6 +39,7 @@ export function TradesPanel() {
   const [openTrades, setOpenTrades] = useState<Trade[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [legacySellCount, setLegacySellCount] = useState(0);
 
   // ── Fetch ΜΟΝΟ ανοιχτές θέσεις, χωρίς artificial limit ─────────
   // Αντί για useLiveTable("trades", 15) που φέρνει 15 τυχαίες, κάνουμε
@@ -59,7 +60,12 @@ export function TradesPanel() {
       if (error) {
         setLoadError(error.message);
       } else {
-        setOpenTrades((data ?? []) as Trade[]);
+        // Binance Spot / long-only: only BUY rows are real exposure.
+        // Legacy SELL rows are kept in the DB but never shown as shorts.
+        const rows = (data ?? []) as Trade[];
+        const isBuy = (t: Trade) => String(t.side ?? "").toLowerCase() === "buy";
+        setOpenTrades(rows.filter(isBuy));
+        setLegacySellCount(rows.filter((t) => !isBuy(t)).length);
         setLoadError(null);
       }
       setLoading(false);
@@ -99,7 +105,7 @@ export function TradesPanel() {
     <section className="panel">
       <div className="mb-3 flex items-center justify-between">
         <div>
-          <h2 className="panel-title">Positions</h2>
+          <h2 className="panel-title">Positions · Spot Long-only</h2>
           <p className="mt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
             Open only · {openTrades.length} active · Live PnL · refreshes every 30s
           </p>
@@ -140,7 +146,7 @@ export function TradesPanel() {
               const fee =
                 current == null || entry <= 0 || quantity <= 0
                   ? null
-                  : computeFeeAwarePnl(t.side, entry, current, quantity);
+                  : computeFeeAwarePnl("buy", entry, current, quantity);
               const pnl = fee?.netPnl ?? null;
               const pnlPct = fee?.netPnlPct ?? null;
               const positive = (pnl ?? 0) >= 0;
@@ -184,6 +190,12 @@ export function TradesPanel() {
 
       {!loading && !loadError && openTrades.length === 0 && (
         <p className="text-sm text-muted-foreground">No open positions right now.</p>
+      )}
+
+      {legacySellCount > 0 && (
+        <p className="mt-2 text-[10px] text-warn">
+          {legacySellCount} legacy SELL row(s) hidden — not Spot exposure, excluded from accounting.
+        </p>
       )}
     </section>
   );

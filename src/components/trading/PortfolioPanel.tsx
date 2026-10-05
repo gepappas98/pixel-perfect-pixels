@@ -184,6 +184,39 @@ async function fetchSpotMarks(
   );
 }
 
+const NUM_KEYS = [
+  "open_count","open_entry_notional","open_market_value","unrealized_gross_pnl",
+  "unrealized_net_pnl_est","estimated_open_exit_fees","closed_count","realized_gross_pnl",
+  "realized_net_pnl","total_fees","win_count","loss_count","gross_profit","gross_loss",
+  "avg_win_usd","last_24h_closed","last_24h_realized_net_pnl","marked_open_count",
+  "unmarked_open_count","legacy_open_sell_count","legacy_closed_sell_count",
+] as const;
+const NULLABLE_KEYS = [
+  "win_rate_pct","profit_factor","avg_loss_usd","best_trade_net_pnl","worst_trade_net_pnl",
+] as const;
+
+function toNum(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Safe typing: required metrics must be finite numbers, otherwise we throw
+ *  (the panel shows an error instead of misleading zeros). */
+function normalizeSummary(raw: unknown): PortfolioSummary {
+  if (!raw || typeof raw !== "object") throw new Error("get_portfolio_summary returned no row");
+  const r = raw as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const k of NUM_KEYS) {
+    const n = toNum(r[k]);
+    if (n == null) throw new Error(`get_portfolio_summary: missing/invalid field ${k}`);
+    out[k] = n;
+  }
+  for (const k of NULLABLE_KEYS) out[k] = toNum(r[k]);
+  out.open_symbols = Array.isArray(r.open_symbols) ? (r.open_symbols as unknown[]).map(String) : [];
+  return out as unknown as PortfolioSummary;
+}
+
 async function loadPortfolioSummary(): Promise<PortfolioSummary> {
   /*
    * First call:
@@ -199,18 +232,13 @@ async function loadPortfolioSummary(): Promise<PortfolioSummary> {
     throw initial.error;
   }
 
-  const initialRow =
+  const initialRowRaw =
     (
       Array.isArray(initial.data)
         ? initial.data[0]
         : initial.data
-    ) as PortfolioSummary | null;
-
-  if (!initialRow) {
-    throw new Error(
-      "get_portfolio_summary returned no row",
     );
-  }
+  const initialRow = normalizeSummary(initialRowRaw);
 
   const symbols =
     initialRow.open_symbols ?? [];
@@ -244,20 +272,14 @@ async function loadPortfolioSummary(): Promise<PortfolioSummary> {
     throw marked.error;
   }
 
-  const markedRow =
+  const markedRowRaw =
     (
       Array.isArray(marked.data)
         ? marked.data[0]
         : marked.data
-    ) as PortfolioSummary | null;
-
-  if (!markedRow) {
-    throw new Error(
-      "Marked portfolio summary returned no row",
     );
-  }
 
-  return markedRow;
+  return normalizeSummary(markedRowRaw);
 }
 
 export function PortfolioPanel() {
@@ -697,6 +719,10 @@ export function PortfolioPanel() {
 
           <p className="mt-0.5 text-[9px] text-muted-foreground">
             net per closed trade
+          </p>
+          <p className="mt-0.5 text-[9px] text-muted-foreground">
+            Best <span className="text-bull">{fmtSigned(data.best_trade_net_pnl)}</span>
+            {" · "}Worst <span className="text-bear">{fmtSigned(data.worst_trade_net_pnl)}</span>
           </p>
 
         </div>
