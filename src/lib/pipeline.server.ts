@@ -287,23 +287,25 @@ interface BybitKlineResult {
   result?: { category: string; symbol: string; list: string[][] };
 }
 
+interface BybitRecentTrade {
+  execId?: string;
+  symbol?: string;
+  price?: string;
+  size?: string;
+  side?: "Buy" | "Sell" | string;
+  time?: string;
+}
+
 interface BybitRecentTradeResult {
   retCode: number;
   retMsg: string;
   result?: {
     category: string;
-    list: Array<{
-      execId?: string;
-      symbol?: string;
-      price?: string;
-      size?: string;
-      side?: "Buy" | "Sell" | string;
-      time?: string;
-    }>;
+    list: BybitRecentTrade[];
   };
 }
 
-async function bybitRecentTrades(symbol: string, limit = 60): Promise<BybitRecentTradeResult["result"]["list"]> {
+async function bybitRecentTrades(symbol: string, limit = 60): Promise<BybitRecentTrade[]> {
   const url = new URL(`${BYBIT_HOST}/v5/market/recent-trade`);
   url.searchParams.set("category", "spot");
   url.searchParams.set("symbol", symbol);
