@@ -79,7 +79,7 @@ export function VariantComparisonPanel() {
   const { data, isLoading, error } = useQuery<VariantPerfRow[]>({
     queryKey: ["strategy-variants-perf"],
     queryFn: async () => {
-      const { data, error } = await supabase.rpc("get_variant_performance", {
+      const { data, error } = await supabase.rpc("get_shadow_v2_performance", {
         days: 7,
       });
       if (error) throw error;
