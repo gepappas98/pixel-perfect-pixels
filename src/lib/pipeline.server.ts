@@ -573,9 +573,6 @@ export async function collectWhaleAlerts(): Promise<number> {
   );
 
   const rows = perCoinRows.flat();
-  if (binanceFailCount > 0) {
-    console.warn(`[WHALE_FALLBACK] Binance unavailable for ${binanceFailCount}/${watchlist.length} symbols; Bybit recent-trade fallback was attempted.`);
-  }
   if (rows.length === 0) return 0;
 
   // Hot whale queue feeding
