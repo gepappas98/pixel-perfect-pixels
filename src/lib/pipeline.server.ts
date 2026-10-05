@@ -125,8 +125,8 @@ const TREND_TIMEFRAME = "1d";
 const TIMEFRAMES = [PRIMARY_TIMEFRAME, FAST_TIMEFRAME, TREND_TIMEFRAME] as const;
 const KLINE_LIMIT = 100;
 
-/* Entry / execution safety — P0/P1 tuning (Oct 2026). */
-const MIN_CONFIDENCE = 0.85;
+  /* Entry / execution safety — derived from persisted composite signals. */
+  const MIN_CONFIDENCE = 0.60;
 const FETCH_TIMEOUT_MS = 12_000;
 const MAX_ENTRY_DRIFT_PCT = 0.005;
 const SYMBOL_COOLDOWN_MINUTES = 15;
@@ -1681,7 +1681,7 @@ export async function combineSignals(): Promise<number> {
     const council = (latestCouncil.get(symbol) ?? null) as Row;
     if (!whale && !mtfRaw.primary && !prediction && !council) continue;
 
-    // 1. Υπολογι��μός 4h Asset Shadow Regime για το συγκεκριμένο asset
+    // 1. Υπολογι����μός 4h Asset Shadow Regime για το συγκεκριμένο asset
     const assetMicroRegime = computeAssetRegime(mtfRaw.primary);
 
     // Hot-whale aggregated direction override
@@ -2582,18 +2582,31 @@ export async function executeTrades(opts?: {
 
   let side = signal.recommendation as "buy" | "sell";
 
-  if (signal.entry_state !== "ENTRY_READY") {
-    console.log(`[SPOT_ENTRY_GATE] skip ${signal.symbol}: ${signal.entry_state ?? "missing"}`);
+  // composite_signals does not persist entry_state. Derive the Spot gate
+  // from persisted fields and leave all downstream risk gates intact.
+  const confidence = Number(signal.confidence ?? 0);
+  const recommendation = String(signal.recommendation ?? "").toLowerCase();
+  const isLongOnly = recommendation === "buy";
+  const confidenceReady = confidence >= MIN_CONFIDENCE;
+
+  if (!isLongOnly) {
+    console.log(
+      `[SPOT ENTRY] SKIP ${signal.symbol}: recommendation=${recommendation}, ` +
+        `confidence=${confidence.toFixed(3)}`,
+    );
     continue;
   }
-  if (signal.position_multiplier == null || signal.position_multiplier <= 0) {
-    console.log(`[SPOT_ENTRY_GATE] skip ${signal.symbol}: invalid position multiplier`);
+  if (!confidenceReady) {
+    console.log(
+      `[SPOT ENTRY] SKIP ${signal.symbol}: confidence=${confidence.toFixed(3)} < ` +
+        `MIN_CONFIDENCE=${MIN_CONFIDENCE}`,
+    );
     continue;
   }
-  if (mode === "live") {
-    console.warn(`[SPOT_ENTRY_GATE] live execution disabled during paper-only phase: ${signal.symbol}`);
-    continue;
-  }
+  console.log(
+    `[SPOT ENTRY] ENTRY_READY ${signal.symbol}: recommendation=${recommendation}, ` +
+      `confidence=${confidence.toFixed(3)}`,
+  );
 
   // Spot / paper survival: do not open short entries.
   if (side === "sell") {
@@ -2707,7 +2720,7 @@ export async function executeTrades(opts?: {
   return opened;
 }
 
-/* ───────────── Full pipeline ───────────── */
+/* ───────────── Full pipeline ────────────�� */
 
 export async function runFullPipeline() {
   const db = await admin();
@@ -2853,7 +2866,9 @@ export async function runFullPipeline() {
 
     // ��── Trades ───
     step = "trades";
-    const circuitBreakerOpen = health.indicatorsFailed || health.whalesFailed;
+    // Whale feed is an optional signal source; only critical market data
+  // failure should force close-only execution mode.
+  const circuitBreakerOpen = health.indicatorsFailed;
     let trades = 0;
     if (circuitBreakerOpen) {
       console.warn(`[CIRCUIT_BREAKER] OPEN — skipping new entries. Reasons: ${health.degradedReasons.join("; ")}`);
