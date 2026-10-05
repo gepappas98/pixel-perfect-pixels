@@ -260,7 +260,7 @@ export function getShadowV2Decision(params: {
     if (activeForSymbol) {
       return {
         accepted: false,
-        reason: "SHADOW_ACTIVE_POSITION",
+        reason: "POSITION_ALREADY_OPEN",
         fingerprint,
       };
     }
