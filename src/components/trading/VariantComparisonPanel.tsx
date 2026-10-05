@@ -79,7 +79,7 @@ export function VariantComparisonPanel() {
   const { data, isLoading, error } = useQuery<VariantPerfRow[]>({
     queryKey: ["strategy-variants-perf"],
     queryFn: async () => {
-      const { data, error } = await supabase.rpc("get_shadow_v2_performance", {
+      const { data, error } = await supabase.rpc("get_variant_performance", {
         days: 7,
       });
       if (error) throw error;
@@ -173,7 +173,7 @@ export function VariantComparisonPanel() {
             Variant Performance (7d)
           </h2>
           <p className="mt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-            Shadow V2 · deduplicated hypothetical results per preset
+            Legacy Variant Performance · historical hypothetical results per preset
           </p>
         </div>
         <span className="text-[10px] text-muted-foreground">
