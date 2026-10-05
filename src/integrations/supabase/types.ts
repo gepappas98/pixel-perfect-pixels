@@ -986,6 +986,18 @@ export type Database = {
           wins: number
         }[]
       }
+      get_shadow_v2_performance: {
+        Args: { days?: number }
+        Returns: {
+          expired: number
+          losses: number
+          open_count: number
+          resolved: number
+          strategy_name: string
+          total_pnl_pct: number
+          wins: number
+        }[]
+      }
       get_variant_summary: {
         Args: never
         Returns: {
