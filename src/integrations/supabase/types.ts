@@ -935,9 +935,9 @@ export type Database = {
       get_portfolio_summary: {
         Args: { p_mark_prices?: Json }
         Returns: {
-          avg_loss_usd: number | null
+          avg_loss_usd: number
           avg_win_usd: number
-          best_trade_net_pnl: number | null
+          best_trade_net_pnl: number
           closed_count: number
           estimated_open_exit_fees: number
           gross_loss: number
@@ -951,8 +951,8 @@ export type Database = {
           open_count: number
           open_entry_notional: number
           open_market_value: number
-          open_symbols: string[] | null
-          profit_factor: number | null
+          open_symbols: string[]
+          profit_factor: number
           realized_gross_pnl: number
           realized_net_pnl: number
           total_fees: number
@@ -960,8 +960,8 @@ export type Database = {
           unrealized_gross_pnl: number
           unrealized_net_pnl_est: number
           win_count: number
-          win_rate_pct: number | null
-          worst_trade_net_pnl: number | null
+          win_rate_pct: number
+          worst_trade_net_pnl: number
         }[]
       }
       get_runtime_identity: {
