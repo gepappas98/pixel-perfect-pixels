@@ -1621,7 +1621,43 @@ async function runShadowV2Observer(variantRows: Record<string, unknown>[]): Prom
 
     if (existingError) throw existingError;
 
-    const existing = (existingRows ?? []) as unknown as ShadowV2Position[];
+    // DB uses snake_case; convert explicitly to the Shadow V2 domain shape.
+    // Never cast raw database rows directly to ShadowV2Position.
+    const existing = ((existingRows ?? []) as unknown as Record<string, unknown>[]).map(
+      (row): ShadowV2Position => ({
+        fingerprint: String(row["fingerprint"]),
+        signalId: row["signal_id"] ? String(row["signal_id"]) : null,
+        symbol: String(row["symbol"]),
+        strategy: String(row["strategy"]),
+        signalCreatedAt: String(row["signal_created_at"]),
+        entryTimestamp: String(row["entry_timestamp"]),
+        entryPrice: Number(row["entry_price"]),
+        takeProfitPrice: Number(row["take_profit_price"]),
+        stopLossPrice: Number(row["stop_loss_price"]),
+        expiryTimestamp: String(row["expiry_timestamp"]),
+        status: String(row["status"]).toUpperCase() === "CLOSED" ? "CLOSED" : "OPEN",
+        exitTimestamp: row["exit_timestamp"] ? String(row["exit_timestamp"]) : null,
+        exitPrice: row["exit_price"] == null ? null : Number(row["exit_price"]),
+        exitReason:
+          row["exit_reason"] === "TP" ||
+          row["exit_reason"] === "SL" ||
+          row["exit_reason"] === "EXPIRED"
+            ? row["exit_reason"]
+            : null,
+        grossPnlUsd: Number(row["gross_pnl_usd"] ?? 0),
+        entryFeeUsd: Number(row["entry_fee_usd"] ?? 0),
+        exitFeeUsd: Number(row["exit_fee_usd"] ?? 0),
+        feesUsd: Number(row["fees_usd"] ?? 0),
+        netPnlUsd: Number(row["net_pnl_usd"] ?? 0),
+        grossPnlPct: Number(row["gross_pnl_pct"] ?? 0),
+        feesPct: Number(row["fees_pct"] ?? 0),
+        netPnlPct: Number(row["net_pnl_pct"] ?? 0),
+        ambiguousIntrabar: Boolean(row["ambiguous_intrabar"]),
+        ambiguityReason: row["ambiguity_reason"] ? String(row["ambiguity_reason"]) : null,
+        details: (row["details"] ?? {}) as ShadowV2Position["details"],
+      }),
+    );
+
     const active = existing.filter((row) => row.status === "OPEN");
     const processedFingerprints = new Set(existing.map((row) => row.fingerprint));
 
@@ -1748,10 +1784,10 @@ async function runShadowV2Observer(variantRows: Record<string, unknown>[]): Prom
     for (const position of positionsToResolve) {
       const candles = await fetchVariantResolutionCandles(
         position.symbol,
-        "1h",
+        VARIANT_RESOLVE_TIMEFRAME,
         new Date(position.entryTimestamp).getTime(),
-        Date.now(),
-        240,
+        Math.min(Date.now(), new Date(position.expiryTimestamp).getTime()),
+        VARIANT_RESOLVE_CANDLE_LIMIT,
       );
       if (candles.length === 0) continue;
 
@@ -1760,6 +1796,7 @@ async function runShadowV2Observer(variantRows: Record<string, unknown>[]): Prom
 
       for (const candle of candles) {
         if (candle.closeTimeMs > expiryMs) break;
+
         const hit = resolveShadowV2Candle({
           high: candle.high,
           low: candle.low,
@@ -1788,6 +1825,7 @@ async function runShadowV2Observer(variantRows: Record<string, unknown>[]): Prom
             }
           }
         }
+
         // Never fabricate an expiry price. Keep OPEN until historical data exists.
         if (expiryCandle) {
           closed = buildShadowV2ClosedPosition({
