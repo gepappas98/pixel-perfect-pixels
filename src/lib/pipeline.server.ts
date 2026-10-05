@@ -1681,7 +1681,7 @@ export async function combineSignals(): Promise<number> {
     const council = (latestCouncil.get(symbol) ?? null) as Row;
     if (!whale && !mtfRaw.primary && !prediction && !council) continue;
 
-    // 1. Υπολογι����μός 4h Asset Shadow Regime για το συγκεκριμένο asset
+    // 1. Υπολογισμός 4h Asset Shadow Regime για το συγκεκριμένο asset
     const assetMicroRegime = computeAssetRegime(mtfRaw.primary);
 
     // Hot-whale aggregated direction override
@@ -2223,7 +2223,7 @@ async function resolveVariantOutcomes(): Promise<number> {
   return resolved;
 }
 
-/* ��──────────── Trade executor ───────────── */
+/* ───────────── Trade executor ───────────── */
 
 export function tradingMode(): "paper" | "live" {
   const mode = process.env["TRADING_MODE"];
@@ -2532,6 +2532,12 @@ export async function executeTrades(opts?: {
       reasons: [match[4] ?? "previously evaluated"],
     };
   };
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ΔΙΟΡΘΩΣΗ 1: riskCandidates — Επιτρέπει σε 1d-conflict signals να φτάσουν
+  // στο AI Risk για αξιολόγηση. Δεν φιλτράρουμε εδώ το 1d bear/conflict.
+  // Ο downstream έλεγχος (whale/pred support) παραμένει στο execution loop.
+  // ═══════════════════════════════════════════════════════════════════════
   const riskCandidates = executionSignals.filter((signal) => {
     if (signal.recommendation !== "buy") return false;
 
@@ -2561,7 +2567,7 @@ export async function executeTrades(opts?: {
     ) {
       console.log(
         `[AI_RISK_CANDIDATE] skip ${signal.symbol}: entry drift exceeded ` +
-        `signal=${signalPrice} current=${price}`,
+          `signal=${signalPrice} current=${price}`,
       );
       return false;
     }
@@ -2584,7 +2590,7 @@ export async function executeTrades(opts?: {
     if (regime === "bear" || regime === "strong_bear") {
       console.log(
         `[AI_RISK_CANDIDATE] skip ${signal.symbol}: ` +
-        `hard bearish regime=${regime}`,
+          `hard bearish regime=${regime}`,
       );
       return false;
     }
@@ -2614,13 +2620,14 @@ export async function executeTrades(opts?: {
 
     console.log(
       `[AI_RISK_CANDIDATE] ACCEPT ${signal.symbol} ` +
-      `conf=${signal.confidence.toFixed(3)} ` +
-      `regime=${regime || "unknown"} ` +
-      `reasoning=${String(signal.reasoning ?? "").slice(0, 180)}`,
+        `conf=${signal.confidence.toFixed(3)} ` +
+        `regime=${regime || "unknown"} ` +
+        `reasoning=${String(signal.reasoning ?? "").slice(0, 180)}`,
     );
 
     return true;
   });
+
   const aiRiskBySignalId = new Map<string, AIRiskDecision>();
   for (const signal of executionSignals) {
     const previous = parseAIRiskAnnotation(signal.reasoning);
@@ -2635,6 +2642,10 @@ export async function executeTrades(opts?: {
       reasoning: String(signal.reasoning ?? ""),
     })),
   );
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ΔΙΟΡΘΩΣΗ 3: AI Risk visibility — logging για κάθε απόφαση
+  // ═══════════════════════════════════════════════════════════════════════
   riskCandidates.forEach((signal, index) => {
     const decision = aiRiskDecisions[index];
 
@@ -2643,25 +2654,28 @@ export async function executeTrades(opts?: {
 
       console.log(
         `[AI_RISK_RESULT] ${signal.symbol} ` +
-        `conf=${signal.confidence.toFixed(3)} ` +
-        `risk=${decision.risk_level} ` +
-        `quality=${decision.data_quality} ` +
-        `allowed=${decision.trade_allowed} ` +
-        `reasons=${decision.reasons.join("; ")}`,
+          `conf=${signal.confidence.toFixed(3)} ` +
+          `risk=${decision.risk_level} ` +
+          `quality=${decision.data_quality} ` +
+          `allowed=${decision.trade_allowed} ` +
+          `reasons=${decision.reasons.join("; ")}`,
       );
     } else {
       console.warn(
         `[AI_RISK_RESULT] MISSING ${signal.symbol} ` +
-        `signal_id=${signal.id}`,
+          `signal_id=${signal.id}`,
       );
     }
   });
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // ΔΙΟΡΘΩΣΗ 5: Execution summary — visibility πριν το trade loop
+  // ═══════════════════════════════════════════════════════════════════════
   console.log(
     `[EXECUTION] signals=${executionSignals.length} ` +
-    `riskCandidates=${riskCandidates.length} ` +
-    `openPositions=${openSymbols.size} ` +
-    `cooldowns=${cooldownSymbols.size}`,
+      `riskCandidates=${riskCandidates.length} ` +
+      `openPositions=${openSymbols.size} ` +
+      `cooldowns=${cooldownSymbols.size}`,
   );
 
   let opened = 0;
@@ -2737,6 +2751,11 @@ export async function executeTrades(opts?: {
     continue;
   }
   const reasoning = String((signal as { reasoning?: string }).reasoning ?? "");
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ΔΙΟΡΘΩΣΗ 2 (Downstream): 1d bear + conflict protection — ΠΑΡΑΜΕΝΕΙ ΕΔΩ
+  // Επιτρέπεται μόνο αν υπάρχει whale accumulation Ή prediction bullish.
+  // ═══════════════════════════════════════════════════════════════════════
   if (/1d bear\s*·\s*conflict/i.test(reasoning)) {
     const hasWhaleAcc = /whale accumulation/i.test(reasoning);
     const hasPredBull = /prediction market bullish/i.test(reasoning);
@@ -2809,17 +2828,20 @@ export async function executeTrades(opts?: {
       ),
     } as never);
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // ΔΙΟΡΘΩΣΗ 4: Trade INSERT logging — full error context
+    // ═══════════════════════════════════════════════════════════════════════
     if (tradeErr) {
       const errorCode = (tradeErr as { code?: string }).code ?? "UNKNOWN";
 
       console.error(
         `[TRADE_INSERT_FAILED] ${signal.symbol} ` +
-        `signal_id=${signal.id} ` +
-        `mode=${mode} ` +
-        `side=${side} ` +
-        `quantity=${quantity} ` +
-        `price=${price} ` +
-        `code=${errorCode}`,
+          `signal_id=${signal.id} ` +
+          `mode=${mode} ` +
+          `side=${side} ` +
+          `quantity=${quantity} ` +
+          `price=${price} ` +
+          `code=${errorCode}`,
         tradeErr,
       );
 
@@ -2827,7 +2849,7 @@ export async function executeTrades(opts?: {
       if (errorCode === "23505") {
         console.warn(
           `[TRADE_INSERT_DUPLICATE] ${signal.symbol} ` +
-          `signal_id=${signal.id}`,
+            `signal_id=${signal.id}`,
         );
         continue;
       }
@@ -2838,16 +2860,20 @@ export async function executeTrades(opts?: {
     openSymbols.add(signal.symbol);
     opened += 1;
   }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ΔΙΟΡΘΩΣΗ 5 (συνέχεια): Execution summary — μετά το trade loop
+  // ═══════════════════════════════════════════════════════════════════════
   console.log(
     `[EXECUTION_DONE] opened=${opened} ` +
-    `riskCandidates=${riskCandidates.length} ` +
-    `openPositions=${openSymbols.size}`,
+      `riskCandidates=${riskCandidates.length} ` +
+      `openPositions=${openSymbols.size}`,
   );
 
   return opened;
 }
 
-/* ───────────── Full pipeline ────────────�� */
+/* ───────────── Full pipeline ───────────── */
 
 export async function runFullPipeline() {
   const db = await admin();
@@ -2875,7 +2901,7 @@ export async function runFullPipeline() {
 
   let step = "init";
   try {
-    // ──�� Watchlist resolution ───
+    // ─── Watchlist resolution ───
     step = "watchlist-resolve";
     invalidateWatchlistCache();
     const watchlistCtx = await resolveWatchlistContext();
@@ -2991,7 +3017,7 @@ export async function runFullPipeline() {
       console.error("[GLOBAL_RISK] non-fatal error:", e);
     }
 
-    // ��── Trades ───
+    // ─── Trades ───
     step = "trades";
     // Whale feed is an optional signal source; only critical market data
   // failure should force close-only execution mode.
