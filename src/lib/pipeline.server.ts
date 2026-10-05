@@ -68,6 +68,18 @@ import {
 
 /* ───────────── Types ───────────── */
 
+type WhaleSourceName = "hyperliquid" | "binance" | "bybit" | "coinlobster";
+type WhaleSourceHealth = { state: "ok" | "empty" | "error"; http_status?: number; requests: number; qualifying: number; errors: number; message?: string };
+const whaleSourceHealth: Record<WhaleSourceName, WhaleSourceHealth> = {
+  hyperliquid: { state: "empty", requests: 0, qualifying: 0, errors: 0 },
+  binance: { state: "empty", requests: 0, qualifying: 0, errors: 0 },
+  bybit: { state: "empty", requests: 0, qualifying: 0, errors: 0 },
+  coinlobster: { state: "empty", requests: 0, qualifying: 0, errors: 0 },
+};
+function resetWhaleSourceHealth() {
+  for (const source of Object.keys(whaleSourceHealth) as WhaleSourceName[]) whaleSourceHealth[source] = { state: "empty", requests: 0, qualifying: 0, errors: 0 };
+}
+function whaleSourceSnapshot() { return JSON.parse(JSON.stringify(whaleSourceHealth)) as Record<WhaleSourceName, WhaleSourceHealth>; }
 type Row = Record<string, unknown> | null;
 type CouncilVerdict = "BUY" | "SELL" | "HOLD" | "AVOID";
 type SignalDir = "bullish" | "bearish" | "neutral";
@@ -538,6 +550,7 @@ export async function collectWhaleAlerts(): Promise<number> {
     async (coin) => {
       const out: Record<string, unknown>[] = [];
       try {
+        whaleSourceHealth.hyperliquid.requests++;
         const trades = await hlPost<HlTrade[]>({ type: "recentTrades", coin });
         if (!Array.isArray(trades)) return out;
         const source = base.has(coin) ? "hyperliquid-recent-trades" : "hyperliquid-top-mover";
@@ -553,7 +566,7 @@ export async function collectWhaleAlerts(): Promise<number> {
             raw: t as unknown as Record<string, unknown>,
           });
         }
-      } catch (e) { console.error(`[HL] whale fetch failed for ${coin}`, e); }
+      } catch (e) { whaleSourceHealth.hyperliquid.errors++; whaleSourceHealth.hyperliquid.message = e instanceof Error ? e.message : String(e); console.error(`[HL] whale fetch failed for ${coin}`, e); }
       return out;
     },
     10,
@@ -608,8 +621,6 @@ interface BinanceAggTrade { a: number; p: string; q: string; T: number; m: boole
 export async function collectExchangeWhaleAlerts(): Promise<number> {
   const db = await admin();
   const watchlist = await getActiveWatchlist();
-  let binanceSuccessCount = 0;
-  let binanceFailCount = 0;
 
   const perCoinRows = await pMap(
     watchlist,
@@ -618,11 +629,12 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
       const symbol = binanceSymbol(coin);
       const floor = whaleFloor(coin);
       try {
+        whaleSourceHealth.binance.requests++;
         const res = await binancePublicGet(`/api/v3/aggTrades?symbol=${symbol}&limit=1000`);
         if (res.ok) {
           const parsed = (await res.json()) as BinanceAggTrade[];
           if (Array.isArray(parsed)) {
-            binanceSuccessCount++;
+            whaleSourceHealth.binance.state = "ok";
             for (const t of parsed) {
               const usd = parseFloat(t.p) * parseFloat(t.q);
               if (!Number.isFinite(usd) || usd < floor) continue;
@@ -642,7 +654,12 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
         // Binance is geo-blocked (403) from the deployed runtime. Fall back
         // to Bybit spot recent trades so a Binance outage does not erase the
         // whale feed. This is observational market data only.
+        whaleSourceHealth.binance.errors++;
+        whaleSourceHealth.binance.http_status = res.status;
+        whaleSourceHealth.binance.message = `HTTP ${res.status}`;
+        whaleSourceHealth.bybit.requests++;
         const fallback = await bybitRecentTrades(symbol, 60);
+        whaleSourceHealth.bybit.state = "ok";
         for (const t of fallback) {
           const usd = Number(t.price) * Number(t.size);
           if (!Number.isFinite(usd) || usd < floor) continue;
@@ -657,8 +674,11 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
             raw: t as unknown as Record<string, unknown>,
           });
         }
-      } catch {
-        binanceFailCount++;
+      } catch (e) {
+        whaleSourceHealth.binance.errors++;
+        whaleSourceHealth.binance.message = e instanceof Error ? e.message : String(e);
+        whaleSourceHealth.bybit.errors++;
+        whaleSourceHealth.bybit.state = "error";
       }
       return out;
     },
@@ -666,6 +686,13 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
   );
 
   const rows = perCoinRows.flat();
+  whaleSourceHealth.binance.qualifying = rows.filter((r) => r.some((x) => x["source"] === "binance-agg-trades")).length;
+  whaleSourceHealth.bybit.qualifying = rows.filter((r) => r.some((x) => x["source"] === "bybit-recent-trades")).length;
+  if (whaleSourceHealth.binance.errors === 0 && whaleSourceHealth.binance.requests > 0) whaleSourceHealth.binance.state = "ok";
+  else if (whaleSourceHealth.binance.errors > 0 && whaleSourceHealth.binance.errors === whaleSourceHealth.binance.requests) whaleSourceHealth.binance.state = "error";
+  if (whaleSourceHealth.bybit.requests > 0 && whaleSourceHealth.bybit.errors === 0) whaleSourceHealth.bybit.state = "ok";
+  whaleSourceHealth.coinlobster.qualifying = rows.length;
+  whaleSourceHealth.coinlobster.state = rows.length ? "ok" : "empty";
   if (rows.length === 0) return 0;
   const { data, error } = await db.from("whale_alerts").upsert(rows as never, {
     onConflict: "source,tx_hash", ignoreDuplicates: true,
@@ -681,6 +708,7 @@ const COINLOBSTER_PRIORITY_COINS = ["BTC", "ETH", "SOL", "XRP", "DOGE"];
 
 export async function collectCoinLobsterWhales(): Promise<number> {
   const db = await admin();
+  whaleSourceHealth.coinlobster.requests++;
   const watchlist = await getActiveWatchlist();
   const filter = new Set(watchlist);
 
@@ -3735,6 +3763,7 @@ export async function runFullPipeline() {
 
     // ─── Whales ───
     step = "whales";
+    resetWhaleSourceHealth();
     const [hlWhales, exWhales, clWhales] = await Promise.all([
       collectWhaleAlerts(),
       collectExchangeWhaleAlerts(),
@@ -3750,16 +3779,20 @@ export async function runFullPipeline() {
         `open_positions=${watchlistCtx.pinned_open.size}`,
     );
 
-    if (whales === 0) {
+    const whaleHealth = whaleSourceSnapshot();
+    const allWhaleSourcesFailed = Object.values(whaleHealth).every((s) => s.state === "error");
+    if (allWhaleSourcesFailed) {
       health.whalesFailed = true;
       health.degraded = true;
-      health.degradedReasons.push("whales=0 (all sources failed)");
+      health.degradedReasons.push("all whale sources failed");
       await emitFeedAlert(
         db,
         "feed_error",
-        "CRITICAL: Whale collection returned 0 — Hyperliquid/Binance/CoinLobster all unavailable",
-        { symbol: null, tags: [] },
+        "CRITICAL: All whale sources failed",
+        { symbol: null, tags: [], details: whaleHealth },
       );
+    } else if (whales === 0) {
+      console.log("[WHALES_EMPTY] Sources responded, but no qualifying whale trade was found in this cycle.");
     }
 
     // ─── Indicators ───
@@ -3877,6 +3910,7 @@ export async function runFullPipeline() {
       ai_status: learning.status,
       ai_error: learning.error,
       ai_lessons_generated: learning.generated,
+      whale_health: whaleHealth,
     };
 
     const executionAuditPayload = {
