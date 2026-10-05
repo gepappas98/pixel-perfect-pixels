@@ -34,6 +34,36 @@ CREATE TABLE IF NOT EXISTS public.shadow_v2_positions (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS public.shadow_v2_audit (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  fingerprint text NOT NULL,
+  signal_id uuid NULL,
+  symbol text NOT NULL,
+  strategy text NOT NULL,
+  decision text NOT NULL CHECK (decision IN ('OPEN','SUPPRESSED')),
+  reason text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  details jsonb NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_shadow_v2_audit_symbol_created
+  ON public.shadow_v2_audit (symbol, created_at DESC);
+
+ALTER TABLE public.shadow_v2_audit ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS shadow_v2_audit_public_read ON public.shadow_v2_audit;
+CREATE POLICY shadow_v2_audit_public_read
+  ON public.shadow_v2_audit
+  FOR SELECT
+  TO anon, authenticated
+  USING (true);
+
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
+  ON public.shadow_v2_audit
+  FROM anon, authenticated;
+
+GRANT SELECT ON public.shadow_v2_audit TO anon, authenticated;
+
 CREATE INDEX IF NOT EXISTS idx_shadow_v2_open_symbol
   ON public.shadow_v2_positions (symbol, status)
   WHERE status = 'OPEN';
