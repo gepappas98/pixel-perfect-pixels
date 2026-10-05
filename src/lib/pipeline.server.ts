@@ -573,6 +573,10 @@ export async function collectWhaleAlerts(): Promise<number> {
   );
 
   const rows = perCoinRows.flat();
+  whaleSourceHealth.hyperliquid.qualifying = rows.length;
+  whaleSourceHealth.hyperliquid.state =
+    whaleSourceHealth.hyperliquid.errors === 0 ? (rows.length ? "ok" : "empty") :
+    whaleSourceHealth.hyperliquid.requests > whaleSourceHealth.hyperliquid.errors ? "ok" : "error";
   if (rows.length === 0) return 0;
 
   // Hot whale queue feeding
@@ -683,13 +687,11 @@ export async function collectExchangeWhaleAlerts(): Promise<number> {
   );
 
   const rows = perCoinRows.flat();
-  whaleSourceHealth.binance.qualifying = rows.filter((r) => r.some((x) => x["source"] === "binance-agg-trades")).length;
-  whaleSourceHealth.bybit.qualifying = rows.filter((r) => r.some((x) => x["source"] === "bybit-recent-trades")).length;
+  whaleSourceHealth.binance.qualifying = rows.filter((r) => r["source"] === "binance-agg-trades").length;
+  whaleSourceHealth.bybit.qualifying = rows.filter((r) => r["source"] === "bybit-recent-trades").length;
   if (whaleSourceHealth.binance.errors === 0 && whaleSourceHealth.binance.requests > 0) whaleSourceHealth.binance.state = "ok";
   else if (whaleSourceHealth.binance.errors > 0 && whaleSourceHealth.binance.errors === whaleSourceHealth.binance.requests) whaleSourceHealth.binance.state = "error";
   if (whaleSourceHealth.bybit.requests > 0 && whaleSourceHealth.bybit.errors === 0) whaleSourceHealth.bybit.state = "ok";
-  whaleSourceHealth.coinlobster.qualifying = rows.length;
-  whaleSourceHealth.coinlobster.state = rows.length ? "ok" : "empty";
   if (rows.length === 0) return 0;
   const { data, error } = await db.from("whale_alerts").upsert(rows as never, {
     onConflict: "source,tx_hash", ignoreDuplicates: true,
