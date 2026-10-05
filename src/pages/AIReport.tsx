@@ -11,8 +11,10 @@ const pnl = (r: Row) => Number(r.net_pnl ?? r.gross_pnl ?? r.pnl ?? 0);
  * EXECUTION HEALTH DIAGNOSTIC TYPES
  * ============================================================ */
 
+type ExecutionStatus = "ok" | "warning" | "critical";
+
 type ExecutionHealth = {
-  status: "ok" | "warning" | "critical";
+  status: ExecutionStatus;
   buy_signals: number;
   eligible_buy_signals: number;
   risk_candidates: number | null;
@@ -24,8 +26,22 @@ type ExecutionHealth = {
   issue: string | null;
 };
 
+type Anomaly = {
+  severity: "info" | "warning" | "critical";
+  code: string;
+  title: string;
+  description: string;
+};
+
+type SuggestedAction = {
+  priority: string;
+  action: string;
+  reason: string;
+  evidence: string[];
+};
+
 const EXECUTION_WINDOW_HOURS = 24;
-const EXECUTION_CONFIDENCE_THRESHOLD = 0.60;
+const EXECUTION_CONFIDENCE_THRESHOLD = 0.6;
 
 export default function AIReport() {
   const [report, setReport] = useState<DiagnosticReportLike | null>(null);
@@ -60,7 +76,7 @@ export default function AIReport() {
           .limit(2000),
         supabase
           .from("pipeline_runs")
-          .select("created_at, step, message, run_id")
+          .select("created_at, error_message, status")
           .eq("status", "error")
           .gte("created_at", since)
           .order("created_at", { ascending: false })
@@ -82,16 +98,21 @@ export default function AIReport() {
       const unrealized = openTrades.reduce((s, r) => s + pnl(r), 0);
       const grossLoss = Math.abs(losses.reduce((s, r) => s + pnl(r), 0));
 
-      const bySymbol = new Map<string, { symbol: string; open: number; resolved: number; total: number }>();
+      const bySymbol = new Map<
+        string,
+        { symbol: string; open: number; resolved: number; total: number }
+      >();
       for (const row of variantRows) {
         const symbol = String(row.symbol ?? "unknown");
-        const item = bySymbol.get(symbol) ?? { symbol, open: 0, resolved: 0, total: 0 };
+        const item =
+          bySymbol.get(symbol) ?? { symbol, open: 0, resolved: 0, total: 0 };
         item.total++;
-        row.outcome === "open" ? item.open++ : item.resolved++;
+        if (row.outcome === "open") item.open++;
+        else item.resolved++;
         bySymbol.set(symbol, item);
       }
 
-      const issues = pipelineErrors.length
+      const issues: string[] = pipelineErrors.length
         ? [`${pipelineErrors.length} pipeline errors in the last 24 hours`]
         : [];
 
@@ -112,10 +133,13 @@ export default function AIReport() {
         .order("created_at", { ascending: false });
 
       if (signalsError) {
-        console.warn("[AI_DIAGNOSTIC] execution signal query failed:", signalsError.message);
+        console.warn(
+          "[AI_DIAGNOSTIC] execution signal query failed:",
+          signalsError.message,
+        );
       }
 
-      const buySignals = recentSignals ?? [];
+      const buySignals = (recentSignals ?? []) as Row[];
       const eligibleBuySignals = buySignals.filter(
         (s) => Number(s.confidence ?? 0) >= EXECUTION_CONFIDENCE_THRESHOLD,
       );
@@ -129,24 +153,34 @@ export default function AIReport() {
         .limit(200);
 
       if (runsError) {
-        console.warn("[AI_DIAGNOSTIC] pipeline run query failed:", runsError.message);
+        console.warn(
+          "[AI_DIAGNOSTIC] pipeline run query failed:",
+          runsError.message,
+        );
       }
 
-      const runs = recentRuns ?? [];
+      const runs = (recentRuns ?? []) as Row[];
 
       const auditedRuns = runs.filter(
         (run) =>
           run.result &&
           typeof run.result === "object" &&
-          (run.result as any).execution_audit,
+          (run.result as Record<string, unknown>)["execution_audit"],
       );
 
       const executionAudits = auditedRuns
-        .map((run) => ({ run, audit: (run.result as any).execution_audit }))
+        .map((run) => ({
+          run,
+          audit: (run.result as Record<string, unknown>)["execution_audit"] as
+            | Record<string, unknown>
+            | undefined,
+        }))
         .filter((x) => x.audit);
 
       const executionAuditCoveragePct =
-        runs.length > 0 ? Math.round((auditedRuns.length / runs.length) * 100) : 100;
+        runs.length > 0
+          ? Math.round((auditedRuns.length / runs.length) * 100)
+          : 100;
 
       // 3. Aggregate audit information
       let riskCandidates = 0;
@@ -155,11 +189,11 @@ export default function AIReport() {
       let openedFromAudit = 0;
 
       for (const { audit } of executionAudits) {
-        const summary = audit?.summary ?? {};
-        riskCandidates += Number(summary.risk_candidates ?? 0);
-        aiRiskAllowed += Number(summary.ai_risk_allowed ?? 0);
-        aiRiskBlocked += Number(summary.ai_risk_blocked ?? 0);
-        openedFromAudit += Number(summary.opened ?? 0);
+        const summary = (audit?.["summary"] ?? {}) as Record<string, unknown>;
+        riskCandidates += Number(summary["risk_candidates"] ?? 0);
+        aiRiskAllowed += Number(summary["ai_risk_allowed"] ?? 0);
+        aiRiskBlocked += Number(summary["ai_risk_blocked"] ?? 0);
+        openedFromAudit += Number(summary["opened"] ?? 0);
       }
 
       // 4. Real trades opened in same period
@@ -172,12 +206,12 @@ export default function AIReport() {
         console.warn("[AI_DIAGNOSTIC] trade query failed:", tradesError.message);
       }
 
-      const openedTrades = (recentTrades ?? []).filter(
+      const openedTrades = ((recentTrades ?? []) as Row[]).filter(
         (trade) => trade.status === "open" || trade.opened_at != null,
       ).length;
 
       // 5. Determine execution health
-      let executionStatus: ExecutionHealth["status"] = "ok";
+      let executionStatus: ExecutionStatus = "ok";
       let executionIssue: string | null = null;
 
       if (eligibleBuySignals.length > 0 && executionAuditCoveragePct < 100) {
@@ -192,7 +226,11 @@ export default function AIReport() {
         executionStatus = "warning";
         executionIssue =
           "Eligible BUY signals exist but no paper trade was opened. Check AI Risk, execution gates and trade INSERT.";
-      } else if (aiRiskAllowed > 0 && openedTrades === 0 && openedFromAudit === 0) {
+      } else if (
+        aiRiskAllowed > 0 &&
+        openedTrades === 0 &&
+        openedFromAudit === 0
+      ) {
         executionStatus = "critical";
         executionIssue =
           "AI Risk allowed one or more signals but execution opened zero trades.";
@@ -212,25 +250,29 @@ export default function AIReport() {
         issue: executionIssue,
       };
 
-      console.log("[AI_DIAGNOSTIC_EXECUTION]", JSON.stringify(executionHealth));
+      console.log(
+        "[AI_DIAGNOSTIC_EXECUTION]",
+        JSON.stringify(executionHealth),
+      );
 
       /* ============================================================
        * OVERALL HEALTH (με execution subsystem)
        * ============================================================ */
 
-      const databaseStatus: "ok" | "warning" | "critical" = "ok";
-      const pipelineStatus: "ok" | "warning" | "critical" = issues.length
-        ? "warning"
-        : "ok";
+      const databaseStatus: ExecutionStatus = "ok";
+      const pipelineStatus: ExecutionStatus = issues.length ? "warning" : "ok";
 
-      const subsystemStatuses = [databaseStatus, pipelineStatus, executionHealth.status];
+      const subsystemStatuses: ExecutionStatus[] = [
+        databaseStatus,
+        pipelineStatus,
+        executionHealth.status,
+      ];
 
-      const overall =
-        subsystemStatuses.includes("critical")
-          ? "critical"
-          : subsystemStatuses.includes("warning")
-            ? "warning"
-            : "ok";
+      const overall: ExecutionStatus = subsystemStatuses.includes("critical")
+        ? "critical"
+        : subsystemStatuses.includes("warning")
+          ? "warning"
+          : "ok";
 
       const overallScore =
         overall === "critical" ? 40 : overall === "warning" ? 70 : 100;
@@ -239,12 +281,7 @@ export default function AIReport() {
        * ANOMALIES
        * ============================================================ */
 
-      const anomalies: Array<{
-        severity: "info" | "warning" | "critical";
-        code: string;
-        title: string;
-        description: string;
-      }> = [];
+      const anomalies: Anomaly[] = [];
 
       if (executionHealth.status === "critical") {
         anomalies.push({
@@ -252,7 +289,8 @@ export default function AIReport() {
           code: "EXECUTION_AUDIT_OR_EXECUTION_FAILURE",
           title: "Execution path requires investigation",
           description:
-            executionHealth.issue ?? "Execution diagnostics detected an inconsistency.",
+            executionHealth.issue ??
+            "Execution diagnostics detected an inconsistency.",
         });
       }
 
@@ -269,10 +307,48 @@ export default function AIReport() {
       }
 
       /* ============================================================
+       * SUGGESTED ACTIONS
+       * ============================================================ */
+
+      const suggestedActions: SuggestedAction[] = [];
+
+      for (const issue of issues) {
+        suggestedActions.push({
+          priority: "P0",
+          action: "Review pipeline errors",
+          reason: issue,
+          evidence: pipelineErrors
+            .slice(0, 3)
+            .map((r) =>
+              String(
+                (r as Record<string, unknown>)["error_message"] ??
+                  (r as Record<string, unknown>)["status"] ??
+                  "error",
+              ),
+            ),
+        });
+      }
+
+      if (executionHealth.status !== "ok") {
+        suggestedActions.push({
+          priority: executionHealth.status === "critical" ? "P0" : "P1",
+          action: "Inspect execution audit",
+          reason:
+            executionHealth.issue ??
+            "Execution diagnostics flagged an issue.",
+          evidence: [
+            `eligible=${executionHealth.eligible_buy_signals}`,
+            `opened=${executionHealth.opened_trades}`,
+            `audit_coverage=${executionHealth.execution_audit_coverage_pct}%`,
+          ],
+        });
+      }
+
+      /* ============================================================
        * BUILD REPORT
        * ============================================================ */
 
-      const report: DiagnosticReportLike = {
+      const reportRecord: Record<string, unknown> = {
         schema_version: "1.1",
         generated_at: new Date().toISOString(),
         duration_ms: Date.now() - started,
@@ -349,13 +425,16 @@ export default function AIReport() {
               ? +((wins.length / closedTrades.length) * 100).toFixed(2)
               : 0,
             profit_factor: grossLoss
-              ? +(wins.reduce((s, r) => s + pnl(r), 0) / grossLoss).toFixed(3)
+              ? +(
+                  wins.reduce((s, r) => s + pnl(r), 0) / grossLoss
+                ).toFixed(3)
               : null,
           },
           variants: {
             open_count: variantRows.filter((r) => r.outcome === "open").length,
             total_count: variants.count ?? variantRows.length,
-            resolved_count: variantRows.filter((r) => r.outcome !== "open").length,
+            resolved_count: variantRows.filter((r) => r.outcome !== "open")
+              .length,
             by_symbol_top: [...bySymbol.values()]
               .sort((a, b) => b.total - a.total)
               .slice(0, 20),
@@ -364,14 +443,7 @@ export default function AIReport() {
           symbols: { watched: [], blacklisted: [], with_live_price: [] },
         },
 
-        suggested_actions: issues.map((issue) => ({
-          priority: "P0",
-          action: "Review pipeline errors",
-          reason: issue,
-          evidence: pipelineErrors
-            .slice(0, 3)
-            .map((r) => String(r.message ?? r.step ?? "error")),
-        })),
+        suggested_actions: suggestedActions,
 
         narrative_md: "",
 
@@ -403,7 +475,7 @@ recommend inspecting the execution audit.
 `,
       };
 
-      setReport(report);
+      setReport(reportRecord as unknown as DiagnosticReportLike);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -415,66 +487,108 @@ recommend inspecting the execution audit.
     void load();
   }, [load]);
 
+  const handleDownload = useCallback(() => {
+    if (!report) return;
+    try {
+      exportTxtReport(report);
+    } catch (e) {
+      console.error("[AIReport] exportTxtReport failed:", e);
+    }
+  }, [report]);
+
   return (
-    <>
-      Trading Command Center
+    <div className="mx-auto max-w-5xl space-y-6 p-6">
+      <header className="space-y-2">
+        <h1 className="text-2xl font-semibold">Trading Command Center</h1>
+        <h2 className="text-xl font-medium">AI diagnostic report</h2>
+        <p className="text-sm text-muted-foreground">
+          Operational snapshot with portfolio, variants, errors, and raw JSON.
+        </p>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => void load()}
+            disabled={loading}
+            className="rounded border px-3 py-1 text-sm"
+          >
+            {loading ? "Refreshing…" : "Refresh"}
+          </button>
+          <button
+            type="button"
+            onClick={handleDownload}
+            disabled={!report}
+            className="rounded border px-3 py-1 text-sm"
+          >
+            Download .txt
+          </button>
+        </div>
+      </header>
 
-      # AI diagnostic report
-
-      Operational snapshot with portfolio, variants, errors, and raw JSON.
-
-      void load()} disabled={loading}>
-        {loading ? "Refreshing…" : "Refresh"}
-      report && exportTxtReport(report)} disabled={!report}>
-        Download .txt
-
-      {error &&
-
+      {error && (
+        <div className="rounded border border-red-500 bg-red-50 p-3 text-sm text-red-800">
           Unable to load report: {error}
+        </div>
+      )}
 
-      }
-      {loading && !report &&
-
+      {loading && !report && (
+        <div className="text-sm text-muted-foreground">
           Loading diagnostic data…
+        </div>
+      )}
 
-      }
       {report && (
         <>
-          {[
-            ["Health", report.health?.overall],
-            ["Score", `${report.health?.score ?? 0}/100`],
-            ["Open trades", report.data?.trades?.open_count ?? 0],
-            ["Realized PnL", `$${report.data?.portfolio?.["realized_pnl"] ?? 0}`],
-          ].map(([label, value]) => (
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+            {(
+              [
+                ["Health", report.health?.overall],
+                ["Score", `${report.health?.score ?? 0}/100`],
+                ["Open trades", report.data?.trades?.open_count ?? 0],
+                [
+                  "Realized PnL",
+                  `$${report.data?.portfolio?.["realized_pnl"] ?? 0}`,
+                ],
+              ] as const
+            ).map(([label, value]) => (
+              <div key={label} className="rounded border p-3">
+                <div className="text-xs text-muted-foreground">{label}</div>
+                <div className="text-lg font-semibold">{String(value)}</div>
+              </div>
+            ))}
+          </div>
 
-              {label}
+          <section className="space-y-2">
+            <h3 className="text-lg font-medium">System findings</h3>
+            {report.health?.issues?.length ? (
+              <ul className="list-disc pl-5 text-sm">
+                {report.health.issues.map((issue: string, i: number) => (
+                  <li key={i}>{issue}</li>
+                ))}
+              </ul>
+            ) : (
+              <ul className="list-disc pl-5 text-sm text-muted-foreground">
+                <li>No current issues detected.</li>
+              </ul>
+            )}
+          </section>
 
-              {value}
-
-          ))}
-
-          ## System findings
-
-          {report.health?.issues?.length ? (
-            report.health.issues.map((issue) => (
-              * {issue}
-            ))
-          ) : (
-            
-              * No current issues detected.
-            
-          )}
-
-          ## AI context
-
+          <section className="space-y-2">
+            <h3 className="text-lg font-medium">AI context</h3>
+            <pre className="whitespace-pre-wrap rounded border bg-muted/30 p-3 text-xs">
               {report.ai_context}
+            </pre>
+          </section>
 
-          View full JSON report
-
+          <details className="rounded border p-3">
+            <summary className="cursor-pointer text-sm font-medium">
+              View full JSON report
+            </summary>
+            <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap text-xs">
               {JSON.stringify(report, null, 2)}
-
+            </pre>
+          </details>
         </>
       )}
-    </>
+    </div>
   );
 }
