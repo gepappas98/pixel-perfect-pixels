@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { exportTxtReport, type DiagnosticReportLike } from "@/lib/export-txt";
 
@@ -45,22 +45,193 @@ type SuggestedAction = {
   evidence: string[];
 };
 
+type NewBuyAlert = {
+  id: string;
+  symbol: string;
+  confidence: number;
+  created_at: string;
+};
+
 /**
  * Must match executeTrades() executable-signal window.
  * 15 minutes = 0.25 hours.
- *
- * Do NOT set this to 24h — the execution pipeline only audits signals
- * from the last 15 minutes, so comparing against a 24h window will
- * always produce a false coverage=0%.
  */
 const EXECUTION_WINDOW_HOURS = 0.25;
 const EXECUTION_CONFIDENCE_THRESHOLD = 0.6;
+
+/* ============================================================
+ * SOUND ALERT CONFIG
+ * ============================================================ */
+
+const SEEN_BUY_IDS_KEY = "ai_report_seen_buy_signal_ids_v1";
+const SOUND_ENABLED_KEY = "ai_report_sound_enabled_v1";
+const POLL_INTERVAL_MS = 60_000;
+const MAX_SEEN_IDS = 500;
+
+function loadSeenBuyIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(SEEN_BUY_IDS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(
+      parsed.filter((x): x is string => typeof x === "string"),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function saveSeenBuyIds(ids: Set<string>): void {
+  try {
+    // Keep only the most recent N to avoid unbounded growth.
+    const arr = [...ids].slice(-MAX_SEEN_IDS);
+    localStorage.setItem(SEEN_BUY_IDS_KEY, JSON.stringify(arr));
+  } catch {
+    // Ignore quota / private-mode errors.
+  }
+}
+
+function loadSoundEnabled(): boolean {
+  try {
+    return localStorage.getItem(SOUND_ENABLED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function saveSoundEnabled(value: boolean): void {
+  try {
+    localStorage.setItem(SOUND_ENABLED_KEY, value ? "true" : "false");
+  } catch {
+    // ignore
+  }
+}
 
 export default function AIReport() {
   const [report, setReport] = useState<DiagnosticReportLike | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
 
+  // ── Sound alert state ──
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(() =>
+    loadSoundEnabled(),
+  );
+  const [newBuys, setNewBuys] = useState<NewBuyAlert[]>([]);
+
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const seenBuyIdsRef = useRef<Set<string>>(loadSeenBuyIds());
+  const primedRef = useRef<boolean>(false);
+  const soundEnabledRef = useRef<boolean>(soundEnabled);
+
+  useEffect(() => {
+    soundEnabledRef.current = soundEnabled;
+  }, [soundEnabled]);
+
+  /* ============================================================
+   * SOUND PLAYBACK — Web Audio API beep
+   * Two-tone chime: 880 Hz then 1320 Hz.
+   * ============================================================ */
+  const playBuyAlert = useCallback(() => {
+    try {
+      const Ctor =
+        window.AudioContext ??
+        (window as unknown as { webkitAudioContext?: typeof AudioContext })
+          .webkitAudioContext;
+      if (!Ctor) {
+        console.warn("[AIReport] AudioContext not supported");
+        return;
+      }
+
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new Ctor();
+      }
+      const ctx = audioCtxRef.current;
+      if (ctx.state === "suspended") {
+        void ctx.resume();
+      }
+
+      const playTone = (freq: number, start: number, duration: number) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        const t0 = ctx.currentTime + start;
+        gain.gain.setValueAtTime(0.0001, t0);
+        gain.gain.exponentialRampToValueAtTime(0.25, t0 + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+
+        osc.start(t0);
+        osc.stop(t0 + duration + 0.05);
+      };
+
+      playTone(880, 0, 0.18);
+      playTone(1320, 0.20, 0.32);
+    } catch (e) {
+      console.warn("[AIReport] sound playback failed:", e);
+    }
+  }, []);
+
+  /* ============================================================
+   * SOUND TOGGLE — must run inside a user gesture to unlock AudioContext
+   * ============================================================ */
+  const handleToggleSound = useCallback(() => {
+    setSoundEnabled((prev) => {
+      const next = !prev;
+
+      // Create / unlock AudioContext synchronously inside the click handler.
+      if (next) {
+        try {
+          const Ctor =
+            window.AudioContext ??
+            (window as unknown as { webkitAudioContext?: typeof AudioContext })
+              .webkitAudioContext;
+          if (Ctor) {
+            if (!audioCtxRef.current) audioCtxRef.current = new Ctor();
+            if (audioCtxRef.current.state === "suspended") {
+              void audioCtxRef.current.resume();
+            }
+            // Short confirmation beep so the user knows it's ON.
+            const ctx = audioCtxRef.current;
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = "sine";
+            osc.frequency.value = 660;
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.02);
+            gain.gain.exponentialRampToValueAtTime(
+              0.0001,
+              ctx.currentTime + 0.15,
+            );
+            osc.start(ctx.currentTime);
+            osc.stop(ctx.currentTime + 0.2);
+          }
+        } catch (e) {
+          console.warn("[AIReport] AudioContext unlock failed:", e);
+        }
+      }
+
+      saveSoundEnabled(next);
+      return next;
+    });
+  }, []);
+
+  /* ============================================================
+   * DISMISS BANNER
+   * ============================================================ */
+  const dismissNewBuys = useCallback(() => {
+    setNewBuys([]);
+  }, []);
+
+  /* ============================================================
+   * MAIN LOAD
+   * ============================================================ */
   const load = useCallback(async () => {
     const started = Date.now();
     setLoading(true);
@@ -137,7 +308,7 @@ export default function AIReport() {
         Date.now() - EXECUTION_WINDOW_HOURS * 60 * 60 * 1000,
       ).toISOString();
 
-      // ── 1. BUY signals (raw, unfiltered by grace period) ─────
+      // ── 1. BUY signals in window ──────────────────────────────
       const { data: recentSignals, error: signalsError } = await supabase
         .from("composite_signals")
         .select("id,symbol,recommendation,confidence,created_at")
@@ -188,9 +359,6 @@ export default function AIReport() {
         .filter((x) => x.audit);
 
       // ── 3. Grace period: latest audit run timestamp ──────────
-      //        Signals created AFTER the latest audit run could
-      //        not have been audited yet. Counting them would
-      //        produce a false coverage < 100%.
       const latestAuditStartedAt = auditedRuns.reduce((max, run) => {
         const t = new Date(String(run.started_at ?? 0)).getTime();
         return Number.isFinite(t) && t > max ? t : max;
@@ -207,6 +375,57 @@ export default function AIReport() {
         }
         return true;
       });
+
+      /* ============================================================
+       * NEW BUY DETECTION + SOUND ALERT
+       *
+       * On the very first load after mount we prime the seen-set
+       * with all current IDs (no sound). On subsequent loads we
+       * alert only for IDs we have never seen before.
+       * ============================================================ */
+      const seenIds = seenBuyIdsRef.current;
+      const currentIds = new Set(
+        eligibleBuySignals.map((s) => String(s.id ?? "")).filter(Boolean),
+      );
+
+      if (!primedRef.current) {
+        for (const id of currentIds) seenIds.add(id);
+        saveSeenBuyIds(seenIds);
+        primedRef.current = true;
+      } else {
+        const newlyEligible = eligibleBuySignals.filter(
+          (s) => !seenIds.has(String(s.id ?? "")),
+        );
+
+        if (newlyEligible.length > 0) {
+          const alerts: NewBuyAlert[] = newlyEligible.map((s) => ({
+            id: String(s.id ?? ""),
+            symbol: String(s.symbol ?? "UNKNOWN"),
+            confidence: Number(s.confidence ?? 0),
+            created_at: String(s.created_at ?? ""),
+          }));
+
+          console.log(
+            "[AIReport] NEW ELIGIBLE BUY:",
+            alerts.map((a) => `${a.symbol}@${a.confidence.toFixed(3)}`).join(", "),
+          );
+
+          setNewBuys((prev) => {
+            // Merge with any existing undismissed alerts, dedupe by id.
+            const merged = new Map<string, NewBuyAlert>();
+            for (const b of prev) merged.set(b.id, b);
+            for (const b of alerts) merged.set(b.id, b);
+            return [...merged.values()];
+          });
+
+          if (soundEnabledRef.current) {
+            playBuyAlert();
+          }
+        }
+
+        for (const id of currentIds) seenIds.add(id);
+        saveSeenBuyIds(seenIds);
+      }
 
       // ── 5. Extract signal IDs + aggregate audit events ───────
       const auditedSignalIds = new Set<string>();
@@ -239,9 +458,6 @@ export default function AIReport() {
 
           if (isSeed) {
             seedEvents++;
-            // Seed events exist only to guarantee signal_id presence
-            // in the audit trail. They are NOT real candidate accepts,
-            // so they must not inflate riskCandidates.
             continue;
           }
 
@@ -609,36 +825,56 @@ Execution issue:
 ${executionHealth.issue ?? "none"}
 
 Interpretation rules:
-- Coverage is SIGNAL-LEVEL, not run-level. It measures how many
-  eligible BUY signals appear inside execution_audit.events[].signal_id.
-- The window is 15 minutes to match executeTrades(). Do not compare
-  against 24h — the audit only covers the executable window.
-- Seed events (details.audit_seed === true) are diagnostic markers
-  that guarantee signal_id presence in the audit trail even when
-  circuit-breaker or global-risk cooldowns short-circuit execution.
-  They are NOT real candidate accepts and must not be interpreted
-  as trades that were about to open.
+- Coverage is SIGNAL-LEVEL, not run-level.
+- The window is 15 minutes to match executeTrades().
+- Seed events (details.audit_seed === true) are diagnostic markers,
+  NOT real candidate accepts.
 - If coverage < 100% while eligible_buy_signals > 0, the execution
   pipeline is losing signals between composite_signals INSERT and
-  executeTrades(). This is a critical observability failure regardless
-  of how many runs wrote an audit row.
+  executeTrades(). This is a critical observability failure.
 - Do NOT report the system as fully healthy merely because the pipeline
-  and database are operational. If eligible BUY signals exist but zero
-  trades opened, explicitly identify this as an execution-path issue.
+  and database are operational.
 `,
       };
 
       setReport(reportRecord as unknown as DiagnosticReportLike);
+      setLastLoadedAt(new Date());
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [playBuyAlert]);
 
+  /* ============================================================
+   * INITIAL LOAD + AUTO-POLL
+   * ============================================================ */
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      void load();
+    }, POLL_INTERVAL_MS);
+    return () => window.clearInterval(id);
+  }, [load]);
+
+  /* ============================================================
+   * CLEANUP AUDIOCONTEXT ON UNMOUNT
+   * ============================================================ */
+  useEffect(() => {
+    return () => {
+      try {
+        if (audioCtxRef.current) {
+          void audioCtxRef.current.close();
+          audioCtxRef.current = null;
+        }
+      } catch {
+        // ignore
+      }
+    };
+  }, []);
 
   const handleDownload = useCallback(() => {
     if (!report) return;
@@ -651,13 +887,48 @@ Interpretation rules:
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-6">
+      {/* ───────── New BUY alert banner ───────── */}
+      {newBuys.length > 0 && (
+        <div className="sticky top-0 z-50 rounded border-2 border-green-600 bg-green-50 p-4 shadow-lg">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1">
+              <div className="text-lg font-bold text-green-800">
+                🔔 New eligible BUY signal
+                {newBuys.length > 1 ? `s (${newBuys.length})` : ""}
+              </div>
+              <ul className="mt-2 space-y-1 text-sm text-green-900">
+                {newBuys.map((b) => (
+                  <li key={b.id}>
+                    <span className="font-mono font-semibold">{b.symbol}</span>{" "}
+                    — confidence {(b.confidence * 100).toFixed(1)}%
+                    {b.created_at && (
+                      <span className="ml-2 text-xs text-green-700">
+                        ({new Date(b.created_at).toLocaleTimeString()})
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <button
+              type="button"
+              onClick={dismissNewBuys}
+              className="rounded border border-green-700 bg-white px-3 py-1 text-sm font-medium text-green-800 hover:bg-green-100"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
       <header className="space-y-2">
         <h1 className="text-2xl font-semibold">Trading Command Center</h1>
         <h2 className="text-xl font-medium">AI diagnostic report</h2>
         <p className="text-sm text-muted-foreground">
           Operational snapshot with portfolio, variants, errors, and raw JSON.
+          Auto-refresh every {POLL_INTERVAL_MS / 1000}s.
         </p>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => void load()}
@@ -674,6 +945,28 @@ Interpretation rules:
           >
             Download .txt
           </button>
+          <button
+            type="button"
+            onClick={handleToggleSound}
+            className={
+              "rounded border px-3 py-1 text-sm font-medium " +
+              (soundEnabled
+                ? "border-green-600 bg-green-50 text-green-800"
+                : "border-gray-300 bg-white text-gray-700")
+            }
+            title={
+              soundEnabled
+                ? "Sound is ON — you will hear a chime on new eligible BUY"
+                : "Sound is OFF — click to enable"
+            }
+          >
+            {soundEnabled ? "🔔 Sound: ON" : "🔕 Sound: OFF"}
+          </button>
+          {lastLoadedAt && (
+            <span className="text-xs text-muted-foreground">
+              Last update: {lastLoadedAt.toLocaleTimeString()}
+            </span>
+          )}
         </div>
       </header>
 
