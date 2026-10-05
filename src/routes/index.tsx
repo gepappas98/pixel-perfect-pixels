@@ -18,6 +18,7 @@ import { CronHealthPanel } from "@/components/trading/CronHealthPanel";
 import { SystemResourcesPanel } from "@/components/trading/SystemResourcesPanel";
 import { AIRiskSummary } from "@/components/trading/AIRiskSummary";
 import { PortfolioPanel } from "@/components/trading/PortfolioPanel";
+import { RiskPanel } from "@/components/trading/RiskPanel";
 import { SupportDeveloper } from "@/components/trading/SupportDeveloper";
 import { GroqStatusIndicator } from "@/components/trading/GroqStatusIndicator";
 import { DiagnosticButton } from "@/components/trading/DiagnosticButton";
@@ -304,9 +305,16 @@ function CommandCenter() {
             >
               {status?.mode ?? "paper"} mode
             </span>
-            <ScheduleControl />
-            <DiagnosticButton />
-            <ResetButton />
+  <ScheduleControl />
+  <DiagnosticButton />
+  <Link
+    to="/ai-report"
+    className="rounded-md border border-border bg-muted px-3 py-1.5 font-mono text-xs font-semibold text-muted-foreground transition hover:bg-muted/70 hover:text-foreground"
+    title="Full AI Diagnostic Report & Health Status"
+  >
+    📊 AI Report
+  </Link>
+  <ResetButton />
             <RunPipelineButton />
           </div>
         </div>
@@ -324,8 +332,9 @@ function CommandCenter() {
         <StrategyPanel />
         <LessonsPanel />
         <VariantComparisonPanel />
-        <AIRiskSummary />
-        <CronHealthPanel />
+  <AIRiskSummary />
+  <RiskPanel />
+  <CronHealthPanel />
         <SystemResourcesPanel />
         <PortfolioPanel />
         <div className="lg:col-span-3">
@@ -342,10 +351,16 @@ function CommandCenter() {
             <Link
               to="/about"
               className="inline-flex items-center gap-2 rounded-md border border-accent/40 bg-accent/10 px-4 py-2 text-xs font-semibold text-accent transition hover:bg-accent/20"
-            >
-              📖 What is this? How does it work?
-            </Link>
-            <p className="text-[11px] text-muted-foreground">
+  >
+  📖 What is this? How does it work?
+  </Link>
+  <Link
+    to="/ai-report"
+    className="inline-flex items-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-4 py-2 text-xs font-semibold text-primary transition hover:bg-primary/20"
+  >
+    📊 System & AI Diagnostic Report
+  </Link>
+  <p className="text-[11px] text-muted-foreground">
               Interested in this tool?{" "}
               <a
                 href="mailto:gepappas98@gmail.com?subject=Interested%20in%20the%20Trading%20Command%20Center"
