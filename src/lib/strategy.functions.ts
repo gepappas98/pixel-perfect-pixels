@@ -372,7 +372,7 @@ async function fetchVariantPerformance(
     const { supabaseAdmin: db } = await import(
       "@/integrations/supabase/client.server"
     );
-    const { data, error } = await (db.rpc as any)("get_variant_performance", {
+    const { data, error } = await (db.rpc as any)("get_shadow_v2_performance", {
       days,
     });
     if (error) throw error;
