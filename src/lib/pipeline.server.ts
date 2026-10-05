@@ -1638,12 +1638,12 @@ async function runShadowV2Observer(variantRows: Record<string, unknown>[]): Prom
         status: String(row["status"]).toUpperCase() === "CLOSED" ? "CLOSED" : "OPEN",
         exitTimestamp: row["exit_timestamp"] ? String(row["exit_timestamp"]) : null,
         exitPrice: row["exit_price"] == null ? null : Number(row["exit_price"]),
-        exitReason:
-          row["exit_reason"] === "TP" ||
-          row["exit_reason"] === "SL" ||
-          row["exit_reason"] === "EXPIRED"
-            ? row["exit_reason"]
-            : null,
+        exitReason: (() => {
+          const reason = String(row["exit_reason"] ?? "");
+          return reason === "TP" || reason === "SL" || reason === "EXPIRED"
+            ? (reason as ShadowV2Position["exitReason"])
+            : null;
+        })(),
         grossPnlUsd: Number(row["gross_pnl_usd"] ?? 0),
         entryFeeUsd: Number(row["entry_fee_usd"] ?? 0),
         exitFeeUsd: Number(row["exit_fee_usd"] ?? 0),
