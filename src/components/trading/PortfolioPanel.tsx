@@ -213,7 +213,7 @@ function normalizeSummary(raw: unknown): PortfolioSummary {
     out[k] = n;
   }
   for (const k of NULLABLE_KEYS) out[k] = toNum(r[k]);
-  out.open_symbols = Array.isArray(r.open_symbols) ? (r.open_symbols as unknown[]).map(String) : [];
+  out["open_symbols"] = Array.isArray(r["open_symbols"]) ? (r["open_symbols"] as unknown[]).map(String) : [];
   return out as unknown as PortfolioSummary;
 }
 
