@@ -58,6 +58,14 @@ export interface CompositeSignal {
   recommendation: "buy" | "sell" | "hold" | "watch";
   reasoning: string | null;
   created_at: string;
+  entry_state?: "WATCH" | "ENTRY_READY" | "INVALIDATED" | null;
+  entry_trigger?: string | null;
+  entry_min?: number | null;
+  entry_max?: number | null;
+  stop_loss?: number | null;
+  take_profit_1?: number | null;
+  take_profit_2?: number | null;
+  position_multiplier?: number | null;
 }
 
 export interface Trade {

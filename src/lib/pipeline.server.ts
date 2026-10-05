@@ -1681,7 +1681,7 @@ export async function combineSignals(): Promise<number> {
     const council = (latestCouncil.get(symbol) ?? null) as Row;
     if (!whale && !mtfRaw.primary && !prediction && !council) continue;
 
-    // 1. Υπολογισμός 4h Asset Shadow Regime για το συγκεκριμένο asset
+    // 1. Υπολογι��μός 4h Asset Shadow Regime για το συγκεκριμένο asset
     const assetMicroRegime = computeAssetRegime(mtfRaw.primary);
 
     // Hot-whale aggregated direction override
@@ -2509,6 +2509,14 @@ export async function executeTrades(opts?: {
     created_at?: string | null;
     reasoning?: string | null;
     regime_label?: string | null;
+    entry_state?: "WATCH" | "ENTRY_READY" | "INVALIDATED" | null;
+    entry_trigger?: string | null;
+    entry_min?: number | null;
+    entry_max?: number | null;
+    stop_loss?: number | null;
+    take_profit_1?: number | null;
+    take_profit_2?: number | null;
+    position_multiplier?: number | null;
   };
   const executionSignals = (signalsRes.data ?? []) as ExecutionSignal[];
   const parseAIRiskAnnotation = (reasoning: string | null | undefined): AIRiskDecision | null => {
@@ -2573,6 +2581,19 @@ export async function executeTrades(opts?: {
     if (Number.isFinite(signalPrice) && signalPrice > 0 && Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT) continue;
 
   let side = signal.recommendation as "buy" | "sell";
+
+  if (signal.entry_state !== "ENTRY_READY") {
+    console.log(`[SPOT_ENTRY_GATE] skip ${signal.symbol}: ${signal.entry_state ?? "missing"}`);
+    continue;
+  }
+  if (signal.position_multiplier == null || signal.position_multiplier <= 0) {
+    console.log(`[SPOT_ENTRY_GATE] skip ${signal.symbol}: invalid position multiplier`);
+    continue;
+  }
+  if (mode === "live") {
+    console.warn(`[SPOT_ENTRY_GATE] live execution disabled during paper-only phase: ${signal.symbol}`);
+    continue;
+  }
 
   // Spot / paper survival: do not open short entries.
   if (side === "sell") {
@@ -2644,7 +2665,7 @@ export async function executeTrades(opts?: {
 
     const quantity = risk.quantity;
     let exchangeOrderId: string | null = null;
-    if (mode === "live") {
+  if (String(mode) === "live") {
       // Production Spot entries are BUY-only; SELL is an exit operation.
       if (side !== "buy") {
         console.warn(
@@ -2714,7 +2735,7 @@ export async function runFullPipeline() {
 
   let step = "init";
   try {
-    // ─── Watchlist resolution ───
+    // ──�� Watchlist resolution ───
     step = "watchlist-resolve";
     invalidateWatchlistCache();
     const watchlistCtx = await resolveWatchlistContext();
