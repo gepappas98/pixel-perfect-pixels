@@ -2550,6 +2550,65 @@ export async function executeTrades(opts?: {
 
   await closeTriggeredTrades();
 
+  /* ============================================================
+   * P0 EXECUTION AUDIT SEED
+   *
+   * MUST run before circuit-breaker / global-risk early returns.
+   * This guarantees every currently executable BUY signal receives
+   * a signal_id in execution_audit.events[] even when new entries
+   * are disabled by the circuit breaker or by a global-risk cooldown.
+   *
+   * Without this seed, executeTrades() returns before querying
+   * composite_signals, producing an empty execution_audit while
+   * eligible BUY signals exist — yielding a false coverage=0%
+   * reading in the AI Diagnostic.
+   *
+   * These seed events are marked with details.audit_seed === true so
+   * the AI Report can distinguish them from real candidate accepts.
+   * ============================================================ */
+  const auditWindowSince = new Date(
+    Date.now() - 15 * 60 * 1000,
+  ).toISOString();
+
+  const {
+    data: auditEligibleRows,
+    error: auditEligibleError,
+  } = await db
+    .from("composite_signals")
+    .select("id,symbol,recommendation,confidence,created_at,reasoning")
+    .eq("recommendation", "buy")
+    .gte("created_at", auditWindowSince)
+    .gte("confidence", MIN_CONFIDENCE)
+    .order("created_at", { ascending: false })
+    .limit(200);
+
+  if (auditEligibleError) {
+    console.error("[EXECUTION_AUDIT_SEED_FAILED]", auditEligibleError);
+  } else {
+    for (const row of (auditEligibleRows ?? []) as Array<
+      Record<string, unknown>
+    >) {
+      auditAccept(
+        String(row["symbol"] ?? "UNKNOWN"),
+        "CANDIDATE_FILTER",
+        "ELIGIBLE_BUY_AUDIT_ENTRY",
+        {
+          signalId: String(row["id"] ?? ""),
+          confidence: Number(row["confidence"] ?? 0),
+          details: {
+            recommendation: row["recommendation"],
+            confidence_threshold: MIN_CONFIDENCE,
+            audit_seed: true,
+          },
+        },
+      );
+    }
+
+    console.log(
+      `[EXECUTION_AUDIT_SEED] eligible=${auditEligibleRows?.length ?? 0} window=15m`,
+    );
+  }
+
   if (opts?.skipNewEntries) {
     console.warn("[CIRCUIT_BREAKER] skipNewEntries=true — closed-only mode");
 
