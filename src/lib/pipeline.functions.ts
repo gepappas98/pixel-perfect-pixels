@@ -79,8 +79,8 @@ export const getTradingStatus = createServerFn({ method: "GET" }).handler(
 export const getAiHealthStatus = createServerFn({ method: "GET" }).handler(
   async () => {
     try {
-      const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-      const { data, error } = await supabaseAdmin
+      const { supabase } = await import("@/integrations/supabase/client");
+      const { data, error } = await supabase
         .from("pipeline_runs")
         .select("ai_status, ai_error, ai_lessons_generated, completed_at, started_at")
         .not("ai_status", "is", null)
