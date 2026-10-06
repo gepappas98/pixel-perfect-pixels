@@ -28,11 +28,22 @@ function createSupabaseFetch(supabaseKey: string): typeof fetch {
 }
 
 
+const CANONICAL_SUPABASE_URL = 'https://yckewtpfttvwiptmmrfq.supabase.co';
+const CANONICAL_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_v0BSD7Eg6ze85nuYPRMJ6w_M_lwwXjx';
+
 function createSupabaseClient() {
-  // Use import.meta.env for client-side (Vite build-time replacement)
-  // Fall back to process.env for SSR (server-side rendering)
-  const SUPABASE_URL = import.meta.env['VITE_SUPABASE_URL'] || process.env['SUPABASE_URL'];
-  const SUPABASE_PUBLISHABLE_KEY = import.meta.env['VITE_SUPABASE_PUBLISHABLE_KEY'] || process.env['SUPABASE_PUBLISHABLE_KEY'];
+  // Lovable Cloud can inject its own VITE_* values at build time.
+  // The repository is currently bound to the canonical Supabase project, so
+  // never allow a legacy/foreign build-time value to silently redirect the browser.
+  const configuredUrl = import.meta.env['VITE_SUPABASE_URL'] || process.env['SUPABASE_URL'];
+  const configuredKey =
+    import.meta.env['VITE_SUPABASE_PUBLISHABLE_KEY'] || process.env['SUPABASE_PUBLISHABLE_KEY'];
+
+  const usesCanonicalProject = configuredUrl === CANONICAL_SUPABASE_URL;
+  const SUPABASE_URL = usesCanonicalProject ? configuredUrl : CANONICAL_SUPABASE_URL;
+  const SUPABASE_PUBLISHABLE_KEY = usesCanonicalProject
+    ? configuredKey
+    : CANONICAL_SUPABASE_PUBLISHABLE_KEY;
 
   if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
     const missing = [
