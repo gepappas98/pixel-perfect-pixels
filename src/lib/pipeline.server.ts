@@ -1273,6 +1273,8 @@ function councilEvaluation(whale: Row, mtf: MultiTfResult, prediction: Row) {
 /* ───────────── Groq ───────────── */
 
 const AI_VERDICT_TTL_MS = 25 * 60 * 1000;
+// One Groq request evaluates a whole candidate batch. Keep the batch bounded so
+// the council spends tokens on breadth, not repeated single-symbol calls.
 const AI_BATCH_MAX = 15;
 const AI_MIN_MINUTES_BETWEEN_BATCHES_DEFAULT = 25;
 const AI_MIN_MINUTES_BETWEEN_BATCHES_TRENDING = 15;
@@ -1336,22 +1338,33 @@ async function groqBatchCouncil(candidates: AiCandidate[]): Promise<Map<string, 
       timeframe_alignment: c.mtf.aligned ? "all-aligned" : c.mtf.conflict ? "conflict" : "partial",
       price: p4?.["price"] ?? null,
       prediction_direction: predictionDirection(c.prediction),
-      past_lessons: lessons.map((l) => `[${l.outcome}] ${l.lesson}`),
+      prediction_yes_price: c.prediction?.["yes_price"] ?? null,
+      prediction_question: typeof c.prediction?.["question"] === "string"
+        ? String(c.prediction["question"]).slice(0, 220)
+        : null,
+      whale_buy_usd: Math.round(Number(c.whale?.["buy_usd"] ?? 0)),
+      whale_sell_usd: Math.round(Number(c.whale?.["sell_usd"] ?? 0)),
+      whale_buy_count: Number(c.whale?.["buy_count"] ?? 0),
+      whale_sell_count: Number(c.whale?.["sell_count"] ?? 0),
+      vwap_4h: c.mtfRaw.primary?.["raw"] && typeof (c.mtfRaw.primary["raw"] as Row)?.["vwap"] === "number"
+        ? Number((c.mtfRaw.primary["raw"] as Row)["vwap"])
+        : null,
+      market_regime: currentRegimeLabel ?? "unknown",
+      past_lessons: lessons.slice(0, 3).map((l) => `[${l.outcome}] ${String(l.lesson).slice(0, 180)}`),
     };
   });
 
   const systemPrompt = [
-    "You are a professional crypto trading council AI.",
-    "You receive signals across 3 timeframes: 4h (primary), 1h (fast), 1d (trend).",
-    "Timeframe alignment increases confidence; conflicts reduce it.",
-    "Do not invent missing data. When signals conflict, prefer HOLD or AVOID.",
-    "Respond with ONLY a minified JSON array. No markdown. No code fences.",
-    'Shape: [{"symbol":"BTC","verdict":"BUY|SELL|HOLD|AVOID","conviction":0-100,"reflection":"one concise sentence"}]',
-    "One object per coin, same order, same symbol names.",
-    "AVOID = conflicting signals or high uncertainty.",
-    "HOLD = no clear directional edge.",
-    "BUY or SELL only when evidence is reasonably aligned.",
-    "If past_lessons are provided, weigh them as real experience.",
+    "You are the TCC long-only trading council. You are a decision layer, not the risk engine.",
+    "You receive 4h primary, 1h fast, and 1d trend data plus whale flow, prediction-market context, market regime, and prior lessons.",
+    "LONG-ONLY CONTRACT: you may return BUY, HOLD, or AVOID only. Never return SELL, SHORT, leverage, or a bearish trade instruction.",
+    "BUY only when there is a defensible long edge. HOLD when the evidence is mixed but not clearly unsafe. AVOID when data quality is poor, inputs conflict materially, or downside risk dominates.",
+    "Do not invent missing data. Treat null/missing fields as unavailable evidence.",
+    "Timeframe alignment increases conviction; conflicts reduce it.",
+    "Past lessons are evidence, not guarantees. Do not blindly repeat them.",
+    "Respond with ONLY the JSON array required by the schema.",
+    "One object per coin, same symbol names. Conviction is 0-100 and reflects evidence quality, not certainty.",
+    "Reflection must be one concise, evidence-based sentence naming the strongest support and/or blocker.",
   ].join("\n");
 
   try {
@@ -1365,15 +1378,53 @@ async function groqBatchCouncil(candidates: AiCandidate[]): Promise<Map<string, 
           { role: "user", content: JSON.stringify(payload) },
         ],
         temperature: 0.2,
+        service_tier: process.env["GROQ_SERVICE_TIER"] ?? "on_demand",
         ...( /gpt-oss/i.test(GROQ_MODEL)
-          ? { reasoning_effort: "low", max_completion_tokens: 4096 }
-          : { max_tokens: 4096 }
+          ? { reasoning_effort: "low", max_completion_tokens: 2048 }
+          : { max_tokens: 2048 }
         ),
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "tcc_long_only_council_batch",
+            strict: true,
+            schema: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  symbol: { type: "string" },
+                  verdict: { type: "string", enum: ["BUY", "HOLD", "AVOID"] },
+                  conviction: { type: "number" },
+                  reflection: { type: "string" },
+                },
+                required: ["symbol", "verdict", "conviction", "reflection"],
+                additionalProperties: false,
+              },
+            },
+          },
+        },
       }),
       signal: AbortSignal.timeout(GROQ_TIMEOUT_MS),
     });
-    if (!res.ok) throw new Error(`Groq HTTP ${res.status}`);
-    const data = (await res.json()) as { choices?: { message?: { content?: string }; finish_reason?: string }[]; usage?: { completion_tokens_details?: { reasoning_tokens?: number } } };
+    const remainingTokens = res.headers.get("x-ratelimit-remaining-tokens");
+    const remainingRequests = res.headers.get("x-ratelimit-remaining-requests");
+    const resetTokens = res.headers.get("x-ratelimit-reset-tokens");
+    if (remainingTokens || remainingRequests) {
+      console.log(
+        "[GROQ_LIMITS] remaining_tokens=" + (remainingTokens ?? "?") +
+        " remaining_rpd=" + (remainingRequests ?? "?") +
+        " reset_tokens=" + (resetTokens ?? "?"),
+      );
+    }
+    if (!res.ok) {
+      const retryAfter = res.headers.get("retry-after");
+      if (res.status === 429) {
+        throw new Error("Groq HTTP 429 rate-limited; retry-after=" + (retryAfter ?? "unknown"));
+      }
+      throw new Error("Groq HTTP " + res.status);
+    }
+    const data = (await res.json()) as { choices?: { message?: { content?: string }; finish_reason?: string }[]; usage?: { completion_tokens_details?: { reasoning_tokens?: number } };
     const finishReason = data.choices?.[0]?.finish_reason;
     const content = data.choices?.[0]?.message?.content ?? "";
     if (finishReason === "length") {
@@ -1385,7 +1436,7 @@ async function groqBatchCouncil(candidates: AiCandidate[]): Promise<Map<string, 
     if (!Array.isArray(parsed)) throw new Error("Groq response is not an array");
     for (const item of parsed) {
       const verdict = String(item.verdict ?? "").toUpperCase();
-      if (!["BUY", "SELL", "HOLD", "AVOID"].includes(verdict)) continue;
+      if (!["BUY", "HOLD", "AVOID"].includes(verdict)) continue;
       if (!candidates.some((c) => c.symbol === item.symbol)) continue;
       result.set(item.symbol, {
         final_verdict: verdict as CouncilVerdict,
@@ -1520,6 +1571,18 @@ export async function collectCouncilSignals(): Promise<number> {
     const aiResult = aiResults.get(symbol);
     const usedAi = !!aiResult;
   let result = aiResult ?? councilEvaluation(ctx.whale, ctx.mtf, ctx.prediction);
+
+  // TCC is Spot/long-only. The legacy deterministic synthesizer still knows
+  // about SELL for historical compatibility, but a native council signal must
+  // never become a short instruction or a negative council vote in production.
+  if (result.final_verdict === "SELL") {
+    result = {
+      ...result,
+      final_verdict: "HOLD",
+      reflection: result.reflection + " [LONG_ONLY: SELL suppressed -> HOLD]",
+    };
+  }
+
   const assetMicroRegime = computeAssetRegime(ctx.mtfRaw.primary);
   if (result.final_verdict === "SELL" && (assetMicroRegime.regime === "bull" || assetMicroRegime.regime === "strong_bull")) {
     result = {
