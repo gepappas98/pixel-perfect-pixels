@@ -27,25 +27,37 @@ function timeAgo(value?: string | null) {
   return hours > 24 ? "stale" : `${hours}h ago`;
 }
 
-function AskCouncilForm() {
+function AskCouncilForm({ onSuccess }: { onSuccess: () => Promise<boolean> }) {
   const generateFn = useServerFn(generateCouncilVerdict);
   const [symbol, setSymbol] = useState("");
   const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const sym = symbol.trim().toUpperCase();
-    if (!sym) return;
+    if (!sym || loading) return;
+
     setLoading(true);
+    setStatus(null);
     setError(null);
+
     try {
       const result = await generateFn({ data: { symbol: sym } });
+
       if (!result.ok) {
         setError(result.error);
-      } else {
-        setSymbol("");
+        return;
       }
+
+      const refreshed = await onSuccess();
+      setSymbol("");
+      setStatus(
+        refreshed
+          ? `${result.symbol}: ${result.verdict} · ${result.conviction}% conviction`
+          : `${result.symbol}: ${result.verdict} · saved, but the council list could not refresh`,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
@@ -54,27 +66,38 @@ function AskCouncilForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="mb-3 flex items-center gap-1.5">
-      <input
-        value={symbol}
-        onChange={(e) => setSymbol(e.target.value)}
-        placeholder="Ask council about… (e.g. BTC)"
-        className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 font-mono text-xs text-foreground"
-      />
-      <button
-        type="submit"
-        disabled={loading || !symbol.trim()}
-        className="shrink-0 rounded-md bg-primary px-2.5 py-1 text-[11px] font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
-      >
-        {loading ? "Asking…" : "Ask"}
-      </button>
-      {error && <p className="mt-1 text-[10px] text-destructive">{error}</p>}
-    </form>
+    <div className="mb-3">
+      <form onSubmit={handleSubmit} className="flex items-center gap-1.5">
+        <input
+          value={symbol}
+          onChange={(e) => setSymbol(e.target.value)}
+          placeholder="Ask council about… (e.g. BTC)"
+          className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 font-mono text-xs text-foreground"
+        />
+        <button
+          type="submit"
+          disabled={loading || !symbol.trim()}
+          className="shrink-0 rounded-md bg-primary px-2.5 py-1 text-[11px] font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+        >
+          {loading ? "Asking…" : "Ask"}
+        </button>
+      </form>
+      {status && (
+        <p className="mt-1 text-[10px] text-bull">
+          ✓ {status}
+        </p>
+      )}
+      {error && (
+        <p className="mt-1 break-words text-[10px] text-destructive">
+          ⚠ {error}
+        </p>
+      )}
+    </div>
   );
 }
 
 export function CouncilPanel() {
-  const { rows: syncedRows, loading: syncing } = useLiveTable<CouncilSignal>(
+  const { rows: syncedRows, loading: syncing, error: syncError, refresh } = useLiveTable<CouncilSignal>(
     "council_signals",
     12,
     "source_created_at",
@@ -99,7 +122,13 @@ export function CouncilPanel() {
         </span>
       </div>
 
-      <AskCouncilForm />
+      <AskCouncilForm onSuccess={refresh} />
+
+      {syncError && (
+        <p className="mb-2 break-words text-[10px] text-destructive">
+          Council feed error: {syncError}
+        </p>
+      )}
 
       {syncing && (
         <p className="text-sm text-muted-foreground">Reading latest council decisions…</p>
