@@ -105,9 +105,7 @@ interface TechsFetchResult {
  *   4. Log diagnostics ώστε να ξέρουμε τι συμβαίνει
  */
 async function fetchTechnicalsResilient(
-  db: Awaited<
-    typeof import("@/integrations/supabase/client.server")
-  >["supabaseAdmin"],
+  db: typeof import("@/integrations/supabase/client")["supabase"],
 ): Promise<TechsFetchResult> {
   const now = Date.now();
   const windows = [
@@ -155,9 +153,7 @@ async function fetchTechnicalsResilient(
 
 export const getMarketRegime = createServerFn({ method: "GET" }).handler(
   async (): Promise<MarketRegime> => {
-    const { supabaseAdmin: db } = await import(
-      "@/integrations/supabase/client.server"
-    );
+    const { supabase: db } = await import("@/integrations/supabase/client");
 
     try {
       const now = Date.now();
