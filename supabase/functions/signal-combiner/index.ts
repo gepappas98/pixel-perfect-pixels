@@ -130,9 +130,10 @@ function calculateConfiguredShadow(
   const safeMtf = mtf ?? classifyMtf([]);
   let score = 0;
   let hardConflict = false;
+  const components = { whale: 0, technicals: 0, prediction: 0, council: 0 };
 
-  if (whale?.direction === "accumulation") score += weights.whale;
-  else if (whale?.direction === "distribution") score -= weights.whale;
+  if (whale?.direction === "accumulation") { components.whale = weights.whale; score += components.whale; }
+  else if (whale?.direction === "distribution") { components.whale = -weights.whale; score += components.whale; }
 
   // Historical evaluateMultiTimeframe() score:
   // primary direction is ±1, matching fast/trend multiplies 1.3,
@@ -143,20 +144,22 @@ function calculateConfiguredShadow(
     else if (safeMtf.f !== "neutral") mtfScore *= 0.7;
     if (safeMtf.t === safeMtf.p) mtfScore *= 1.3;
     else if (safeMtf.t !== "neutral") mtfScore *= 0.7;
-    score += mtfScore * weights.technicals;
+    components.technicals = mtfScore * weights.technicals;
+    score += components.technicals;
   }
 
   const predDir = predictionDirectionForShadow(prediction);
-  if (predDir === "bullish") score += 0.5 * weights.prediction * predictionMagnitudeForShadow(prediction);
-  else if (predDir === "bearish") score -= 0.5 * weights.prediction * predictionMagnitudeForShadow(prediction);
+  const predictionContribution = 0.5 * weights.prediction * predictionMagnitudeForShadow(prediction);
+  if (predDir === "bullish") { components.prediction = predictionContribution; score += predictionContribution; }
+  else if (predDir === "bearish") { components.prediction = -predictionContribution; score += components.prediction; }
 
   if (council?.final_verdict) {
     const convictionRaw = Number(council.conviction);
     const conviction = Number.isFinite(convictionRaw) ? Math.max(0, Math.min(100, convictionRaw)) : 50;
     const councilWeight = (conviction / 100) * 0.75 * weights.council;
     const verdict = String(council.final_verdict).toUpperCase();
-    if (verdict === "BUY") score += councilWeight;
-    else if (verdict === "SELL") score -= councilWeight;
+    if (verdict === "BUY") { components.council = councilWeight; score += components.council; }
+    else if (verdict === "SELL") { components.council = -councilWeight; score += components.council; }
   }
 
   const whaleDir = whale?.direction === "accumulation" ? 1 : whale?.direction === "distribution" ? -1 : 0;
@@ -173,7 +176,14 @@ function calculateConfiguredShadow(
 
   const max = weights.whale + weights.technicals * 1.69 + weights.prediction * 0.5 + weights.council * 0.75;
   const confidence = max > 0 ? Math.min(1, Math.abs(score) / max) : 0;
-  return { score, confidence, recommendation };
+  return {
+    score,
+    confidence,
+    recommendation,
+    components,
+    mtf: { p: safeMtf.p, f: safeMtf.f, t: safeMtf.t, bullCount: safeMtf.bullCount, bearCount: safeMtf.bearCount, neuCount: safeMtf.neuCount },
+    hardConflict,
+  };
 }
 
 function indicatorSymbol(symbol: string) {
@@ -396,6 +406,7 @@ function ruleBasedRecommendation(
     confidence,
     reasoning: reasons.length ? reasons.join("; ") : "insufficient signal",
     score,
+    components,
   };
 }
 
@@ -491,6 +502,16 @@ Deno.serve(async (req) => {
             shadow_score: shadow.score,
             shadow_confidence: shadow.confidence,
             shadow_recommendation: shadow.recommendation,
+            current_components: result.components,
+            shadow_components: shadow.components,
+            mtf_gate: {
+              enabled: mtfGate.enabled,
+              shadow_mode: mtfGate.shadow_mode,
+              min_timeframes: mtfGate.min_timeframes,
+              current: { recommendation: gate.recommendation, note: gate.note },
+              shadow: shadow.mtf,
+              hard_conflict: shadow.hardConflict,
+            },
           });
         if (shadowError) console.error("[STRATEGY_SHADOW] diagnostics insert failed:", shadowError.message);
       }
