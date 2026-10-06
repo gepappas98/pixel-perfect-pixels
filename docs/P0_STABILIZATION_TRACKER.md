@@ -309,3 +309,37 @@ This supersedes the previous `PORT CANDIDATE` wording for the mechanisms proven 
 - Current source code already reads canonical `get_pipeline_cron_health()` for both Pipeline Health and System Resources; no strategy, scheduler, historical-data, or pipeline-writer changes were made.
 - Live verification still required from the production UI after the publish: Pipeline Health should report the real canonical status/last success and System Resources should show the real latest-run duration rather than the stale/0.0s values previously observed.
 - The dashboard's `Every 2 min` selector remains a separate deferred UI/scheduler source-of-truth issue; do not change it during this verification pass.
+
+
+## 2026-10-06 — Runtime conflict analysis: frontend healthy, canonical Edge inputs stale/misaligned
+
+### Confirmed runtime state
+- Canonical DB is healthy: 12/12 canonical runs completed in the last 2h, 0 errors, 0 running.
+- Latest canonical run `aa2245b0-e3ea-4472-a2e2-83e5a4392fc7` completed in 22.973s at 12:00:24 UTC.
+- `get_pipeline_cron_health()` reports **HEALTHY**, canonical schedule **10 minutes**, next run 12:10 UTC, consecutive failures 0.
+- Therefore the observed UI `Every 2 minutes / Stale` remains a frontend/source-of-truth mismatch, not a runtime pipeline outage.
+
+### Critical finding — active Supabase Edge signal-combiner is not the same implementation as current repo pipeline logic
+- Production Edge Function `signal-combiner` is **version 6**.
+- Its deployed code directly reads latest prediction/council rows but does **not** apply the current repo freshness guards for prediction/council data.
+- Current repo `pipeline.server.ts` defines prediction freshness at 30m and council freshness at 30m (20m trending / 45m calm) and explicitly removes stale rows before signal combination.
+- This creates a real runtime conflict: the DB/Edge canonical path can use stale council/prediction rows even though the current repo logic is designed to reject them.
+
+### Evidence
+- At the 12:00 UTC canonical run, `council_sync` synced 5 rows whose `source_created_at` values are from **2026-08-28**, while `council_signals` latest source time is **2026-10-06 08:50 UTC**; the dashboard shows council data `3h ago`.
+- At the same run, `polymarket-check` returned updated market payloads, but the DB `prediction_snapshots.created_at` values remain at older insertion timestamps because the function upserts existing rows without explicitly refreshing `created_at`. This conflicts with freshness logic that interprets `created_at` as snapshot freshness.
+- Despite stale timestamps, the deployed v6 `signal-combiner` attached prediction snapshot IDs to current composite signals. Example: BNB and UNI at 12:00 UTC include `prediction market leaning no` and non-null prediction IDs even though the table's latest `created_at` is hours old.
+- `council-sync` itself is a separate freshness problem: it imports `source_created_at` from the external Whale Radar feed; the feed currently returns very old decisions, so the sync can be technically successful while providing stale AI inputs.
+- `polymarket-check` keyword matching is also too broad: substring matching can map unrelated political questions such as `Adam Schiff` to ADA and `Hegseth` to ETH. These rows were observed in the 12:00 stage output. This is data-quality contamination, not a pipeline execution failure.
+
+### Safety conclusion
+- This is the user's suspected "conflict": **execution is healthy, but input freshness/source semantics are inconsistent between the current repo design and the actually deployed Edge Functions.**
+- No production strategy weights, thresholds, historical rows, or trading logic were changed during this analysis.
+- Do not tune strategy based on the current variant/signal sample until this runtime source mismatch is corrected and clean observations resume.
+
+### Next implementation target
+1. Bring canonical `signal-combiner` freshness semantics in line with the current repo implementation (without changing strategy thresholds/weights).
+2. Give prediction snapshots an explicit `updated_at`/freshness timestamp semantics, or safely refresh the existing timestamp on successful market upsert; do not reinterpret historical data.
+3. Tighten Polymarket symbol matching to avoid substring collisions.
+4. Verify `council-sync` source freshness and prevent stale external decisions from being treated as current.
+5. Execute one clean canonical cycle and verify the composite signal provenance/freshness against DB timestamps.
