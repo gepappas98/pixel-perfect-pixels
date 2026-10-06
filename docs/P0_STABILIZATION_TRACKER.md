@@ -288,3 +288,14 @@ The canonical source was inspected directly before any porting change. The previ
 **Result:** the Legacy → Canonical improvement pass requires **no additional code port at this point**. The next work is verification of these existing safeguards in live canonical cycles, not reimplementation.
 
 This supersedes the previous `PORT CANDIDATE` wording for the mechanisms proven above.
+
+
+## 2026-10-06 — Manual trigger diagnostics improved
+
+- **P0.3 manual UI error handling:** code fix committed in `efc65a6b99dff453ad75164077c7c4f86b5509b5`.
+- `runPipeline()` still invokes only the canonical `trading-pipeline-orchestrator`.
+- On non-2xx responses, the handler now attempts to read the Edge Function response body and surfaces `message/error/reason`, `skipped=true`, and `run_id` when available.
+- This specifically distinguishes a legitimate canonical concurrency skip (HTTP 409) from an actual pipeline failure instead of showing only the generic non-2xx message.
+- **No pipeline logic, strategy logic, DB data, or scheduler was changed.**
+- `/api/public/cron` was re-checked on current `main`: it is already disabled and returns HTTP 410; it does **not** call `runFullPipeline()`. The older tracker wording claiming it still contains the legacy writer is stale and should no longer be treated as an open code defect.
+- Remaining P0.3 verification: publish this commit, trigger Run Pipeline once, and confirm the dashboard displays the canonical response/diagnostic correctly.
