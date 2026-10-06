@@ -52,7 +52,7 @@ function matchSymbolFromQuestion(q: string): string | null {
   const matches: { sym: string; pos: number }[] = [];
   for (const [sym, keywords] of Object.entries(WATCH_KEYWORDS)) {
     for (const kw of keywords) {
-      const pos = q.search(new RegExp("\\\\b" + kw + "\\\\b", "i"));
+      const pos = q.search(new RegExp("\\b" + kw + "\\b", "i"));
       if (pos >= 0) { matches.push({ sym, pos }); break; }
     }
   }
