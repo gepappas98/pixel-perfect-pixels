@@ -33,7 +33,7 @@ Hard constraints:
 - Commit: `2df8d7a121981a6030000849c094676a5598e687`.
 - Remaining verification: Dashboard / Shadow / DB must show the same current canonical `pipeline_run_id`, timestamps and counts.
 
-### P0.2 Freshness / mapping — DONE
+### P0.2 Freshness / mapping — OPEN / VERIFY (runtime alignment)
 - Prediction selection made directional, volume-aware and probability-bounded.
 - Council freshness now uses actual AI/input timestamps.
 - Panel uses `source_created_at`.
@@ -343,3 +343,46 @@ This supersedes the previous `PORT CANDIDATE` wording for the mechanisms proven 
 3. Tighten Polymarket symbol matching to avoid substring collisions.
 4. Verify `council-sync` source freshness and prevent stale external decisions from being treated as current.
 5. Execute one clean canonical cycle and verify the composite signal provenance/freshness against DB timestamps.
+
+## 2026-10-06 — Runtime freshness conflict: implementation pass deployed
+
+### Canonical Edge Functions corrected
+The runtime mismatch identified above was corrected without changing strategy weights, thresholds, classifier, EMA50/ADX, R:R, scheduler interval, or historical rows.
+
+- **signal-combiner v7 deployed**
+  - prediction inputs now require `created_at` within the last **30 minutes**;
+  - council inputs now require `source_created_at` within the last **30 minutes**;
+  - whale inputs are bounded to the canonical **6-hour** lookback;
+  - regime-level prediction/council reads use the same freshness windows;
+  - stale rows therefore cannot be attached to new composite signals or fresh variant observations.
+- **polymarket-check v3 deployed**
+  - symbol matching changed from substring matching to token/phrase matching;
+  - this blocks known collisions such as `Adam Schiff → ADA` and `Hegseth → ETH`;
+  - successful upserts explicitly refresh `prediction_snapshots.created_at` to the current observation time, so `created_at` now represents latest snapshot observation time for this table's snapshot semantics.
+- **council-sync v2 deployed**
+  - external council decisions older than 30 minutes are rejected from the sync write path;
+  - stale external decisions are reported as `stale_skipped` instead of being treated as fresh.
+- Supabase production project: `yckewtpfttvwiptmmrfq`.
+- Deployment verification:
+  - `polymarket-check` v3 ACTIVE
+  - `council-sync` v2 ACTIVE
+  - `signal-combiner` v7 ACTIVE
+
+### Canonical repo source-of-truth
+The deployed Edge Function sources are now mirrored under `supabase/functions/{polymarket-check,council-sync,signal-combiner}` plus `supabase/functions/_shared/*`.
+
+### Market Regime
+- Commit `c3831abfef29da9f91f17b7f8ab29f54ef4f84e4`.
+- `getMarketRegime()` now filters prediction snapshots to the same 30-minute freshness window.
+- This is a data-freshness correction only; no regime thresholds or weights were changed.
+- Lovable production publish/verification remains required for this frontend server-function change.
+
+### Verification required
+1. Wait for / trigger one canonical cycle after the Edge Function deployments.
+2. Confirm no current composite signal references prediction/council rows outside the freshness windows.
+3. Confirm Polymarket rows no longer contain the known political-symbol collisions.
+4. Confirm fresh Polymarket upserts advance `prediction_snapshots.created_at`.
+5. Confirm stale council feed decisions are skipped rather than written as fresh.
+6. Only after these checks pass, resume clean variant/resolver observation.
+
+**Status: DEPLOYED / VERIFY.** No historical rows were deleted or rewritten.
