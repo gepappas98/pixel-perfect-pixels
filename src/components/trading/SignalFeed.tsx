@@ -9,7 +9,7 @@ const badge: Record<CompositeSignal["recommendation"], string> = {
 };
 
 export function SignalFeed() {
-  const { rows, loading, error } = useLiveTable<CompositeSignal>("composite_signals", 25);
+  const { rows, loading, error, realtimeStatus, realtimeError } = useLiveTable<CompositeSignal>("composite_signals", 25);
 
   // Dedup ανά symbol: κρατάει το πιο πρόσφατο signal κάθε νομίσματος.
   // Το useLiveTable επιστρέφει rows order by created_at desc, άρα το πρώτο
@@ -32,6 +32,9 @@ export function SignalFeed() {
     { signals: [], extraCounts: {} },
   );
 
+  const realtimeLabel = realtimeStatus === "SUBSCRIBED" ? "live" : realtimeStatus === "CONNECTING" ? "connecting" : realtimeStatus === "TIMED_OUT" ? "timed out" : realtimeStatus === "CHANNEL_ERROR" ? "error" : "closed";
+  const realtimeClass = realtimeStatus === "SUBSCRIBED" ? "text-bull" : realtimeStatus === "CONNECTING" ? "text-warn" : "text-destructive";
+
   return (
     <section className="panel h-full">
       <div className="mb-3 flex items-start justify-between gap-3">
@@ -41,8 +44,8 @@ export function SignalFeed() {
             Latest per symbol · {signals.length} active
           </p>
         </div>
-        <span className="flex items-center gap-1.5 text-[10px] text-bull">
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-bull" /> live
+        <span className={`flex items-center gap-1.5 text-[10px] ${realtimeClass}`} title={realtimeError ?? `Realtime: ${realtimeStatus}`}>
+          <span className={`h-1.5 w-1.5 rounded-full ${realtimeStatus === "SUBSCRIBED" ? "animate-pulse bg-bull" : realtimeStatus === "CONNECTING" ? "animate-pulse bg-warn" : "bg-destructive"}`} /> {realtimeLabel}
         </span>
       </div>
       {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
