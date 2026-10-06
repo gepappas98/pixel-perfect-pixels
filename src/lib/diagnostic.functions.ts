@@ -5,10 +5,8 @@ import { createServerFn } from "@tanstack/react-start";
 
 export const getWatchDiagnostic = createServerFn({ method: "GET" }).handler(
   async () => {
-    const { supabaseAdmin } = await import(
-      "@/integrations/supabase/client.server"
-    );
-    const db = supabaseAdmin;
+    const { supabase } = await import("@/integrations/supabase/client");
+    const db = supabase;
 
     const targetSymbols = ["HEMI", "PIXEL", "SPY", "ADA", "BTC"];
 
@@ -95,9 +93,7 @@ export const getWatchDiagnostic = createServerFn({ method: "GET" }).handler(
 
 export const getShadowConflicts = createServerFn({ method: "GET" }).handler(
   async () => {
-    const { supabaseAdmin } = await import(
-      "@/integrations/supabase/client.server"
-    );
+    const { supabase } = await import("@/integrations/supabase/client");
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const loose = supabaseAdmin as unknown as { from: (t: string) => any };
@@ -198,7 +194,7 @@ export const getShadowConflicts = createServerFn({ method: "GET" }).handler(
     let recent_composites: Json[] = [];
     let composites_error: string | null = null;
     try {
-      const { data, error } = await supabaseAdmin
+      const { data, error } = await supabase
         .from("composite_signals")
         .select(
           "symbol, recommendation, confidence, reasoning, created_at, whale_alert_id, indicator_snapshot_id, prediction_snapshot_id, council_signal_id",
@@ -226,7 +222,7 @@ export const getShadowConflicts = createServerFn({ method: "GET" }).handler(
     /* ── 4. Recent pipeline runs ── */
     let recent_runs: Json[] = [];
     try {
-      const { data } = await supabaseAdmin
+      const { data } = await supabase
         .from("pipeline_runs")
         .select("id, started_at, completed_at, status, signals, trades, error_message")
         .order("started_at", { ascending: false })
@@ -239,7 +235,7 @@ export const getShadowConflicts = createServerFn({ method: "GET" }).handler(
     /* ── 5. Current strategy weights ── */
     let strategy: Json = null;
     try {
-      const { data } = await supabaseAdmin
+      const { data } = await supabase
         .from("strategy_config")
         .select("*")
         .eq("id", 1)
