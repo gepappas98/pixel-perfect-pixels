@@ -198,3 +198,31 @@ Before every new fix:
 6. Only then move to the next issue.
 
 **Never declare the project "fixed" while an earlier P0 remains OPEN/VERIFY.**
+
+
+## 2026-10-06 — Market Regime + duplicate pipeline finding
+
+### P0.3 / Observability
+- **System Resources Pipeline source-of-truth fix committed:** `bf245317ac6130042b45c6855e3c78480b88fbf6`.
+- `getSystemResourceMetrics()` now reads pipeline status/duration from canonical `get_pipeline_cron_health()` instead of independently scanning `pipeline_runs`.
+- This removes the contradiction that produced the false `3440.3s · running` display while canonical runs were completing in ~20–25s.
+- Lovable production deployment was published with latest commit `bf245317ac6130042b45c6855e3c78480b88fbf6`.
+
+### P0.4 / Variant data integrity
+- A concrete **second-pipeline writer** was confirmed: `/api/public/cron` was still invoking legacy `runFullPipeline()`.
+- This was not merely a 2/5/10-minute scheduling mismatch: the legacy application pipeline could create duplicate/contaminated variant observations alongside the canonical orchestrator.
+- The legacy application cron route is now disabled with HTTP 410 and an explicit canonical-owner message. Commit: `31f0e1880e42ddbaf18eb02b467d77554eb65f46`.
+- No historical variant rows were deleted or mass-modified.
+- Six variant rows created around 10:03 UTC have `source_fingerprint` populated but `production_regime_label/regime_label` NULL; these pre-date signal-combiner v6 deployment (~10:04 UTC) and are **not part of the clean regime-labeled observation sample**. Keep them untouched; exclude them from clean strategy analysis until explicitly handled.
+- Canonical signal-combiner v6 successfully completed at 10:05 UTC and subsequent canonical runs completed; no new NULL-regime variant rows have appeared since the v6 deployment window.
+- The canonical resolver remains protected by the historical cutoff; do not mass-resolve old rows.
+
+### Market Regime panel
+- `MarketRegimePanel` was traced to `getMarketRegime()`.
+- Hardened `market-regime.functions.ts` with bounded whale/council reads and a fail-safe diagnostic fallback so an unexpected calculation exception cannot surface as a blank panel. Commit: `1a9578b169780d9618b6c8bcdf8e7ce2c6ea4fcb`.
+- This is a UI/observability hardening change only; it does **not** alter production strategy weights, thresholds, classifier, EMA50/ADX, or R:R.
+- Lovable project latest commit after deployment: `bf245317ac6130042b45c6855e3c78480b88fbf6`.
+
+### Current verification rule
+- From this point forward, a variant is considered part of the **clean new sample** only if it is produced by canonical `signal-combiner`, has a non-null regime label, has a non-null source fingerprint, and is created after the v6 canonical producer deployment window.
+- Continue observation before any strategy tuning.
