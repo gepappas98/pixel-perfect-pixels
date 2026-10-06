@@ -299,3 +299,13 @@ This supersedes the previous `PORT CANDIDATE` wording for the mechanisms proven 
 - **No pipeline logic, strategy logic, DB data, or scheduler was changed.**
 - `/api/public/cron` was re-checked on current `main`: it is already disabled and returns HTTP 410; it does **not** call `runFullPipeline()`. The older tracker wording claiming it still contains the legacy writer is stale and should no longer be treated as an open code defect.
 - Remaining P0.3 verification: publish this commit, trigger Run Pipeline once, and confirm the dashboard displays the canonical response/diagnostic correctly.
+
+
+## 2026-10-06 — Production frontend re-publish / health display verification
+
+- Lovable project `Pixel Perfect Pixels` latest source commit is `c98ab7284c36d29fa424555b62680ee2779d4150`.
+- The project was re-published to the production URL `aicombined-trading-command-center.lovable.app` to ensure the current canonical health frontend is serving the latest source.
+- Deployment request: `4aefc67f-1a0f-448e-8a04-b1be6beec3f1`.
+- Current source code already reads canonical `get_pipeline_cron_health()` for both Pipeline Health and System Resources; no strategy, scheduler, historical-data, or pipeline-writer changes were made.
+- Live verification still required from the production UI after the publish: Pipeline Health should report the real canonical status/last success and System Resources should show the real latest-run duration rather than the stale/0.0s values previously observed.
+- The dashboard's `Every 2 min` selector remains a separate deferred UI/scheduler source-of-truth issue; do not change it during this verification pass.
