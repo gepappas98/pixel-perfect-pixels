@@ -356,15 +356,15 @@ The runtime mismatch identified above was corrected without changing strategy we
   - regime-level prediction/council reads use the same freshness windows;
   - stale rows therefore cannot be attached to new composite signals or fresh variant observations.
 - **polymarket-check v3 deployed**
-  - symbol matching changed from substring matching to token/phrase matching;
+  - symbol matching uses the canonical crypto event feed and word-boundary matching;
   - this blocks known collisions such as `Adam Schiff → ADA` and `Hegseth → ETH`;
-  - successful upserts explicitly refresh `prediction_snapshots.created_at` to the current observation time, so `created_at` now represents latest snapshot observation time for this table's snapshot semantics.
+  - the function now uses the canonical `/events?tag_slug=crypto` feed, applies the existing $500 minimum-volume / 5%-95% probability / directional-question filters, and explicitly refreshes `prediction_snapshots.created_at` on successful upsert.
 - **council-sync v2 deployed**
   - external council decisions older than 30 minutes are rejected from the sync write path;
   - stale external decisions are reported as `stale_skipped` instead of being treated as fresh.
 - Supabase production project: `yckewtpfttvwiptmmrfq`.
 - Deployment verification:
-  - `polymarket-check` v3 ACTIVE
+  - `polymarket-check` v5 ACTIVE
   - `council-sync` v2 ACTIVE
   - `signal-combiner` v7 ACTIVE
 
@@ -386,3 +386,28 @@ The deployed Edge Function sources are now mirrored under `supabase/functions/{p
 6. Only after these checks pass, resume clean variant/resolver observation.
 
 **Status: DEPLOYED / VERIFY.** No historical rows were deleted or rewritten.
+
+## 2026-10-06 — Runtime verification after freshness deployment
+
+- Canonical manual run after the fixes: `0e60f643-f690-4d89-9c47-50beeabb2210`.
+- Run completed successfully in **21.476s**; all seven canonical stages returned HTTP 200.
+- `polymarket-check` v5 returned **200**, scanned **689** crypto-tagged markets, and inserted **0** usable snapshots. This is a **data-availability/degraded-input condition**, not a pipeline error.
+- `council-sync` v2 returned **200**, `synced=0`, `stale_skipped=5`. The external council feed is currently stale, so no stale council decisions were promoted into fresh canonical inputs.
+- `signal-combiner` v7 produced 25 current composite signals, but the fresh cycle attached **0 prediction** and **0 council** rows. This is the expected safety result while those feeds have no fresh inputs.
+- Direct `polymarket-check` v5 smoke test returned HTTP 200 with `scanned=689`, `inserted=0`; no runtime exception.
+- Known contamination check returned **0** recent `Adam Schiff → ADA` / `Hegseth → ETH` rows.
+- No historical rows were deleted, rewritten, or mass-resolved.
+
+### Important interpretation
+- The original runtime conflict is now materially corrected: **stale prediction/council inputs are no longer allowed into new composite signals**.
+- The system is currently **execution-healthy but input-degraded** because the external council feed is stale and Polymarket currently yields no rows passing the canonical usability filters.
+- Do **not** compensate for the missing inputs by relaxing freshness windows, probability/volume filters, or strategy thresholds. Observe the feeds first.
+- `P0.2` therefore remains **OPEN / VERIFY** until fresh prediction/council data is observed in a clean cycle.
+- `P0.3` execution verification is strengthened by this successful clean canonical run; frontend health display still needs live UI verification.
+- `P0.4` remains OPEN: no fresh variant outcome has yet been resolved.
+
+### Transient test note
+- An intermediate `polymarket-check` v4 deployment returned `ReferenceError: matchSymbol is not defined` during a test because the canonical function body had not yet been fully aligned with the event-feed implementation. v5 replaced it immediately.
+- v5 was directly smoke-tested with HTTP 200 and then exercised successfully inside the full canonical run above.
+
+**Current status: runtime freshness guards DEPLOYED + VERIFIED; external prediction/council feeds currently DEGRADED; no strategy changes made.**
