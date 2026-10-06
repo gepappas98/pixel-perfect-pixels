@@ -485,27 +485,34 @@ Deno.serve(async (req) => {
         }
       }
 
+      // Fingerprints are intentionally unique/idempotent. Re-observing the
+      // same input combination must refresh the signal timestamp rather than
+      // crash the whole pipeline on uq_composite_signals_fingerprint.
       const { data: inserted, error } = await supabase
         .from("composite_signals")
-        .insert({
-          symbol,
-          whale_alert_id: whale?.id ?? null,
-          indicator_snapshot_id: indicator?.id ?? null,
-          prediction_snapshot_id: prediction?.id ?? null,
-          council_signal_id: council?.id ?? null,
-          confidence: result.confidence,
-          recommendation: gate.recommendation,
-          reasoning: reasoningParts.join("; "),
-          price_at: Number(indicator?.price ?? 0) > 0 ? Number(indicator.price) : null,
-          regime_label: productionRegimeLabel,
-          source_tags: sourceTags,
-          fingerprint: signalFingerprint,
-        })
+        .upsert(
+          {
+            symbol,
+            whale_alert_id: whale?.id ?? null,
+            indicator_snapshot_id: indicator?.id ?? null,
+            prediction_snapshot_id: prediction?.id ?? null,
+            council_signal_id: council?.id ?? null,
+            confidence: result.confidence,
+            recommendation: gate.recommendation,
+            reasoning: reasoningParts.join("; "),
+            price_at: Number(indicator?.price ?? 0) > 0 ? Number(indicator.price) : null,
+            regime_label: productionRegimeLabel,
+            source_tags: sourceTags,
+            fingerprint: signalFingerprint,
+            created_at: new Date().toISOString(),
+          },
+          { onConflict: "fingerprint" },
+        )
         .select()
         .single();
 
       if (error) throw error;
-      created.push(inserted);
+      if (inserted) created.push(inserted);
     }
 
     return new Response(
