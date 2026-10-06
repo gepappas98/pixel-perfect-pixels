@@ -202,6 +202,16 @@ Before every new fix:
 **Never declare the project "fixed" while an earlier P0 remains OPEN/VERIFY.**
 
 
+## 2026-10-07 — Whale Radar Council telemetry deployment
+
+- Whale Radar telemetry was still showing **0 runtime events** while `council_decisions` remained stale (latest observed 2026-08-28).
+- Root cause candidate was confirmed in the browser persistence path: `saveCouncilRuntimeEvent()` used the legacy runtime-localStorage-overridable Supabase client, while the Council itself used the canonical generated client.
+- Canonical telemetry fix is commit `56d331709366804167ba593a8711af034cf110d3`: telemetry inserts now use `@/integrations/supabase/client`, matching the Council/agent path.
+- Current Whale Radar Lovable source is at that commit and was re-published successfully on 2026-10-07; published app remains `crypto-whale-watch-nexus.lovable.app`.
+- Production DB verification immediately before this deployment: `council_decisions=5`, latest decision `2026-08-28 10:47:59 UTC`; `council_runtime_events=0`.
+- **VERIFY NEXT:** one fresh published-app scan must produce at least `SCAN_COMPLETED` and `CANDIDATES_FOUND` telemetry; then confirm `COUNCIL_TRIGGERED` and either `COUNCIL_PERSISTED`, `COUNCIL_SKIPPED`, or `COUNCIL_FAILED`.
+- Do not relax Council freshness, create synthetic decisions, or alter TCC thresholds while this upstream verification is pending.
+
 ## 2026-10-06 — Market Regime + duplicate pipeline finding
 
 ### P0.3 / Observability
