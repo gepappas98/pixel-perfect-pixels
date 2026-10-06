@@ -76,32 +76,99 @@ async function loadStrategySnapshot(supabase: ReturnType<typeof getServiceClient
   };
 }
 
+function predictionDirectionForShadow(prediction: any | null): "bullish" | "bearish" | "neutral" {
+  const yes = Number(prediction?.yes_price);
+  if (!Number.isFinite(yes)) return "neutral";
+  const q = String(prediction?.question ?? "").toLowerCase();
+  const bullish = /\\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\\b/i.test(q);
+  const bearish = /\\b(dip|drop|fall|below|crash|down to|under|bottom)\\b/i.test(q);
+  if (!bullish && !bearish) return "neutral";
+  const up = bullish ? yes : 1 - yes;
+  if (up > 0.6) return "bullish";
+  if (up < 0.4) return "bearish";
+  return "neutral";
+}
+
+function predictionMagnitudeForShadow(prediction: any | null): number {
+  const yes = Number(prediction?.yes_price);
+  if (!Number.isFinite(yes)) return 0;
+  const q = String(prediction?.question ?? "").toLowerCase();
+  const bullish = /\\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\\b/i.test(q);
+  const bearish = /\\b(dip|drop|fall|below|crash|down to|under|bottom)\\b/i.test(q);
+  if (!bullish && !bearish) return 0;
+  const up = bullish ? yes : 1 - yes;
+  const distance = Math.abs(up - 0.5) * 2;
+  if (distance < 0.2) return 0;
+  return Math.min(1, (distance - 0.2) / 0.8);
+}
+
+/**
+ * Historical strategy-authority shadow.
+ *
+ * This mirrors the proven legacy ruleBased() scoring contract for the
+ * dimensions available in the canonical Edge combiner:
+ * - strategy_config weights are authoritative inputs
+ * - MTF score × technical weight
+ * - prediction direction + magnitude
+ * - council conviction × 0.75 × council weight
+ * - historical ±2.2 / 0.5 classification
+ * - hard whale/prediction conflict => HOLD
+ *
+ * It is diagnostic-only for now. The live composite recommendation remains
+ * unchanged until parity is verified.
+ */
 function calculateConfiguredShadow(
   whale: any | null,
-  indicator: any | null,
+  mtf: ReturnType<typeof classifyMtf>,
   prediction: any | null,
   council: any | null,
   weights: StrategyWeights,
 ) {
   let score = 0;
+  let hardConflict = false;
+
   if (whale?.direction === "accumulation") score += weights.whale;
-  if (whale?.direction === "distribution") score -= weights.whale;
-  if (indicator?.signal === "bullish") score += weights.technicals;
-  if (indicator?.signal === "bearish") score -= weights.technicals;
-  if (prediction?.yes_price != null) {
-    if (Number(prediction.yes_price) > 0.6) score += 0.5 * weights.prediction;
-    else if (Number(prediction.yes_price) < 0.4) score -= 0.5 * weights.prediction;
-  }
-  if (council?.final_verdict) {
-    const conviction = Number(council.conviction ?? 50) / 100;
-    const verdict = String(council.final_verdict).toUpperCase();
-    if (verdict === "BUY") score += conviction * 1.5 * weights.council;
-    else if (verdict === "SELL" || verdict === "AVOID") score -= conviction * 1.5 * weights.council;
+  else if (whale?.direction === "distribution") score -= weights.whale;
+
+  // Historical evaluateMultiTimeframe() score:
+  // primary direction is ±1, matching fast/trend multiplies 1.3,
+  // conflicting non-neutral timeframes multiply 0.7.
+  if (mtf.p !== "neutral") {
+    let mtfScore = mtf.p === "bullish" ? 1 : -1;
+    if (mtf.f === mtf.p) mtfScore *= 1.3;
+    else if (mtf.f !== "neutral") mtfScore *= 0.7;
+    if (mtf.t === mtf.p) mtfScore *= 1.3;
+    else if (mtf.t !== "neutral") mtfScore *= 0.7;
+    score += mtfScore * weights.technicals;
   }
 
-  const max = weights.whale + weights.technicals + 0.5 * weights.prediction + 1.5 * weights.council;
+  const predDir = predictionDirectionForShadow(prediction);
+  if (predDir === "bullish") score += 0.5 * weights.prediction * predictionMagnitudeForShadow(prediction);
+  else if (predDir === "bearish") score -= 0.5 * weights.prediction * predictionMagnitudeForShadow(prediction);
+
+  if (council?.final_verdict) {
+    const convictionRaw = Number(council.conviction);
+    const conviction = Number.isFinite(convictionRaw) ? Math.max(0, Math.min(100, convictionRaw)) : 50;
+    const councilWeight = (conviction / 100) * 0.75 * weights.council;
+    const verdict = String(council.final_verdict).toUpperCase();
+    if (verdict === "BUY") score += councilWeight;
+    else if (verdict === "SELL") score -= councilWeight;
+  }
+
+  const whaleDir = whale?.direction === "accumulation" ? 1 : whale?.direction === "distribution" ? -1 : 0;
+  const predSign = predDir === "bullish" ? 1 : predDir === "bearish" ? -1 : 0;
+  const techSign = mtf.p === "bullish" ? 1 : mtf.p === "bearish" ? -1 : 0;
+  hardConflict = whaleDir !== 0 && predSign !== 0 && whaleDir !== predSign && techSign === 0;
+
+  let recommendation: "buy" | "sell" | "hold" | "watch" = "hold";
+  if (hardConflict) recommendation = "hold";
+  else if (score >= 2.2) recommendation = "buy";
+  else if (score <= -2.2) recommendation = "sell";
+  else if (Math.abs(score) < 0.5) recommendation = "hold";
+  else recommendation = "watch";
+
+  const max = weights.whale + weights.technicals * 1.69 + weights.prediction * 0.5 + weights.council * 0.75;
   const confidence = max > 0 ? Math.min(1, Math.abs(score) / max) : 0;
-  const recommendation = score >= 1.5 ? "buy" : score <= -1.5 ? "sell" : Math.abs(score) < 0.5 ? "hold" : "watch";
   return { score, confidence, recommendation };
 }
 
