@@ -226,3 +226,43 @@ Before every new fix:
 ### Current verification rule
 - From this point forward, a variant is considered part of the **clean new sample** only if it is produced by canonical `signal-combiner`, has a non-null regime label, has a non-null source fingerprint, and is created after the v6 canonical producer deployment window.
 - Continue observation before any strategy tuning.
+
+## 2026-10-06 — Legacy → Canonical improvement audit
+
+| Legacy mechanism | Finding | Action |
+|---|---|---|
+| Hot-whale queue | Discovers large-flow symbols outside the 6h watchlist; batch aggregation, TTL and sample-size guard | **PORT CANDIDATE** — only if canonical producer lacks equivalent |
+| Hard-conflict gate | Whale vs prediction conflict with neutral MTF becomes semantic HOLD | **PORT CANDIDATE** — safety/quality gate; no threshold tuning |
+| Binance → data-api → Bybit candle fallback | Improves resilience when a market endpoint is unavailable | **PORT CANDIDATE** — infrastructure resilience only |
+| Bounded concurrency (`pMap`) | Prevents one feed / symbol from serially extending the pipeline | **KEEP / VERIFY** — canonical must have equivalent bounded fan-out |
+| Fail-open feed isolation | Individual whale/feed failures do not abort the entire cycle | **KEEP / VERIFY** |
+| 5m → 15m variant ambiguity resolver | Same candle touching TP and SL becomes `ambiguous` immediately; excluded from resolved denominator | **KEEP CANONICAL** — already represented by the canonical resolver safety design; verify with fresh rows |
+| Market-session classification | Adds session context and peak/off-hours metadata | **PORT METADATA ONLY** — session score modifier remains disabled/shadow-only |
+| CORE_ALWAYS_INCLUDE (BTC/ETH/SOL) | Prevents dynamic watchlist churn from dropping core majors | **KEEP / VERIFY** |
+| Watchlist provenance / snapshots | Provides reproducibility of why a symbol entered the cycle | **KEEP / VERIFY** |
+| Cleanup feature flags + error serialization | Safe staged rollout and consistent diagnostics | **KEEP / VERIFY** |
+| Legacy shadow performance SQL | Historical performance aggregation and long-only filtering | **REUSE LOGIC, NOT WRITER** — no second producer |
+
+### Important architectural rule
+
+The legacy `runFullPipeline()` remains **disabled**. We are extracting useful algorithms and safeguards, not reactivating the legacy execution path.
+
+No historical `strategy_variant_signals` rows will be rewritten as part of this audit.
+
+### Current blocker
+
+The canonical Lovable agent could not be asked to apply this improvement pass because the connected Lovable workspace currently reports **out of credits**. Therefore **no unverified canonical code change is being claimed** from this audit.
+
+The next implementation pass must inspect the canonical orchestrator first and port only features that are genuinely absent. This prevents duplicate implementations and avoids accidentally changing production strategy logic.
+
+### Required verification after implementation
+
+For each ported feature:
+1. prove the canonical path owns it;
+2. prove the legacy writer remains disabled;
+3. run typecheck/build/tests;
+4. execute at least one canonical cycle;
+5. compare canonical output with the relevant legacy algorithm on the same inputs;
+6. only then mark the feature DONE.
+
+**Do not deploy strategy changes merely because a legacy feature looks attractive. Stabilization and clean observations remain the priority.**
