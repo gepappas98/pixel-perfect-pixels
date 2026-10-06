@@ -176,6 +176,7 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
       db
         .from("prediction_snapshots")
         .select("market_slug, question, yes_price, created_at")
+        .gte("created_at", thirtyMinAgo)
         .order("created_at", { ascending: false })
         .limit(2000),
       db
