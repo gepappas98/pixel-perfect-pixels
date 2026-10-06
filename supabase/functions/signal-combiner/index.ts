@@ -428,6 +428,27 @@ Deno.serve(async (req) => {
       if (mtf.primary || mtf.fast || mtf.trend) reasoningParts.push(`MTF: ${mtf.detail}`);
       if (gate.note) reasoningParts.push(gate.note);
 
+      // Persist provenance on every composite row without changing the current
+      // production recommendation semantics. This closes a data-lineage gap:
+      // the signal already consumed these inputs, but the row previously lost
+      // its regime, source tags, price and reproducible input fingerprint.
+      const sourceTags = [
+        whale ? "whale" : null,
+        indicator ? "technicals" : null,
+        prediction ? "prediction" : null,
+        council ? "council" : null,
+        mtf.primary || mtf.fast || mtf.trend ? "mtf" : null,
+      ].filter((tag): tag is string => Boolean(tag));
+      const signalFingerprint = [
+        symbol,
+        whale?.id ?? "",
+        indicator?.id ?? "",
+        prediction?.id ?? "",
+        council?.id ?? "",
+        productionRegimeLabel,
+        gate.recommendation,
+      ].join("|");
+
       // Observational strategy variants: same canonical inputs, isolated from composite signal/trades.
       // Long-only benchmark: only BUY variants are persisted.
       const variantEntryPrice = Number(indicator?.price ?? 0);
@@ -475,6 +496,10 @@ Deno.serve(async (req) => {
           confidence: result.confidence,
           recommendation: gate.recommendation,
           reasoning: reasoningParts.join("; "),
+          price_at: Number(indicator?.price ?? 0) > 0 ? Number(indicator.price) : null,
+          regime_label: productionRegimeLabel,
+          source_tags: sourceTags,
+          fingerprint: signalFingerprint,
         })
         .select()
         .single();
