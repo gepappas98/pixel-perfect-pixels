@@ -568,6 +568,138 @@ export type Database = {
         }
         Relationships: []
       }
+      shadow_v2_audit: {
+        Row: {
+          created_at: string
+          decision: string
+          details: Json
+          fingerprint: string
+          id: string
+          reason: string
+          signal_id: string | null
+          strategy: string
+          symbol: string
+        }
+        Insert: {
+          created_at?: string
+          decision: string
+          details?: Json
+          fingerprint: string
+          id?: string
+          reason: string
+          signal_id?: string | null
+          strategy: string
+          symbol: string
+        }
+        Update: {
+          created_at?: string
+          decision?: string
+          details?: Json
+          fingerprint?: string
+          id?: string
+          reason?: string
+          signal_id?: string | null
+          strategy?: string
+          symbol?: string
+        }
+        Relationships: []
+      }
+      shadow_v2_positions: {
+        Row: {
+          ambiguity_reason: string | null
+          ambiguous_intrabar: boolean
+          created_at: string
+          details: Json
+          entry_fee_usd: number
+          entry_price: number
+          entry_timestamp: string
+          exit_fee_usd: number
+          exit_price: number | null
+          exit_reason: string | null
+          exit_timestamp: string | null
+          expiry_timestamp: string
+          fees_pct: number
+          fees_usd: number
+          fingerprint: string
+          gross_pnl_pct: number
+          gross_pnl_usd: number
+          id: string
+          net_pnl_pct: number
+          net_pnl_usd: number
+          performance_mode: string
+          signal_created_at: string
+          signal_id: string | null
+          status: string
+          stop_loss_price: number
+          strategy: string
+          symbol: string
+          take_profit_price: number
+          updated_at: string
+        }
+        Insert: {
+          ambiguity_reason?: string | null
+          ambiguous_intrabar?: boolean
+          created_at?: string
+          details?: Json
+          entry_fee_usd?: number
+          entry_price: number
+          entry_timestamp: string
+          exit_fee_usd?: number
+          exit_price?: number | null
+          exit_reason?: string | null
+          exit_timestamp?: string | null
+          expiry_timestamp: string
+          fees_pct?: number
+          fees_usd?: number
+          fingerprint: string
+          gross_pnl_pct?: number
+          gross_pnl_usd?: number
+          id?: string
+          net_pnl_pct?: number
+          net_pnl_usd?: number
+          performance_mode?: string
+          signal_created_at: string
+          signal_id?: string | null
+          status?: string
+          stop_loss_price: number
+          strategy: string
+          symbol: string
+          take_profit_price: number
+          updated_at?: string
+        }
+        Update: {
+          ambiguity_reason?: string | null
+          ambiguous_intrabar?: boolean
+          created_at?: string
+          details?: Json
+          entry_fee_usd?: number
+          entry_price?: number
+          entry_timestamp?: string
+          exit_fee_usd?: number
+          exit_price?: number | null
+          exit_reason?: string | null
+          exit_timestamp?: string | null
+          expiry_timestamp?: string
+          fees_pct?: number
+          fees_usd?: number
+          fingerprint?: string
+          gross_pnl_pct?: number
+          gross_pnl_usd?: number
+          id?: string
+          net_pnl_pct?: number
+          net_pnl_usd?: number
+          performance_mode?: string
+          signal_created_at?: string
+          signal_id?: string | null
+          status?: string
+          stop_loss_price?: number
+          strategy?: string
+          symbol?: string
+          take_profit_price?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
       signal_pattern_stats: {
         Row: {
           avg_pnl_pct: number | null
@@ -973,8 +1105,7 @@ export type Database = {
           postgres_version: string
         }[]
       }
-      get_system_resource_stats: { Args: never; Returns: Json }
-      get_variant_performance: {
+      get_shadow_v2_performance: {
         Args: { days?: number }
         Returns: {
           expired: number
@@ -986,7 +1117,8 @@ export type Database = {
           wins: number
         }[]
       }
-      get_shadow_v2_performance: {
+      get_system_resource_stats: { Args: never; Returns: Json }
+      get_variant_performance: {
         Args: { days?: number }
         Returns: {
           expired: number

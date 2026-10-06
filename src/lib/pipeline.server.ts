@@ -131,12 +131,12 @@ function createExecutionAuditEvent(
   return {
     ts: new Date().toISOString(),
     symbol,
-    signal_id: opts?.signalId,
     stage,
     decision,
     reason,
-    confidence: opts?.confidence,
-    details: opts?.details,
+    ...(opts?.signalId !== undefined ? { signal_id: opts.signalId } : {}),
+    ...(opts?.confidence !== undefined ? { confidence: opts.confidence } : {}),
+    ...(opts?.details !== undefined ? { details: opts.details } : {}),
   };
 }
 
@@ -1786,7 +1786,7 @@ async function runShadowV2Observer(variantRows: Record<string, unknown>[]): Prom
         signal,
         activePositions: active,
         processedFingerprints,
-        lastExitTimestamp: latestExitBySymbol.get(row.symbol),
+        lastExitTimestamp: latestExitBySymbol.get(row.symbol) ?? null,
         mode: "DEDUPLICATED",
       });
 
@@ -3788,7 +3788,7 @@ export async function runFullPipeline() {
         db,
         "feed_error",
         "CRITICAL: All whale sources failed",
-        { symbol: null, tags: [], details: whaleHealth },
+        { symbol: null, tags: [] },
       );
     } else if (whales === 0) {
       console.log("[WHALES_EMPTY] Sources responded, but no qualifying whale trade was found in this cycle.");
