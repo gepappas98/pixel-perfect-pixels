@@ -12,6 +12,8 @@ export function useLiveTable<T>(table: string, limit = 20, orderBy = "created_at
   const [rows, setRows] = useState<T[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [realtimeStatus, setRealtimeStatus] = useState<"CONNECTING" | "SUBSCRIBED" | "CHANNEL_ERROR" | "TIMED_OUT" | "CLOSED">("CONNECTING");
+  const [realtimeError, setRealtimeError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const { data, error: err } = await supabase
@@ -64,7 +66,17 @@ export function useLiveTable<T>(table: string, limit = 20, orderBy = "created_at
           (row as { id?: string }).id === payload.new["id"] ? payload.new as T : row
         )));
       })
-      .subscribe();
+      .subscribe((status, err) => {
+        if (status === "SUBSCRIBED" || status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+          setRealtimeStatus(status);
+        }
+        if (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          setRealtimeError(message);
+        } else if (status === "SUBSCRIBED") {
+          setRealtimeError(null);
+        }
+      });
 
     return () => {
       active = false;
@@ -72,5 +84,5 @@ export function useLiveTable<T>(table: string, limit = 20, orderBy = "created_at
     };
   }, [table, limit, orderBy]);
 
-  return { rows, loading, error, refresh };
+  return { rows, loading, error, refresh, realtimeStatus, realtimeError };
 }
