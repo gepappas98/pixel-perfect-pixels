@@ -107,10 +107,8 @@ export async function fetchCleanupConfig(): Promise<CleanupConfig> {
   }
 
   try {
-    const { supabaseAdmin } = await import(
-      "@/integrations/supabase/client.server"
-    );
-    const { data, error } = await supabaseAdmin
+    const { supabase } = await import("@/integrations/supabase/client");
+    const { data, error } = await supabase
       .from("pipeline_settings")
       .select("cleanup_config")
       .single();
