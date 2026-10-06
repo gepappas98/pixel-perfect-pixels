@@ -47,10 +47,8 @@ function rowToConfig(row: Record<string, unknown>): StrategyConfigFull {
 export const getStrategyConfig = createServerFn({ method: "GET" }).handler(
   async (): Promise<StrategyConfigFull> => {
     try {
-      const { supabaseAdmin } = await import(
-        "@/integrations/supabase/client.server"
-      );
-      const { data, error } = await supabaseAdmin
+      const { supabase } = await import("@/integrations/supabase/client");
+      const { data, error } = await supabase
         .from("strategy_config")
         .select("*")
         .eq("id", 1)
