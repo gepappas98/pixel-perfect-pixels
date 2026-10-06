@@ -42,6 +42,69 @@ const DEFAULT_MTF_GATE: MtfGateConfig = {
   min_timeframes: 2,
 };
 
+type StrategyWeights = {
+  whale: number;
+  technicals: number;
+  prediction: number;
+  council: number;
+};
+
+type StrategySnapshot = StrategyWeights & {
+  preset_name: string | null;
+  updated_at: string | null;
+};
+
+async function loadStrategySnapshot(supabase: ReturnType<typeof getServiceClient>): Promise<StrategySnapshot | null> {
+  const { data, error } = await supabase
+    .from("strategy_config")
+    .select("whale_weight,technicals_weight,prediction_weight,council_weight,preset_name,updated_at")
+    .eq("id", 1)
+    .maybeSingle();
+
+  if (error || !data) {
+    console.error("[STRATEGY_SHADOW] strategy_config load failed:", error?.message ?? "missing row");
+    return null;
+  }
+
+  return {
+    whale: Number(data.whale_weight),
+    technicals: Number(data.technicals_weight),
+    prediction: Number(data.prediction_weight),
+    council: Number(data.council_weight),
+    preset_name: data.preset_name ?? null,
+    updated_at: data.updated_at ?? null,
+  };
+}
+
+function calculateConfiguredShadow(
+  whale: any | null,
+  indicator: any | null,
+  prediction: any | null,
+  council: any | null,
+  weights: StrategyWeights,
+) {
+  let score = 0;
+  if (whale?.direction === "accumulation") score += weights.whale;
+  if (whale?.direction === "distribution") score -= weights.whale;
+  if (indicator?.signal === "bullish") score += weights.technicals;
+  if (indicator?.signal === "bearish") score -= weights.technicals;
+  if (prediction?.yes_price != null) {
+    if (Number(prediction.yes_price) > 0.6) score += 0.5 * weights.prediction;
+    else if (Number(prediction.yes_price) < 0.4) score -= 0.5 * weights.prediction;
+  }
+  if (council?.final_verdict) {
+    const conviction = Number(council.conviction ?? 50) / 100;
+    const verdict = String(council.final_verdict).toUpperCase();
+    if (verdict === "BUY") score += conviction * 1.5 * weights.council;
+    else if (verdict === "SELL" || verdict === "AVOID") score -= conviction * 1.5 * weights.council;
+  }
+
+  const max = weights.whale + weights.technicals + 0.5 * weights.prediction + 1.5 * weights.council;
+  const confidence = max > 0 ? Math.min(1, Math.abs(score) / max) : 0;
+  const recommendation = score >= 1.5 ? "buy" : score <= -1.5 ? "sell" : Math.abs(score) < 0.5 ? "hold" : "watch";
+  return { score, confidence, recommendation };
+}
+
 function indicatorSymbol(symbol: string) {
   return `${SYMBOL_MAP[symbol] ?? symbol}USDT`;
 }
@@ -282,6 +345,7 @@ Deno.serve(async (req) => {
       ...DEFAULT_MTF_GATE,
       ...(cleanup.mtf_confirmation_gate ?? {}),
     };
+    const strategySnapshot = await loadStrategySnapshot(supabase);
 
     const since = new Date(Date.now() - WHALE_LOOKBACK_MS).toISOString();
     const predictionSince = new Date(Date.now() - PREDICTION_MAX_AGE_MS).toISOString();
@@ -337,6 +401,27 @@ Deno.serve(async (req) => {
 
       const result = ruleBasedRecommendation(whale, indicator, prediction, council);
       const gate = applyMtfGate(result.recommendation, mtf, mtfGate);
+
+      if (strategySnapshot) {
+        const shadow = calculateConfiguredShadow(whale, indicator, prediction, council, strategySnapshot);
+        const { error: shadowError } = await supabase
+          .from("strategy_shadow_diagnostics")
+          .insert({
+            symbol,
+            strategy_preset: strategySnapshot.preset_name,
+            strategy_updated_at: strategySnapshot.updated_at,
+            whale_weight: strategySnapshot.whale,
+            technicals_weight: strategySnapshot.technicals,
+            prediction_weight: strategySnapshot.prediction,
+            council_weight: strategySnapshot.council,
+            current_score: result.recommendation === "buy" ? result.confidence : result.recommendation === "sell" ? -result.confidence : 0,
+            current_recommendation: gate.recommendation,
+            shadow_score: shadow.score,
+            shadow_confidence: shadow.confidence,
+            shadow_recommendation: shadow.recommendation,
+          });
+        if (shadowError) throw shadowError;
+      }
 
       const reasoningParts = [result.reasoning];
       if (mtf.primary || mtf.fast || mtf.trend) reasoningParts.push(`MTF: ${mtf.detail}`);
