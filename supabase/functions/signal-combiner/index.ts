@@ -354,29 +354,35 @@ function ruleBasedRecommendation(
 
   if (whale?.direction === "accumulation") {
     score += 1;
+    components.whale = 1;
     reasons.push("whale accumulation");
   }
   if (whale?.direction === "distribution") {
     score -= 1;
+    components.whale = -1;
     reasons.push("whale distribution");
   }
 
   if (indicator?.signal === "bullish") {
     score += 1;
+    components.technicals = 1;
     reasons.push("bullish technicals (4h)");
   }
   if (indicator?.signal === "bearish") {
     score -= 1;
+    components.technicals = -1;
     reasons.push("bearish technicals (4h)");
   }
 
   if (prediction?.yes_price != null) {
     if (prediction.yes_price > 0.6) {
       score += 0.5;
+      components.prediction = 0.5;
       reasons.push("prediction market leaning yes");
     }
     if (prediction.yes_price < 0.4) {
       score -= 0.5;
+      components.prediction = -0.5;
       reasons.push("prediction market leaning no");
     }
   }
@@ -386,12 +392,15 @@ function ruleBasedRecommendation(
     const verdict = String(council.final_verdict).toUpperCase();
     if (verdict === "BUY") {
       score += weight;
+      components.council = weight;
       reasons.push(`council: BUY (${council.conviction}% conviction)`);
     } else if (verdict === "SELL") {
       score -= weight;
+      components.council = -weight;
       reasons.push(`council: SELL (${council.conviction}% conviction)`);
     } else if (verdict === "AVOID") {
       score -= weight;
+      components.council = -weight;
       reasons.push(`council: AVOID (${council.conviction}% conviction)`);
     }
   }
