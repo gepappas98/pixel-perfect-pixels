@@ -20,7 +20,46 @@ export const runPipeline = createServerFn({ method: "POST" })
     );
 
     if (error) {
-      throw new Error(`Canonical pipeline trigger failed: ${error.message}`);
+      // Supabase Functions returns a generic non-2xx error, but the
+      // orchestrator may include an actionable JSON body (for example
+      // HTTP 409 + { skipped: true } when another canonical run is active).
+      // Preserve that diagnostic instead of collapsing it into the generic
+      // "non-2xx" message shown by the dashboard.
+      const context = (error as unknown as { context?: unknown }).context;
+      let detail = error.message;
+
+      if (context && typeof context === "object" && "clone" in context) {
+        try {
+          const response = context as Response;
+          const body = await response.clone().text();
+          if (body) {
+            try {
+              const parsed = JSON.parse(body) as {
+                message?: unknown;
+                error?: unknown;
+                reason?: unknown;
+                skipped?: unknown;
+                run_id?: unknown;
+              };
+              const parts = [
+                typeof parsed.message === "string" ? parsed.message : null,
+                typeof parsed.error === "string" ? parsed.error : null,
+                typeof parsed.reason === "string" ? parsed.reason : null,
+                parsed.skipped === true ? "Canonical run skipped because another run is already active." : null,
+                typeof parsed.run_id === "string" ? `run_id=${parsed.run_id}` : null,
+              ].filter(Boolean);
+              if (parts.length > 0) detail = parts.join(" · ");
+              else detail = body.slice(0, 1000);
+            } catch {
+              detail = body.slice(0, 1000);
+            }
+          }
+        } catch (diagnosticError) {
+          console.warn("[MANUAL_PIPELINE_TRIGGER] could not read orchestrator error body", diagnosticError);
+        }
+      }
+
+      throw new Error(`Canonical pipeline trigger failed: ${detail}`);
     }
 
     return result;
