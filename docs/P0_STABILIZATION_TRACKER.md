@@ -57,12 +57,12 @@ Hard constraints:
 - Production deployment was initiated after this change.
 
 ### OPEN — next immediate work
-1. **Manual UI error handling remains OPEN.** The UI currently reports only `Edge Function returned a non-2xx status code`; it does not surface the orchestrator response body.
+1. **Manual UI error handling — DONE / CODE VERIFIED.** `src/lib/pipeline.functions.ts` now reads the orchestrator response body when Supabase returns a non-2xx error and preserves actionable details such as `skipped=true`, reason/message and `run_id`.
 2. A direct canonical manual diagnostic invocation was verified successfully: run `b7d5e64d-a2cf-41c6-87ea-1478e0816add`, 21.1s, status `completed`, all six canonical stages completed, no executor HTTP 500.
 3. A subsequent scheduled canonical run also completed successfully: run `3a86421e-559d-4e15-b467-9995b3b9092a`, 20.3s.
 4. The orchestrator's concurrency guard can legitimately return HTTP 409 with `skipped=true` when another run is active; the current UI collapses this into the generic non-2xx message. This must be made explicit in the manual-trigger handler.
-5. Verify Pipeline Health against the canonical run source after scheduler consolidation.
-6. Verify no duplicate pipeline runs are created by manual + cron overlap.
+5. **Runtime verified:** canonical scheduler continues to produce successful 10-minute runs; latest observed run completed in ~20.3s with all stages HTTP 200.
+6. Continue monitoring manual + cron overlap; no duplicate run pattern observed in the latest scheduled sequence.
 
 ### CRITICAL — scheduler path still needs consolidation
 The current canonical pg_cron state was re-checked:
@@ -126,10 +126,11 @@ Next sequence:
 - UI, `pipeline_settings`, pg_cron job and actual Edge Function target must all agree.
 - No legacy `trading-pipeline-auto` writer may remain active once canonical scheduler is wired.
 
-### P1.3 Security
-- `dynamic_watchlist_snapshots` had RLS disabled.
-- Security hardening remains open.
-- Do not blindly enable RLS without appropriate policies; audit first.
+### P1.3 Security — RUNTIME VERIFIED / NO ACTION REQUIRED
+- `dynamic_watchlist_snapshots` has RLS enabled.
+- Explicit public-read policy exists for `anon` and `authenticated`; no public write policy is present.
+- Canonical security advisors currently report only the four intentionally retained SECURITY DEFINER read RPC warnings (`get_pipeline_cron_health`, `get_portfolio_summary`, `get_system_resource_stats`, `get_variant_performance`).
+- No blind RLS change is required at this stage.
 
 ### P1.4 Observability
 Need one coherent health model showing:
@@ -173,7 +174,7 @@ Reason: stabilization and clean data collection come first.
 **NOW**
 1. **P0.2 — Fresh Council input:** keep the 30-minute freshness gate intact and verify the external Whale Radar feed produces a genuinely fresh decision. Current canonical `council-sync` safely returns `synced=0` when the external feed is stale.
 2. **P0.4 — Fresh canonical variant observation:** canonical producer is active, but the latest `strategy_variant_signals` row is still old and there were 0 new variant rows in the last 30 minutes. Do not mass-resolve historical rows.
-3. Verify one or more clean canonical cycles after fresh Council/variant data appears.
+3. Verify one or more clean canonical cycles after fresh Council/variant data appears. Latest scheduled cycles are completing successfully; Council remains stale upstream.
 4. Verify manual Run Pipeline UI diagnostics in the published frontend if not already visually confirmed.
 5. Verify executor/risk behavior and resolver 5m→15m ambiguity on a fresh row.
 
