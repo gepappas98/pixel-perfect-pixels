@@ -28,8 +28,8 @@ const cryptoWord = /\b(bitcoin|btc|ethereum|eth|solana|sol|xrp|ripple|dogecoin|d
 interface PolymarketMarket {
   slug?: string;
   question?: string;
-  outcomePrices?: string;
-  volume24hr?: number;
+  outcomePrices?: string | string[];
+  volume24hr?: number | string;
 }
 interface PolymarketEvent { markets?: PolymarketMarket[]; }
 
@@ -90,9 +90,12 @@ Deno.serve(async (req) => {
       let yes: number | null = null;
       let no: number | null = null;
       try {
-        const prices = JSON.parse(market.outcomePrices ?? "[]") as string[];
-        yes = prices[0] ? parseFloat(prices[0]) : null;
-        no = prices[1] ? parseFloat(prices[1]) : null;
+        const rawPrices = market.outcomePrices;
+        const prices = Array.isArray(rawPrices)
+          ? rawPrices
+          : JSON.parse(rawPrices ?? "[]") as string[];
+        yes = prices[0] != null ? Number(prices[0]) : null;
+        no = prices[1] != null ? Number(prices[1]) : null;
       } catch {
         continue;
       }
