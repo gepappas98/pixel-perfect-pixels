@@ -421,7 +421,7 @@ Deno.serve(async (req) => {
             shadow_confidence: shadow.confidence,
             shadow_recommendation: shadow.recommendation,
           });
-        if (shadowError) throw shadowError;
+        if (shadowError) console.error("[STRATEGY_SHADOW] diagnostics insert failed:", shadowError.message);
       }
 
       const reasoningParts = [result.reasoning];
