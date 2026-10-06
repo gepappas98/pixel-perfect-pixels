@@ -97,7 +97,7 @@ function AskCouncilForm({ onSuccess }: { onSuccess: () => Promise<boolean> }) {
 }
 
 export function CouncilPanel() {
-  const { rows: syncedRows, loading: syncing, error: syncError, refresh } = useLiveTable<CouncilSignal>(
+  const { rows: syncedRows, loading: syncing, error: syncError, refresh, realtimeStatus, realtimeError } = useLiveTable<CouncilSignal>(
     "council_signals",
     12,
     "source_created_at",
@@ -107,6 +107,8 @@ export function CouncilPanel() {
     (row, index, all) => all.findIndex((candidate) => candidate.symbol === row.symbol) === index,
   );
   const updated = rows[0]?.source_created_at;
+  const realtimeLabel = realtimeStatus === "SUBSCRIBED" ? "live" : realtimeStatus === "CONNECTING" ? "connecting" : realtimeStatus === "TIMED_OUT" ? "timed out" : realtimeStatus === "CHANNEL_ERROR" ? "error" : "closed";
+  const realtimeClass = realtimeStatus === "SUBSCRIBED" ? "text-bull" : realtimeStatus === "CONNECTING" ? "text-warn" : "text-destructive";
 
   return (
     <section className="panel overflow-hidden">
@@ -117,8 +119,8 @@ export function CouncilPanel() {
             Whale Radar sync + our own verdicts
           </p>
         </div>
-        <span className="flex items-center gap-1.5 text-[10px] text-bull">
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-bull" /> live
+        <span className={`flex items-center gap-1.5 text-[10px] ${realtimeClass}`} title={realtimeError ?? `Realtime: ${realtimeStatus}`}>
+          <span className={`h-1.5 w-1.5 rounded-full ${realtimeStatus === "SUBSCRIBED" ? "animate-pulse bg-bull" : realtimeStatus === "CONNECTING" ? "animate-pulse bg-warn" : "bg-destructive"}`} /> {realtimeLabel}
         </span>
       </div>
 
