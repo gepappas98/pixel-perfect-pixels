@@ -7,6 +7,13 @@ const MIN_VOLUME_USD = 500;
 /** Όρια για "σχεδόν λυμένα" markets — δεν δίνουν πληροφορία. */
 const RESOLVED_LOW = 0.05;
 const RESOLVED_HIGH = 0.95;
+const DIRECTIONAL_PRICE_QUESTION = /(?:\$\s?\d|\b(?:all[- ]time high|ath)\b)/i;
+const DIRECTIONAL_EVENT = /\b(?:reach|hit|above|surpass|exceed|break|all[- ]time high|ath|dip|drop|fall|below|crash|down to|under|bottom)\b/i;
+
+function isRelevantMarketQuestion(question: string | null): boolean {
+  const q = String(question ?? "");
+  return DIRECTIONAL_PRICE_QUESTION.test(q) && DIRECTIONAL_EVENT.test(q);
+}
 
 const money = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -50,6 +57,7 @@ function pickTopMarkets(rows: PredictionSnapshot[]): PredictionSnapshot[] {
     if (yes == null) continue;
     if (yes < RESOLVED_LOW || yes > RESOLVED_HIGH) continue;
     if (volumeOf(p) < MIN_VOLUME_USD) continue;
+    if (!isRelevantMarketQuestion(p.question)) continue;
 
     const current = bySymbol.get(symbol);
     if (!current) {
