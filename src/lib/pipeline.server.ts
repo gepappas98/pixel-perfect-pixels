@@ -3898,6 +3898,8 @@ export async function runFullPipeline() {
     const finalStatus = health.degraded ? "degraded" : "success";
     const errorMessage = health.degraded ? `DEGRADED: ${health.degradedReasons.join("; ")}` : null;
 
+    // Only real pipeline_runs columns. Non-column data (e.g. whale health)
+    // belongs inside the `result` jsonb.
     const summary = {
       completed_at: completedAt.toISOString(),
       duration_ms: completedAt.getTime() - startedAt.getTime(),
@@ -3909,7 +3911,6 @@ export async function runFullPipeline() {
       ai_status: learning.status,
       ai_error: learning.error,
       ai_lessons_generated: learning.generated,
-      whale_health: whaleHealth,
     };
 
     const executionAuditPayload = {
@@ -3927,6 +3928,7 @@ export async function runFullPipeline() {
     if (globalRiskTriggered) console.warn(`[GLOBAL_RISK] trigger fired this run — cooldown active`);
     console.log(`[PIPELINE_DONE] watchlist_size=${watchlistCtx.symbols.length} source=${watchlistCtx.meta.source}`);
 
+    let persistenceError: string | null = null;
     if (runId) {
       const { error: updateError } = await db
         .from("pipeline_runs")
@@ -3934,17 +3936,29 @@ export async function runFullPipeline() {
           ...summary,
           result: {
             execution_audit: executionAuditPayload,
+            whale_health: whaleHealth,
           },
         } as never)
         .eq("id", runId);
 
       if (updateError) {
-        console.error("failed to update pipeline run", updateError);
-        if (health.degraded) {
-          // Fallback: χωρίς result, μόνο summary — σε περίπτωση που το
-          // result column δεν είναι διαθέσιμο ή έχει schema conflict.
-          const fallback = { ...summary, status: "success" };
-          await db.from("pipeline_runs").update(fallback as never).eq("id", runId);
+        const code = (updateError as { code?: string }).code ?? "unknown";
+        console.error(
+          `[PIPELINE_PERSIST] primary update failed code=${code} message=${updateError.message}`,
+        );
+        // Minimal fallback: only known pipeline_runs columns, no result jsonb.
+        const { error: fallbackError } = await db
+          .from("pipeline_runs")
+          .update(summary as never)
+          .eq("id", runId);
+        if (fallbackError) {
+          const fbCode = (fallbackError as { code?: string }).code ?? "unknown";
+          console.error(
+            `[PIPELINE_PERSIST] fallback update failed code=${fbCode} message=${fallbackError.message}`,
+          );
+          persistenceError = `primary(${code}): ${updateError.message}; fallback(${fbCode}): ${fallbackError.message}`;
+        } else {
+          console.warn("[PIPELINE_PERSIST] fallback update succeeded (result jsonb not saved)");
         }
       }
     }
@@ -3952,6 +3966,7 @@ export async function runFullPipeline() {
       whales, indicators, predictions, council, signals, trades, mode,
       degraded: health.degraded,
       degraded_reasons: health.degradedReasons,
+      ...(persistenceError ? { persistence_error: persistenceError } : {}),
     };
   } catch (e) {
     const raw = serializeError(e);
