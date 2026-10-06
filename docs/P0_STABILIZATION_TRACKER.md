@@ -424,3 +424,30 @@ The deployed Edge Function sources are now mirrored under `supabase/functions/{p
 - No DB values, historical rows, strategy thresholds, classifier, or production scoring were changed in this audit.
 
 Status: **P1.1 AUDIT COMPLETE — CONFIRMED DEFECT — IMPLEMENTATION DEFERRED UNTIL STABILIZATION GATE**
+
+## 2026-10-06 — Canonical website-read binding pass
+
+### System Resources — FIXED / VERIFY
+- Root cause confirmed: canonical DB had **no** `public.get_system_resource_stats()`; the dashboard was therefore dependent on the legacy server-side Supabase binding.
+- Canonical `get_system_resource_stats()` was created directly in `yckewtpfttvwiptmmrfq` as a read-only `SECURITY DEFINER` aggregate RPC with explicit `anon/authenticated/service_role` EXECUTE.
+- Metrics now use client-backend connection count, database size, exact `strategy_variant_signals` count, and database cache-hit ratio.
+- Canonical verification returned: **12/60 connections, 26 MB, 718 variant rows, 99.92% cache hit**.
+- Repo migration mirror: `supabase/migrations/20261006192000_canonical_system_resource_stats.sql`.
+- `getSystemResourceMetrics()` now reads both resource stats and pipeline health through the canonical Supabase client.
+- Code commit: `f74606e7fa50514c6ea0c831d909d3becfad363f`.
+- Migration commit: `d002142a2b58c293e03b00488fc93f071514e48b`.
+- Production UI verification remains required after publish.
+
+### Website read binding — FIXED / VERIFY
+The following read-only website paths were moved off the legacy server-side Supabase binding and onto the canonical client, without changing write paths:
+- AI health read — commit `4ffaf7795360c06648779cad020f654cff155eea`.
+- Strategy config read — commit `8f04c1bd51640276c1a4cee01c1ddbc4b283d08e`.
+- Cleanup config read — commit `493c3f3ef637bef26cfb1a37eb4404f6e60fd042`.
+- Market Regime read — commit `bb359b194e2e82cca00c28441688a7f73287e402`.
+- Diagnostic / Shadow read paths — commits `334a721fd7ef39d88df1403d1e8cefb4ea718c4e`, `d87014748a0b887c7ad824b1765c0b45deb56464`.
+- Portfolio was already correctly using the canonical browser client; canonical `get_portfolio_summary()` verified successfully with 0 open, 0 closed and 3 legacy open SELL rows excluded.
+- Schedule read and Pipeline Health read were already moved to the canonical client in commits `509eeff7161e29683568281a42879ea2be3b1954` and `d24fff7cc320a198f6ae6aa317129ced63448db3`.
+
+### Security note
+- Supabase security advisor flags the new System Resources RPC as a public SECURITY DEFINER function. This is intentional for the public dashboard and the function returns aggregate resource metrics only; no secrets, rows, or query text are exposed.
+- Existing security findings remain open and are not being mixed into this read-binding pass.
