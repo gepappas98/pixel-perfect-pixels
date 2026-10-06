@@ -10,8 +10,20 @@ export const runPipeline = createServerFn({ method: "POST" })
   })
   .handler(async ({ data }) => {
     if (data.pin !== PIPELINE_PIN) throw new Error("Invalid PIN");
-    const { runFullPipeline } = await import("./pipeline.server");
-    return await runFullPipeline();
+
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    console.log("[MANUAL_PIPELINE_TRIGGER] invoking canonical trading-pipeline-orchestrator");
+
+    const { data: result, error } = await supabaseAdmin.functions.invoke(
+      "trading-pipeline-orchestrator",
+      { body: { trigger: "manual", source: "dashboard" } },
+    );
+
+    if (error) {
+      throw new Error(`Canonical pipeline trigger failed: ${error.message}`);
+    }
+
+    return result;
   });
 
 export const getTradingStatus = createServerFn({ method: "GET" }).handler(
