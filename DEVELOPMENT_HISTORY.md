@@ -137,3 +137,15 @@ This is a confirmed P1 wiring defect, not a request to optimize strategy perform
 - Therefore no database “unfreeze”, scheduler rewrite, or legacy cron restoration was performed. Doing so would have created a duplicate/incorrect production executor.
 - A new Lovable production deployment was submitted from the latest project commit: deployment id `9b708f8c-404e-4786-88ac-d475ed29529e`, status `pending`. Completion is not claimed yet.
 - Next verification: after deployment completion, reload the published `lovable.app` URL and confirm the frontend reports the canonical 10-minute HEALTHY state. Only if the published artifact still disagrees will we modify frontend/runtime code.
+
+
+## 2026-10-06 — P0.2 root cause: prediction feed was silently filtering all markets
+- Canonical pipeline execution is healthy and sequential: the 15:40 UTC run completed in 21.2s.
+- Stage-level evidence from the canonical run shows `tradingview-signals` produced 33 fresh indicator snapshots at 15:40, while `polymarket-check` scanned 689 markets but returned `inserted=0, snapshots=[]`; `council-sync` returned `synced=0, stale_skipped=5`.
+- Production freshness audit confirms the split: indicators latest 15:30 UTC with 33 rows in the last hour; whale alerts latest 15:10 UTC; prediction snapshots latest 08:50 UTC with 0 in the last hour; council signals latest 08:40 UTC with 0 in the last hour; composite signals continue to be generated at 15:30 UTC.
+- This means the engine is running, but the input layers are not converging into the combiner. The combiner is correctly refusing stale prediction/council data rather than mixing hours-old inputs into current signals.
+- Root cause found in canonical `polymarket-check`: `matchSymbolFromQuestion()` used an over-escaped word-boundary regex, so valid questions such as “Will Bitcoin reach $100,000 by December 31, 2026?” could fail symbol matching. The function therefore scanned markets but produced no snapshot rows.
+- The first regex correction was verified in GitHub but deployment v6 still showed the old over-escaped runtime representation; a second surgical correction was applied and deployed as v7. The function was then hardened for current Polymarket payloads by accepting both string and array `outcomePrices` and numeric/string `volume24hr`. This is deployed as canonical `polymarket-check` version 8 ACTIVE.
+- GitHub commits: `02b5283806af6b3f2fa919f38feb7161ac0908e7`, `1e4d9660237613afed3aafeb2d381fe32dff7795`, `dae3b416b9bb453dda92c869912962f0eea118ec`.
+- No scheduler, combiner, freshness guard, or strategy values were changed. The next canonical run must verify that prediction snapshots are refreshed and then that the combiner consumes them.
+- Council remains a separate P0.2 blocker: the upstream public council feed is currently returning five decisions older than the 30-minute freshness guard, so `council-sync` correctly skips them. We will not weaken that guard; the next investigation is the upstream council producer/freshness path.
