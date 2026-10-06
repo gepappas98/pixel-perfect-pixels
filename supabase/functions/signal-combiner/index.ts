@@ -119,11 +119,15 @@ function predictionMagnitudeForShadow(prediction: any | null): number {
  */
 function calculateConfiguredShadow(
   whale: any | null,
-  mtf: ReturnType<typeof classifyMtf>,
+  mtf: ReturnType<typeof classifyMtf> | null,
   prediction: any | null,
   council: any | null,
   weights: StrategyWeights,
 ) {
+  // Defensive runtime normalization: diagnostic shadow must never be able to
+  // take down the canonical signal-combiner if an unexpected null MTF payload
+  // reaches this helper. Treat a missing MTF context as fully neutral.
+  const safeMtf = mtf ?? classifyMtf([]);
   let score = 0;
   let hardConflict = false;
 
@@ -133,12 +137,12 @@ function calculateConfiguredShadow(
   // Historical evaluateMultiTimeframe() score:
   // primary direction is ±1, matching fast/trend multiplies 1.3,
   // conflicting non-neutral timeframes multiply 0.7.
-  if (mtf.p !== "neutral") {
-    let mtfScore = mtf.p === "bullish" ? 1 : -1;
-    if (mtf.f === mtf.p) mtfScore *= 1.3;
-    else if (mtf.f !== "neutral") mtfScore *= 0.7;
-    if (mtf.t === mtf.p) mtfScore *= 1.3;
-    else if (mtf.t !== "neutral") mtfScore *= 0.7;
+  if (safeMtf.p !== "neutral") {
+    let mtfScore = safeMtf.p === "bullish" ? 1 : -1;
+    if (safeMtf.f === safeMtf.p) mtfScore *= 1.3;
+    else if (safeMtf.f !== "neutral") mtfScore *= 0.7;
+    if (safeMtf.t === safeMtf.p) mtfScore *= 1.3;
+    else if (safeMtf.t !== "neutral") mtfScore *= 0.7;
     score += mtfScore * weights.technicals;
   }
 
@@ -157,7 +161,7 @@ function calculateConfiguredShadow(
 
   const whaleDir = whale?.direction === "accumulation" ? 1 : whale?.direction === "distribution" ? -1 : 0;
   const predSign = predDir === "bullish" ? 1 : predDir === "bearish" ? -1 : 0;
-  const techSign = mtf.p === "bullish" ? 1 : mtf.p === "bearish" ? -1 : 0;
+  const techSign = safeMtf.p === "bullish" ? 1 : safeMtf.p === "bearish" ? -1 : 0;
   hardConflict = whaleDir !== 0 && predSign !== 0 && whaleDir !== predSign && techSign === 0;
 
   let recommendation: "buy" | "sell" | "hold" | "watch" = "hold";
