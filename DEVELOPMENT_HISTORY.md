@@ -100,3 +100,11 @@ This is a confirmed P1 wiring defect, not a request to optimize strategy perform
 - Best architectural solution identified: restore a single canonical strategy authority at the Edge pipeline boundary, not by reviving the legacy `runFullPipeline()`. The canonical signal-combiner should read `strategy_config` and use one shared scoring contract; auto-switch should either be ported deliberately into the canonical orchestrator/Edge path or remain explicitly disabled/non-authoritative until ported. Do not duplicate the legacy pipeline.
 - Critical safety point: wiring `strategy_config` immediately changes production signal behavior because the current DB preset is chart-trader. Therefore the implementation should be a separate, explicitly verified change after capturing the current canonical scoring/output as the baseline. No production code or strategy values were changed in this audit.
 - Status: P1.1 historical intent established; architecture decision ready; implementation intentionally not applied yet.
+
+
+## 2026-10-06 — P1.1 live baseline captured before authority wiring
+- Deployed Supabase signal-combiner is confirmed ACTIVE v7 and matches the GitHub canonical source.
+- Current public.strategy_config: chart-trader, weights 0.5 / 2.0 / 0.5 / 0.5; auto-switch ON; 4h interval; last auto-switch 2026-10-02T04:40:13.577319Z.
+- Recent canonical composite output still shows the hardcoded scorer in action. Example: a ZEC whale-accumulation-only signal was produced with confidence 0.3333 and recommendation WATCH. Under the configured chart-trader whale weight (0.5), the historical weight-driven scorer would materially differ, demonstrating that the DB configuration is currently not merely dormant metadata.
+- No production code, strategy values, thresholds, or signal rows were modified during this baseline capture.
+- Safe next implementation step: add a read-only strategy snapshot/shadow calculation to the canonical combiner, compare it against the current scorer, and persist diagnostics without changing the emitted composite recommendation. Only after parity/delta verification should authority be switched.
