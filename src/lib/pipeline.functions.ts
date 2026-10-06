@@ -149,30 +149,28 @@ export const getCronHealth = createServerFn({ method: "GET" }).handler(async () 
 
 export const getSystemResourceMetrics = createServerFn({ method: "GET" }).handler(async () => {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const [{ data: resourceData, error: resourceError }, { data: runs, error: runError }] = await Promise.all([
-    (supabaseAdmin.rpc as any)("get_system_resource_stats"),
-    supabaseAdmin
-      .from("pipeline_runs")
-      .select("started_at, completed_at, duration_ms, status, signals, error_message")
-      .order("started_at", { ascending: false })
-      .limit(20),
-  ]);
+
+  const [{ data: resourceData, error: resourceError }, { data: healthData, error: healthError }] =
+    await Promise.all([
+      (supabaseAdmin.rpc as any)("get_system_resource_stats"),
+      (supabaseAdmin.rpc as any)("get_pipeline_cron_health"),
+    ]);
+
   if (resourceError) throw resourceError;
-  if (runError) throw runError;
+  if (healthError) throw healthError;
 
   const resource = (resourceData ?? {}) as Record<string, unknown>;
-  const rows = (runs ?? []) as Array<Record<string, unknown>>;
-  const active = rows.find((r) => r["status"] === "running");
-  const latestCompleted = rows.find((r) => ["success", "completed", "error", "failed"].includes(String(r["status"])));
-  const run = active ?? latestCompleted ?? rows[0] ?? null;
+  const health = (healthData ?? {}) as Record<string, any>;
+  const latestRun = (health.latestRun ?? null) as Record<string, any> | null;
+  const status = String(health.status ?? "unknown");
 
   const current = Number(resource["current_connections"] ?? 0);
   const max = Number(resource["max_connections"] ?? 0);
   const connectionPct = max > 0 ? (current / max) * 100 : 0;
 
-  let durationMs = Number(run?.["duration_ms"] ?? 0);
-  if (active?.["started_at"]) {
-    durationMs = Math.max(0, Date.now() - new Date(String(active["started_at"])).getTime());
+  let durationMs = Number(latestRun?.["duration_ms"] ?? 0);
+  if (status === "RUNNING" && latestRun?.["started_at"]) {
+    durationMs = Math.max(0, Date.now() - new Date(String(latestRun["started_at"])).getTime());
   }
 
   return {
@@ -190,12 +188,12 @@ export const getSystemResourceMetrics = createServerFn({ method: "GET" }).handle
     },
     cacheHitPct: Number(resource["cache_hit_pct"] ?? 0),
     pipeline: {
-      status: String(run?.["status"] ?? "unknown"),
+      status,
       durationMs,
       durationPct: Math.min(100, (durationMs / 60_000) * 100),
-      signals: Number(run?.["signals"] ?? 0),
-      startedAt: run?.["started_at"] ?? null,
-      completedAt: run?.["completed_at"] ?? null,
+      signals: Number(latestRun?.["signals"] ?? 0),
+      startedAt: latestRun?.["started_at"] ?? null,
+      completedAt: latestRun?.["completed_at"] ?? null,
     },
     checkedAt: new Date().toISOString(),
   };
