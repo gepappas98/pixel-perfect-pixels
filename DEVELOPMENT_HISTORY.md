@@ -126,3 +126,14 @@ This is a confirmed P1 wiring defect, not a request to optimize strategy perform
 - The current Lovable source for both `CronHealthPanel.tsx` and `StrategyPanel.tsx` correctly reads the canonical server functions and is therefore not the source of the stale values. The mismatch is in the published frontend artifact/build being served at the public URL.
 - A fresh Lovable production deployment was submitted: deployment id `8c01064a-4082-4948-8c73-ce7e245038da`. Status returned `pending`; completion has not been claimed.
 - No backend scheduler, strategy values, signal logic, or database data was changed for this UI issue. Next verification is to refresh the published app after the deployment completes and confirm it shows 10-minute scheduling, HEALTHY status, and the live chart-trader configuration.
+
+
+## 2026-10-06 — Canonical DB verification contradicts the stale-UI diagnosis
+- The Lovable chat diagnosis claimed production pg_cron job #26 was running every 2 minutes against the disabled legacy `/api/public/cron` route and that the canonical pipeline had been frozen since 11:50.
+- Direct verification against the canonical Supabase project `yckewtpfttvwiptmmrfq` disproved that diagnosis. The production cron catalog contains only the active canonical `trading-pipeline-orchestrator` job (jobid 8) at `*/10 * * * *`; there is no active job #26 and no active `trading-pipeline-auto`.
+- Canonical `get_pipeline_cron_health()` currently reports HEALTHY, schedule every 10 minutes, interval 10, consecutive failures 0, with latest successful run `6b2a7399-7f27-48e6-a9c1-0819dafa4fe6` completed at 15:30:23 UTC in 22.168s.
+- Direct `pipeline_runs` verification shows successful canonical runs every 10 minutes from 12:30 UTC through 15:30 UTC, including 15:20 and 15:30. There is no stuck 12:00 running row matching the Lovable diagnosis.
+- The GitHub/Lovable source at commit `85070899cb9e6b2737e747b6de24b2b7c748f32e` also confirms the UI code is already wired to `get_pipeline_cron_health()` and maps `latestRun.duration_ms` into System Resources; no source-level fix was needed for this diagnosis.
+- Therefore no database “unfreeze”, scheduler rewrite, or legacy cron restoration was performed. Doing so would have created a duplicate/incorrect production executor.
+- A new Lovable production deployment was submitted from the latest project commit: deployment id `9b708f8c-404e-4786-88ac-d475ed29529e`, status `pending`. Completion is not claimed yet.
+- Next verification: after deployment completion, reload the published `lovable.app` URL and confirm the frontend reports the canonical 10-minute HEALTHY state. Only if the published artifact still disagrees will we modify frontend/runtime code.
