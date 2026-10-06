@@ -14,6 +14,12 @@ const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
 const GROQ_CHAT_URL = `${GROQ_BASE_URL}/chat/completions`;
 const GROQ_MODELS_URL = `${GROQ_BASE_URL}/models`;
 
+// Model availability is effectively static during a server instance.
+// Cache the check so council calls do not waste an extra API request.
+const MODEL_VERIFY_TTL_MS = 10 * 60 * 1000;
+let verifiedAt = 0;
+let verifyInFlight: Promise<void> | null = null;
+
 export const AI_MODEL = "groq/openai/gpt-oss-20b";
 
 /**
@@ -55,6 +61,11 @@ type GroqChatResponse = {
 async function verifyGroqModel(
   apiKey: string,
 ): Promise<void> {
+  const now = Date.now();
+  if (verifiedAt > 0 && now - verifiedAt < MODEL_VERIFY_TTL_MS) return;
+  if (verifyInFlight) return verifyInFlight;
+
+  verifyInFlight = (async () => {
   const res = await fetch(GROQ_MODELS_URL, {
     method: "GET",
     headers: {
@@ -90,10 +101,18 @@ async function verifyGroqModel(
     (model) => model.id === GROQ_MODEL,
   );
 
-  if (!available) {
-    throw new Error(
-      `Groq model "${GROQ_MODEL}" is not available for this API key.`,
-    );
+    if (!available) {
+      throw new Error(
+        `Groq model "${GROQ_MODEL}" is not available for this API key.`,
+      );
+    }
+    verifiedAt = Date.now();
+  })();
+
+  try {
+    await verifyInFlight;
+  } finally {
+    verifyInFlight = null;
   }
 }
 
