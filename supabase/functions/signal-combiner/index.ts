@@ -350,6 +350,7 @@ function ruleBasedRecommendation(
 ): { recommendation: string; confidence: number; reasoning: string; score: number; components: { whale: number; technicals: number; prediction: number; council: number } } {
   let score = 0;
   const reasons: string[] = [];
+  const components = { whale: 0, technicals: 0, prediction: 0, council: 0 };
 
   if (whale?.direction === "accumulation") {
     score += 1;
