@@ -97,7 +97,13 @@ Previously verified:
 - BUY/SELL TP/SL direction fixed/verified.
 - Shadow rows reach the resolver.
 
-Status: the remaining intrabar ambiguity fix still needs production deployment/verification unless a later commit proves it already landed.
+Status: the ambiguity logic itself is already correct in the legacy/server implementation: ambiguous 1h candles are inspected 5m first, then 15m; a lower-timeframe candle touching both TP and SL immediately returns `ambiguous`, and `ambiguous` has no PnL/exit price.
+
+**Canonical-path finding (2026-10-06):** the active production orchestrator previously had no variant-resolver stage, and the canonical `signal-combiner` does not currently produce `strategy_variant_signals`. The table currently contains 384 historical `open` rows, with no recent `ambiguous` outcomes. We therefore must NOT mass-resolve those 384 historical rows.
+
+A production `variant-resolver` Edge Function was deployed with a hard historical cutoff (`2026-10-06T09:57:00Z`) so it cannot touch the old sample. It was added as a canonical stage after signal-combiner and verified in run `f3131dbe-43db-4ba1-9916-199f2d9b1138`: stage HTTP 200, `resolved=0`, `skipped_historical=true`. This confirms the safety boundary, but P0.4 remains OPEN until a canonical producer creates fresh variant rows and at least one fresh row is resolved/observed.
+
+Next: wire the variant producer into the canonical path (without mass historical re-resolution), then validate fresh outcomes and the 5m→15m ambiguity rule.
 
 Next sequence:
 **correct resolver → collect valid observations → compare `production_regime_label` vs `shadow_regime` vs actual outcome → only then consider strategy/classifier changes.**
