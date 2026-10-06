@@ -1424,7 +1424,23 @@ async function groqBatchCouncil(candidates: AiCandidate[]): Promise<Map<string, 
       }
       throw new Error("Groq HTTP " + res.status);
     }
-    const data = (await res.json()) as { choices?: { message?: { content?: string }; finish_reason?: string }[]; usage?: { completion_tokens_details?: { reasoning_tokens?: number } } };
+    const data = (await res.json()) as {
+      choices?: { message?: { content?: string }; finish_reason?: string }[];
+      usage?: {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        total_tokens?: number;
+        prompt_tokens_details?: { cached_tokens?: number };
+        completion_tokens_details?: { reasoning_tokens?: number };
+      };
+    };
+    const cachedTokens = data.usage?.prompt_tokens_details?.cached_tokens ?? 0;
+    const promptTokens = data.usage?.prompt_tokens ?? 0;
+    const completionTokens = data.usage?.completion_tokens ?? 0;
+    const totalTokens = data.usage?.total_tokens ?? 0;
+    console.log(
+      `[GROQ_USAGE] prompt=${promptTokens} cached=${cachedTokens} completion=${completionTokens} total=${totalTokens} cache_hit_pct=${promptTokens > 0 ? ((cachedTokens / promptTokens) * 100).toFixed(1) : "0.0"}`,
+    );
     const finishReason = data.choices?.[0]?.finish_reason;
     const content = data.choices?.[0]?.message?.content ?? "";
     if (finishReason === "length") {
