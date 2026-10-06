@@ -83,7 +83,7 @@ export function CouncilPanel() {
   const rows = syncedRows.filter(
     (row, index, all) => all.findIndex((candidate) => candidate.symbol === row.symbol) === index,
   );
-  const updated = rows[0]?.created_at ?? rows[0]?.source_created_at;
+  const updated = rows[0]?.source_created_at;
 
   return (
     <section className="panel overflow-hidden">
@@ -144,7 +144,7 @@ export function CouncilPanel() {
                 </p>
               )}
               <p className="mt-2 text-[10px] text-muted-foreground">
-                {timeAgo(c.created_at ?? c.source_created_at)} ·{" "}
+                {timeAgo(c.source_created_at)} ·{" "}
                 {isInternal ? "our own AI council" : c.depth ?? "council synthesis"}
               </p>
             </li>
