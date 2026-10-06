@@ -471,7 +471,7 @@ Deno.serve(async (req) => {
       const gate = applyMtfGate(result.recommendation, mtf, mtfGate);
 
       if (strategySnapshot) {
-        const shadow = calculateConfiguredShadow(whale, indicator, prediction, council, strategySnapshot);
+        const shadow = calculateConfiguredShadow(whale, mtf, prediction, council, strategySnapshot);
         const { error: shadowError } = await supabase
           .from("strategy_shadow_diagnostics")
           .insert({
