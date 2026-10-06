@@ -190,12 +190,15 @@ export const getCronHealth = createServerFn({ method: "GET" }).handler(async () 
 });
 
 export const getSystemResourceMetrics = createServerFn({ method: "GET" }).handler(async () => {
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  // Both dashboard reads are safe SECURITY DEFINER RPCs with anon/authenticated
+  // EXECUTE on the canonical project. Use the canonical client so Lovable's
+  // legacy server-side Supabase binding cannot leak retired DB metrics here.
+  const { supabase } = await import("@/integrations/supabase/client");
 
   const [{ data: resourceData, error: resourceError }, { data: healthData, error: healthError }] =
     await Promise.all([
-      (supabaseAdmin.rpc as any)("get_system_resource_stats"),
-      (supabaseAdmin.rpc as any)("get_pipeline_cron_health"),
+      (supabase.rpc as any)("get_system_resource_stats"),
+      (supabase.rpc as any)("get_pipeline_cron_health"),
     ]);
 
   if (resourceError) throw resourceError;
