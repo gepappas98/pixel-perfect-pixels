@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { AlertTriangle, CheckCircle, Clock, AlertCircle, ChevronRight } from "lucide-react";
+import { AlertTriangle, CheckCircle, Clock, AlertCircle, ChevronRight, Loader2 } from "lucide-react";
 import { getCronHealth } from "@/lib/pipeline.functions";
 
 function timeAgo(value?: string | null) {
@@ -18,8 +18,7 @@ function timeAgo(value?: string | null) {
 function formatTime(value?: string | null) {
   if (!value) return "—";
   const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return "—";
-  return date.toLocaleTimeString();
+  return Number.isFinite(date.getTime()) ? date.toLocaleTimeString() : "—";
 }
 
 function until(value?: string | null) {
@@ -27,6 +26,11 @@ function until(value?: string | null) {
   const minutes = Math.ceil((new Date(value).getTime() - Date.now()) / 60000);
   if (minutes <= 0) return "due now";
   return minutes < 60 ? `in ${minutes}m` : `in ${Math.ceil(minutes / 60)}h`;
+}
+
+function formatDuration(ms?: number | null) {
+  if (!ms || ms < 0) return "0.0s";
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
 export function CronHealthPanel() {
@@ -40,115 +44,111 @@ export function CronHealthPanel() {
 
   if (isLoading) return <section className="panel">Loading pipeline health…</section>;
   if (error || !health || health.available === false) {
-    const reason = health && "reason" in health ? health.reason : "Health storage is unavailable";
+    const reason = health && "reason" in health ? health.reason : "Canonical pipeline health is unavailable";
     return (
       <section className="panel border-destructive/30 bg-destructive/5">
         <div className="flex items-center gap-2 text-destructive">
           <AlertTriangle className="h-4 w-4" />
           <h2 className="panel-title text-destructive">Pipeline Health</h2>
         </div>
-        <p className="mt-3 text-xs text-destructive/80">
-          Health data is unavailable. Apply the pipeline health migration and confirm the cron can write run records.
-        </p>
+        <p className="mt-3 text-xs text-destructive/80">Canonical pipeline health is unavailable.</p>
         <p className="mt-2 break-words font-mono text-[10px] text-destructive/60">{reason}</p>
       </section>
     );
   }
 
-  const {
-    lastSuccess,
-    nextRunAt,
-    consecutiveFailures,
-    stale,
-    staleAfterMinutes,
-    intervalMinutes,
-    recentErrors,
-  } = health as {
-    lastSuccess: { completed_at?: string | null } | null;
-    nextRunAt: string | null;
-    consecutiveFailures: number;
-    stale: boolean;
-    staleAfterMinutes: number;
-    intervalMinutes: number;
-    recentErrors?: { id: string; started_at: string; message: string }[];
-  };
-  const healthyStatus = lastSuccess && !stale && consecutiveFailures === 0;
+  const status = health.status;
+  const latestRun = health.latestRun;
+  const lastSuccess = health.lastSuccess;
+  const recentErrors = health.recentErrors ?? [];
+  const intervalMinutes = health.intervalMinutes;
+  const staleAfterMinutes = health.staleAfterMinutes;
+  const healthyStatus = status === "HEALTHY";
+  const runningStatus = status === "RUNNING";
+  const failedStatus = status === "FAILED";
+  const staleStatus = status === "STALE";
 
   return (
     <section className="panel overflow-hidden">
       <div className="mb-4 flex items-start justify-between gap-3">
         <div>
           <h2 className="panel-title">Pipeline Health</h2>
-          <p className="mt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">Cron monitoring</p>
+          <p className="mt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">Canonical run monitoring</p>
         </div>
         <div className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${
           healthyStatus
             ? "border-bull/30 bg-bull/10 text-bull"
-            : stale
-              ? "border-destructive/30 bg-destructive/10 text-destructive"
-              : "border-warn/30 bg-warn/10 text-warn"
+            : runningStatus
+              ? "border-warn/30 bg-warn/10 text-warn"
+              : "border-destructive/30 bg-destructive/10 text-destructive"
         }`}>
-          {healthyStatus ? (
-            <><CheckCircle className="h-3.5 w-3.5" /> Healthy</>
-          ) : stale ? (
-            <><AlertTriangle className="h-3.5 w-3.5" /> Stale</>
-          ) : (
-            <><AlertCircle className="h-3.5 w-3.5" /> Warning</>
-          )}
+          {healthyStatus && <><CheckCircle className="h-3.5 w-3.5" /> Healthy</>}
+          {runningStatus && <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Running</>}
+          {failedStatus && <><AlertCircle className="h-3.5 w-3.5" /> Failed</>}
+          {staleStatus && <><AlertTriangle className="h-3.5 w-3.5" /> Stale</>}
         </div>
       </div>
 
       <div className="space-y-3">
-        <div className="rounded-md border border-border/70 bg-background/30 p-3">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Last Successful Run</span>
-            {lastSuccess ? (
-              <span className="font-mono text-sm font-semibold text-foreground">{timeAgo(lastSuccess.completed_at)}</span>
-            ) : (
-              <span className="font-mono text-sm text-destructive">Never</span>
-            )}
-          </div>
-          {lastSuccess && (
+        {runningStatus && latestRun && (
+          <div className="rounded-md border border-warn/30 bg-warn/10 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Current Run</span>
+              <span className="font-mono text-sm font-semibold text-warn">
+                {formatDuration(Math.max(0, Date.now() - new Date(latestRun.started_at ?? Date.now()).getTime()))}
+              </span>
+            </div>
             <p className="mt-2 text-[10px] text-muted-foreground">
-              Completed at {formatTime(lastSuccess.completed_at)}
+              Started at {formatTime(latestRun.started_at)} · {latestRun.job_name}
             </p>
-          )}
-        </div>
+          </div>
+        )}
 
-        {nextRunAt && intervalMinutes > 0 && (
+        {lastSuccess && (
+          <div className="rounded-md border border-border/70 bg-background/30 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Last Successful Run</span>
+              <span className="font-mono text-sm font-semibold text-foreground">{timeAgo(lastSuccess.completed_at)}</span>
+            </div>
+            <p className="mt-2 text-[10px] text-muted-foreground">
+              Completed at {formatTime(lastSuccess.completed_at)} · duration {formatDuration(lastSuccess.duration_ms)}
+            </p>
+          </div>
+        )}
+
+        {health.nextRunAt && intervalMinutes > 0 && (
           <div className="rounded-md border border-border/70 bg-background/30 p-3">
             <div className="flex items-center justify-between gap-2">
               <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Next Scheduled Run</span>
               <span className="flex items-center gap-1.5 font-mono text-sm font-semibold">
                 <Clock className="h-3.5 w-3.5 text-bull" />
-                {until(nextRunAt)}
+                {until(health.nextRunAt)}
               </span>
             </div>
             <p className="mt-2 text-[10px] text-muted-foreground">
-              Every {intervalMinutes} minutes · next at {formatTime(nextRunAt)}
+              Every {intervalMinutes} minutes · next at {formatTime(health.nextRunAt)}
             </p>
           </div>
         )}
 
-        {consecutiveFailures > 0 && (
+        {health.consecutiveFailures > 0 && (
           <div className="rounded-md border border-warn/30 bg-warn/10 p-3">
             <div className="flex items-center justify-between gap-2">
-              <span className="text-[11px] uppercase tracking-wider text-warn">Consecutive Failures</span>
-              <span className="font-mono text-sm font-semibold text-warn">{consecutiveFailures}</span>
+              <span className="text-[11px] uppercase tracking-wider text-warn">Failures since last success</span>
+              <span className="font-mono text-sm font-semibold text-warn">{health.consecutiveFailures}</span>
             </div>
             <p className="mt-2 text-[10px] text-warn/80">
-              Pipeline has failed {consecutiveFailures} time{consecutiveFailures !== 1 ? "s" : ""} in a row.
+              These are canonical pipeline failures after the latest successful run.
             </p>
           </div>
         )}
 
-        {/* Recent Errors — expandable list */}
-        {recentErrors && recentErrors.length > 0 && (
+        {recentErrors.length > 0 && (
           <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3">
             <div className="flex items-center gap-2 mb-2">
               <AlertCircle className="h-3.5 w-3.5 text-destructive flex-shrink-0" />
               <span className="text-[11px] font-semibold uppercase tracking-wider text-destructive">
-                Recent Errors ({recentErrors.length})
+                Recent Errors — history ({recentErrors.length})
               </span>
             </div>
             <div className="space-y-1.5">
@@ -168,14 +168,22 @@ export function CronHealthPanel() {
           </div>
         )}
 
-        {stale && (
+        {failedStatus && (
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3">
+            <p className="text-[11px] font-semibold text-destructive">
+              Current pipeline run failed. A newer successful run is required to return to Healthy.
+            </p>
+          </div>
+        )}
+
+        {staleStatus && (
           <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3">
             <div className="flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 text-destructive flex-shrink-0" />
               <span className="text-[11px] font-semibold uppercase tracking-wider text-destructive">Pipeline Stale</span>
             </div>
             <p className="mt-2 text-[10px] text-destructive/80">
-              No successful run in the last {staleAfterMinutes} minutes.
+              No successful canonical run in the last {staleAfterMinutes} minutes.
             </p>
           </div>
         )}
@@ -183,14 +191,14 @@ export function CronHealthPanel() {
         {healthyStatus && (
           <div className="rounded-md border border-bull/30 bg-bull/10 p-3">
             <p className="text-[11px] font-semibold text-bull">
-              ✓ Pipeline is running smoothly on schedule with no failures.
+              ✓ Latest canonical run completed successfully. Historical errors do not change current health.
             </p>
           </div>
         )}
       </div>
 
       <p className="mt-4 border-t border-border/70 pt-3 text-[10px] text-muted-foreground">
-        Refreshes every 30 seconds · stale threshold {staleAfterMinutes}m
+        Refreshes every 30 seconds · canonical stale threshold {staleAfterMinutes}m
       </p>
     </section>
   );
