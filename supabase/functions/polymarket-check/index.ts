@@ -9,56 +9,63 @@ import { handleOptions, corsHeaders } from "../_shared/cors.ts";
 import { getServiceClient } from "../_shared/supabase.ts";
 
 const WATCH_KEYWORDS: Record<string, string[]> = {
-  BTC: ["bitcoin", "btc"],
-  ETH: ["ethereum", "eth"],
-  SOL: ["solana", "sol"],
-  DOGE: ["dogecoin", "doge"],
-  XRP: ["xrp", "ripple"],
-  AVAX: ["avalanche", "avax"],
-  ADA: ["cardano", "ada"],
-  MATIC: ["polygon", "matic"],
-  LINK: ["chainlink", "link"],
-  ARB: ["arbitrum", "arb"],
-  CRV: ["curve dao", "curve finance", " crv"],
+  BTC: ["bitcoin", "btc"], ETH: ["ethereum", "eth"],
+  SOL: ["solana", "sol"], XRP: ["xrp", "ripple"],
+  DOGE: ["dogecoin", "doge"], ADA: ["cardano", "ada"],
+  AVAX: ["avalanche", "avax"], LINK: ["chainlink", "link"],
+  DOT: ["polkadot", "dot"], LTC: ["litecoin", "ltc"],
+  MATIC: ["polygon", "matic", "pol"], BNB: ["bnb", "binance coin"],
+  TRX: ["tron", "trx"], SHIB: ["shiba", "shib"],
+  PEPE: ["pepe"], ATOM: ["cosmos", "atom"],
+  NEAR: ["near protocol"], APT: ["aptos", "apt"],
+  SUI: ["sui"], INJ: ["injective", "inj"],
+  ARB: ["arbitrum", "arb"], OP: ["optimism"],
+  UNI: ["uniswap", "uni"], AAVE: ["aave"],
 };
 
-interface GammaMarket {
-  slug: string;
-  question: string;
+const cryptoWord = /\b(bitcoin|btc|ethereum|eth|solana|sol|xrp|ripple|dogecoin|doge|cardano|ada|avalanche|avax|chainlink|link|polkadot|dot|litecoin|ltc|polygon|matic|pol|bnb|binance coin|tron|trx|shiba|shib|pepe|cosmos|atom|near protocol|aptos|apt|sui|injective|inj|arbitrum|arb|optimism|uniswap|uni|aave)\b/i;
+
+interface PolymarketMarket {
+  slug?: string;
+  question?: string;
   outcomePrices?: string;
   volume24hr?: number;
 }
+interface PolymarketEvent { markets?: PolymarketMarket[]; }
 
-async function fetchActiveMarkets(): Promise<GammaMarket[]> {
-  const url = "https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=200";
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Polymarket Gamma API error: ${res.status}`);
-  return await res.json();
+const PREDICTION_MIN_VOLUME_USD = 500;
+const PREDICTION_RESOLVED_LOW = 0.05;
+const PREDICTION_RESOLVED_HIGH = 0.95;
+const PREDICTION_PRICE_TARGET = /(?:\$\s?\d|\b(?:all[- ]time high|ath)\b)/i;
+const PREDICTION_DIRECTIONAL = /\b(?:reach|hit|above|surpass|exceed|break|all[- ]time high|ath|dip|drop|fall|below|crash|down to|under|bottom)\b/i;
+
+function isUsablePredictionQuestion(question: string): boolean {
+  const q = question.toLowerCase();
+  return PREDICTION_PRICE_TARGET.test(q) && PREDICTION_DIRECTIONAL.test(q);
 }
 
-function normalizeWords(value: string): string[] {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(/\s+/).filter(Boolean);
+function eventMarkets(payload: (PolymarketEvent | PolymarketMarket)[]): PolymarketMarket[] {
+  return payload.flatMap((item) => "markets" in item ? ((item as PolymarketEvent).markets ?? []) : [item as PolymarketMarket]);
 }
 
-function matchesKeyword(question: string, keyword: string): boolean {
-  const q = normalizeWords(question);
-  const k = normalizeWords(keyword);
-  if (k.length === 0 || k.length > q.length) return false;
-  for (let i = 0; i <= q.length - k.length; i++) {
-    let match = true;
-    for (let j = 0; j < k.length; j++) {
-      if (q[i + j] !== k[j]) { match = false; break; }
+function matchSymbolFromQuestion(q: string): string | null {
+  const matches: { sym: string; pos: number }[] = [];
+  for (const [sym, keywords] of Object.entries(WATCH_KEYWORDS)) {
+    for (const kw of keywords) {
+      const pos = q.search(new RegExp("\\\\b" + kw + "\\\\b", "i"));
+      if (pos >= 0) { matches.push({ sym, pos }); break; }
     }
-    if (match) return true;
   }
-  return false;
+  if (matches.length === 0) return null;
+  matches.sort((a, b) => a.pos - b.pos);
+  return matches[0]!.sym;
 }
 
-function matchSymbol(question: string): string | null {
-  for (const [symbol, keywords] of Object.entries(WATCH_KEYWORDS)) {
-    if (keywords.some((kw) => matchesKeyword(question, kw))) return symbol;
-  }
-  return null;
+async function fetchActiveMarkets(): Promise<PolymarketEvent[] | PolymarketMarket[]> {
+  const url = "https://gamma-api.polymarket.com/events?tag_slug=crypto&active=true&closed=false&limit=200";
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("Polymarket Gamma API error: " + res.status);
+  return await res.json();
 }
 
 Deno.serve(async (req) => {
