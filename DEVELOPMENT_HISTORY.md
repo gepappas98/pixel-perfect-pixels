@@ -88,3 +88,15 @@ The architecture drifted into two strategy engines: the historical/server engine
 
 ### Safety conclusion
 This is a confirmed P1 wiring defect, not a request to optimize strategy performance. No production code, strategy weights, thresholds, classifier, or historical rows were changed in this audit.
+
+
+## 2026-10-06 — P1.1 deep historical strategy-authority audit
+- Historical canonical intent is now clear: the legacy/server pipeline was explicitly designed to load `strategy_config` via `fetchStrategy()` with a short cache, then pass those weights into the production `ruleBased()` scorer. The historical scorer applies whale, technicals, prediction and council weights and computes confidence from the same configured weights.
+- Historical code also contains `compositeMaxScore()`, using the configured weights plus fixed source coefficients, confirming that strategy_config was intended to control both scoring and confidence normalization rather than merely drive the Strategy UI.
+- Historical `combineSignals()` begins with `const weights = await fetchStrategy()`; therefore DB strategy configuration was a real production input in the old pipeline implementation.
+- Canonical production architecture now bypasses that server pipeline. The active `signal-combiner` Edge Function v7 has a separate simplified `ruleBasedRecommendation()` with hardcoded source weights and hardcoded thresholds, while its observational variant presets are separately hardcoded. It never reads `strategy_config`.
+- Canonical `trading-pipeline-orchestrator` v2 calls signal-combiner directly and has no auto-strategy stage. Therefore the existing server-side `maybeAutoSwitchStrategy()` is also not on the canonical scheduled execution path.
+- This means the current DB preset (chart-trader: 0.5/2.0/0.5/0.5) can be changed by the application/auto-switch layer while the canonical composite producer continues using its own hardcoded scoring. The strategy panel and canonical signal producer can therefore disagree without an error.
+- Best architectural solution identified: restore a single canonical strategy authority at the Edge pipeline boundary, not by reviving the legacy `runFullPipeline()`. The canonical signal-combiner should read `strategy_config` and use one shared scoring contract; auto-switch should either be ported deliberately into the canonical orchestrator/Edge path or remain explicitly disabled/non-authoritative until ported. Do not duplicate the legacy pipeline.
+- Critical safety point: wiring `strategy_config` immediately changes production signal behavior because the current DB preset is chart-trader. Therefore the implementation should be a separate, explicitly verified change after capturing the current canonical scoring/output as the baseline. No production code or strategy values were changed in this audit.
+- Status: P1.1 historical intent established; architecture decision ready; implementation intentionally not applied yet.
