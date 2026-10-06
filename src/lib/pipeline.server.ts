@@ -1058,6 +1058,41 @@ const cryptoWord = /\b(bitcoin|btc|ethereum|eth|solana|sol|xrp|ripple|dogecoin|d
 interface PolymarketMarket { slug?: string; question?: string; outcomePrices?: string; volume24hr?: number; }
 interface PolymarketEvent { markets?: PolymarketMarket[]; }
 
+const PREDICTION_MIN_VOLUME_USD = 500;
+const PREDICTION_RESOLVED_LOW = 0.05;
+const PREDICTION_RESOLVED_HIGH = 0.95;
+const PREDICTION_PRICE_TARGET = /(?:\$\s?\d|\b(?:all[- ]time high|ath)\b)/i;
+const PREDICTION_DIRECTIONAL = /\b(?:reach|hit|above|surpass|exceed|break|all[- ]time high|ath|dip|drop|fall|below|crash|down to|under|bottom)\b/i;
+
+function isUsablePredictionQuestion(question: string): boolean {
+  const q = question.toLowerCase();
+  return PREDICTION_PRICE_TARGET.test(q) && PREDICTION_DIRECTIONAL.test(q);
+}
+
+function isUsablePredictionRow(row: Row): boolean {
+  if (!row) return false;
+  const yes = Number(row["yes_price"]);
+  const volume = Number(row["volume_24h"]);
+  const question = String(row["question"] ?? "");
+  return (
+    Number.isFinite(yes) &&
+    yes >= PREDICTION_RESOLVED_LOW &&
+    yes <= PREDICTION_RESOLVED_HIGH &&
+    Number.isFinite(volume) &&
+    volume >= PREDICTION_MIN_VOLUME_USD &&
+    isUsablePredictionQuestion(question)
+  );
+}
+
+function predictionRank(row: Row): [number, number] {
+  const volume = Number(row?.["volume_24h"]);
+  const createdAt = new Date(String(row?.["created_at"] ?? "")).getTime();
+  return [
+    Number.isFinite(volume) ? volume : 0,
+    Number.isFinite(createdAt) ? createdAt : 0,
+  ];
+}
+
 function eventMarkets(payload: (PolymarketEvent | PolymarketMarket)[]): PolymarketMarket[] {
   return payload.flatMap((item) => "markets" in item ? ((item as PolymarketEvent).markets ?? []) : [item as PolymarketMarket]);
 }
@@ -1096,11 +1131,20 @@ export async function collectPredictions(): Promise<number> {
       yes = prices[0] ? parseFloat(prices[0]) : null;
       no = prices[1] ? parseFloat(prices[1]) : null;
     } catch {}
-    if (yes == null || !Number.isFinite(yes) || yes < 0 || yes > 1) continue;
+    const volume = Number(m.volume24hr);
+    if (
+      yes == null ||
+      !Number.isFinite(yes) ||
+      yes < PREDICTION_RESOLVED_LOW ||
+      yes > PREDICTION_RESOLVED_HIGH ||
+      !Number.isFinite(volume) ||
+      volume < PREDICTION_MIN_VOLUME_USD ||
+      !isUsablePredictionQuestion(question)
+    ) continue;
     rows.push({
       market_slug: m.slug, question, related_symbol: symbol,
       yes_price: yes, no_price: no,
-      volume_24h: m.volume24hr ?? null,
+      volume_24h: volume,
       created_at: new Date().toISOString(),
       raw: m as unknown as Record<string, unknown>,
     });
@@ -1396,7 +1440,17 @@ export async function collectCouncilSignals(): Promise<number> {
   const latestPrediction = new Map<string, Record<string, unknown>>();
   for (const p of (predictionsRes.data ?? []) as Record<string, unknown>[]) {
     const s = p["related_symbol"] as string | undefined;
-    if (s && !latestPrediction.has(s)) latestPrediction.set(s, p);
+    if (!s || !isUsablePredictionRow(p as Row)) continue;
+    const current = latestPrediction.get(s);
+    if (!current) {
+      latestPrediction.set(s, p);
+      continue;
+    }
+    const [currentVolume, currentCreated] = predictionRank(current as Row);
+    const [nextVolume, nextCreated] = predictionRank(p as Row);
+    if (nextVolume > currentVolume || (nextVolume === currentVolume && nextCreated > currentCreated)) {
+      latestPrediction.set(s, p);
+    }
   }
 
   const freshnessNow = Date.now();
@@ -1481,6 +1535,24 @@ export async function collectCouncilSignals(): Promise<number> {
     };
   }
   const sourceId = [symbol, ctx.whale?.["id"], ctx.mtfRaw.primary?.["id"], ctx.prediction?.["id"], usedAi ? "ai" : "rule", result.final_verdict, String(Math.round(Number(result.conviction) || 0))].join(":");
+    const inputSourceTimes = [
+      ctx.whale?.["created_at"],
+      ctx.mtfRaw.primary?.["created_at"],
+      ctx.mtfRaw.fast?.["created_at"],
+      ctx.mtfRaw.trend?.["created_at"],
+      ctx.prediction?.["created_at"],
+    ]
+      .map((value) => new Date(String(value ?? "")).getTime())
+      .filter((value) => Number.isFinite(value));
+
+    // AI-batch is genuinely generated now. Deterministic synthesis is only as fresh
+    // as its oldest input, so its source_created_at must not pretend to be "now".
+    const sourceCreatedAt = usedAi
+      ? new Date().toISOString()
+      : inputSourceTimes.length > 0
+        ? new Date(Math.min(...inputSourceTimes)).toISOString()
+        : new Date().toISOString();
+
     rows.push({
       symbol, source_id: sourceId,
       final_verdict: result.final_verdict,
@@ -1488,7 +1560,7 @@ export async function collectCouncilSignals(): Promise<number> {
       price_at: typeof ctx.mtfRaw.primary?.["price"] === "number" ? ctx.mtfRaw.primary["price"] : null,
       reflection: result.reflection,
       depth: usedAi ? "ai-batch" : "ai-synthesis",
-      source_created_at: new Date().toISOString(),
+      source_created_at: sourceCreatedAt,
     });
   }
 
