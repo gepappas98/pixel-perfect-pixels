@@ -78,7 +78,7 @@ This is NOT yet considered fixed.
 Target architecture:
 **Manual + Auto → canonical `trading-pipeline-orchestrator` → one canonical `pipeline_runs` source of truth.**
 
-The user has intentionally set the UI interval to **2 minutes**. Preserve that setting; do not silently change it back to 10 minutes. First make the 2-minute scheduler invoke the canonical orchestrator safely.
+The user has decided that the current 10-minute canonical schedule can remain temporarily. The 2-minute UI selection and scheduler/source mismatch are deferred, because interval length is not currently creating a material operational problem. Revisit later; do not lose the issue.
 
 ---
 
@@ -163,8 +163,8 @@ Reason: stabilization and clean data collection come first.
 ## Current execution order
 
 **NOW**
-1. Verify manual Run pipeline.
-2. Consolidate 2-minute auto scheduler onto canonical orchestrator.
+1. Verify manual Run pipeline / improve its error reporting.
+2. **DEFERRED:** consolidate the scheduler interval/source-of-truth after higher-priority P0 checks.
 3. Verify one or more clean canonical cycles.
 4. Verify executor and risk behavior.
 5. Verify resolver ambiguity fix / deploy if still missing.
