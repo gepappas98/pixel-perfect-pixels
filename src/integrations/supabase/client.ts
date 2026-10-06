@@ -39,7 +39,9 @@ function createSupabaseClient() {
   const configuredKey =
     import.meta.env['VITE_SUPABASE_PUBLISHABLE_KEY'] || process.env['SUPABASE_PUBLISHABLE_KEY'];
 
-  const usesCanonicalProject = configuredUrl === CANONICAL_SUPABASE_URL;
+  const usesCanonicalProject =
+    configuredUrl === CANONICAL_SUPABASE_URL &&
+    configuredKey === CANONICAL_SUPABASE_PUBLISHABLE_KEY;
   const SUPABASE_URL = usesCanonicalProject ? configuredUrl : CANONICAL_SUPABASE_URL;
   const SUPABASE_PUBLISHABLE_KEY = usesCanonicalProject
     ? configuredKey
