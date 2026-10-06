@@ -17,30 +17,21 @@ export const Route = createFileRoute("/api/public/cron")({
         );
         if (ok !== true) return new Response("Unauthorized", { status: 401 });
 
-        const startedAt = new Date().toISOString();
-        const { runFullPipeline } = await import("@/lib/pipeline.server");
+        // The application-hosted cron route is intentionally disabled.
+        // Canonical production execution is owned exclusively by the
+        // Supabase trading-pipeline-orchestrator. Keeping this route as a
+        // second executor can create duplicate composite/variant data.
+        console.warn("[cron] legacy application pipeline route disabled; canonical orchestrator is the only pipeline owner");
 
-        try {
-          const result = await runFullPipeline();
-          if ("persistence_error" in result && result.persistence_error) {
-            console.error("[cron] pipeline run not persisted:", result.persistence_error);
-            return Response.json({ ok: false, result }, { status: 200 });
-          }
-          return Response.json({ ok: true, result });
-        } catch (error) {
-          const message =
-            error instanceof Error ? error.message : "Unknown pipeline error";
-          console.error("[cron] pipeline failure:", message, error);
-
-          // runFullPipeline already writes status="error" to pipeline_runs.
-          // We do NOT re-insert here to avoid duplicate failure rows.
-          // Return 200 so the cron monitor does not increment consecutive
-          // failures for errors that are already tracked inside pipeline_runs.
-          return Response.json(
-            { ok: false, error: message },
-            { status: 200 },
-          );
-        }
+        return Response.json(
+          {
+            ok: false,
+            disabled: true,
+            reason: "legacy_pipeline_disabled",
+            message: "Canonical trading-pipeline-orchestrator is the only production pipeline entrypoint.",
+          },
+          { status: 410 },
+        );
       },
     },
   },
