@@ -337,7 +337,7 @@ function ruleBasedRecommendation(
   indicator: any | null,
   prediction: any | null,
   council: any | null,
-): { recommendation: string; confidence: number; reasoning: string; score: number } {
+): { recommendation: string; confidence: number; reasoning: string; score: number; components: { whale: number; technicals: number; prediction: number; council: number } } {
   let score = 0;
   const reasons: string[] = [];
 
