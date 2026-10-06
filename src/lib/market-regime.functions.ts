@@ -159,7 +159,8 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
       "@/integrations/supabase/client.server"
     );
 
-    const now = Date.now();
+    try {
+      const now = Date.now();
     const sixHoursAgo = new Date(now - 6 * 60 * 60 * 1000).toISOString();
     const thirtyMinAgo = new Date(now - 30 * 60 * 1000).toISOString();
 
@@ -170,7 +171,8 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
       db
         .from("whale_alerts")
         .select("direction, usd_value")
-        .gte("created_at", sixHoursAgo),
+        .gte("created_at", sixHoursAgo)
+        .limit(5000),
       db
         .from("prediction_snapshots")
         .select("market_slug, question, yes_price, created_at")
@@ -180,7 +182,8 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
         .from("council_signals")
         .select("symbol, final_verdict, source_created_at")
         .gte("source_created_at", thirtyMinAgo)
-        .order("source_created_at", { ascending: false }),
+        .order("source_created_at", { ascending: false })
+        .limit(5000),
     ]);
 
     // Explicit error logging
@@ -327,9 +330,9 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
       );
     }
 
-    return {
-      whale: {
-        buy_usd: buyUsd,
+      return {
+        whale: {
+          buy_usd: buyUsd,
         sell_usd: sellUsd,
         net_pct: whaleNet,
         sample_size: whaleRows.length,
@@ -361,7 +364,22 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
       regime,
       recommended_preset,
       reasoning: reasons.join("; "),
-      generated_at: new Date().toISOString(),
-    };
+        generated_at: new Date().toISOString(),
+      };
+    } catch (error) {
+      console.error("[REGIME] fatal market-regime calculation error:", serializeError(error));
+      return {
+        whale: { buy_usd: 0, sell_usd: 0, net_pct: 0, sample_size: 0 },
+        technicals: { bullish: 0, bearish: 0, neutral: 0, breadth: 0, sample_size: 0 },
+        predictions: { bullish: 0, bearish: 0, neutral: 0, consensus: 0, sample_size: 0 },
+        council: { buy: 0, sell: 0, hold: 0, avoid: 0, consensus: 0, sample_size: 0 },
+        score: 0,
+        confidence: 0,
+        regime: "sideways",
+        recommended_preset: "conservative",
+        reasoning: "Market regime calculation temporarily unavailable; fail-safe sideways state.",
+        generated_at: new Date().toISOString(),
+      };
+    }
   },
 );
