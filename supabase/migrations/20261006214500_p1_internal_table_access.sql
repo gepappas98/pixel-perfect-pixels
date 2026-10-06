@@ -23,21 +23,4 @@ CREATE POLICY strategy_variant_signals_public_read
   TO anon, authenticated
   USING (true);
 
--- Explicit deny policies document the intended no-browser-access contract.
-DROP POLICY IF EXISTS data_plane_unification_audit_no_browser_access ON public.data_plane_unification_audit;
-CREATE POLICY data_plane_unification_audit_no_browser_access
-  ON public.data_plane_unification_audit
-  FOR ALL
-  TO anon, authenticated
-  USING (false)
-  WITH CHECK (false);
-
-DROP POLICY IF EXISTS strategy_shadow_diagnostics_no_browser_access ON public.strategy_shadow_diagnostics;
-CREATE POLICY strategy_shadow_diagnostics_no_browser_access
-  ON public.strategy_shadow_diagnostics
-  FOR ALL
-  TO anon, authenticated
-  USING (false)
-  WITH CHECK (false);
-
 COMMIT;
