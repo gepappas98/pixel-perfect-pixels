@@ -2,8 +2,10 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
 export const getSchedule = createServerFn({ method: "GET" }).handler(async () => {
-  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-  const { data } = await (supabaseAdmin.from as any)("pipeline_settings")
+  // Read schedule from the canonical client; this prevents legacy Lovable
+  // server-side Supabase secrets from reporting the retired schedule.
+  const { supabase } = await import("@/integrations/supabase/client");
+  const { data } = await (supabase.from as any)("pipeline_settings")
     .select("interval_minutes")
     .eq("id", 1)
     .maybeSingle();
