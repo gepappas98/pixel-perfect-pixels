@@ -120,8 +120,11 @@ export const getAiHealthStatus = createServerFn({ method: "GET" }).handler(
 
 export const getCronHealth = createServerFn({ method: "GET" }).handler(async () => {
   try {
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { data, error } = await (supabaseAdmin.rpc as any)("get_pipeline_cron_health");
+    // Health is a SECURITY DEFINER RPC with anon/authenticated EXECUTE.
+    // Use the canonical browser client here so Lovable's legacy server secrets
+    // cannot redirect dashboard health to the retired Supabase project.
+    const { supabase } = await import("@/integrations/supabase/client");
+    const { data, error } = await (supabase.rpc as any)("get_pipeline_cron_health");
     if (error) throw error;
 
     const health = (data ?? {}) as {
