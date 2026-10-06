@@ -1424,7 +1424,7 @@ async function groqBatchCouncil(candidates: AiCandidate[]): Promise<Map<string, 
       }
       throw new Error("Groq HTTP " + res.status);
     }
-    const data = (await res.json()) as { choices?: { message?: { content?: string }; finish_reason?: string }[]; usage?: { completion_tokens_details?: { reasoning_tokens?: number } };
+    const data = (await res.json()) as { choices?: { message?: { content?: string }; finish_reason?: string }[]; usage?: { completion_tokens_details?: { reasoning_tokens?: number } } };
     const finishReason = data.choices?.[0]?.finish_reason;
     const content = data.choices?.[0]?.message?.content ?? "";
     if (finishReason === "length") {
