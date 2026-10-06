@@ -22,7 +22,10 @@ export const Route = createFileRoute("/api/public/cron")({
 
         try {
           const result = await runFullPipeline();
-          // runFullPipeline already writes status="success" to pipeline_runs
+          if ("persistence_error" in result && result.persistence_error) {
+            console.error("[cron] pipeline run not persisted:", result.persistence_error);
+            return Response.json({ ok: false, result }, { status: 200 });
+          }
           return Response.json({ ok: true, result });
         } catch (error) {
           const message =
