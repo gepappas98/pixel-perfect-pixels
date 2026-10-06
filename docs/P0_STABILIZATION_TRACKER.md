@@ -411,3 +411,16 @@ The deployed Edge Function sources are now mirrored under `supabase/functions/{p
 - v5 was directly smoke-tested with HTTP 200 and then exercised successfully inside the full canonical run above.
 
 **Current status: runtime freshness guards DEPLOYED + VERIFIED; external prediction/council feeds currently DEGRADED; no strategy changes made.**
+
+## 2026-10-06 — P1.1 deep strategy-authority audit completed
+
+- Historical evidence confirms `strategy_config` was designed as a production scoring input, not UI-only metadata: the legacy/server `combineSignals()` loaded it and passed the weights into `ruleBased()`.
+- The active canonical `signal-combiner v7` is a simplified hardcoded scorer and does not read `strategy_config` for the composite recommendation.
+- Historical scorer semantics include weighted whale/MTF/prediction/council contributions, magnitude-aware prediction, council base weight 0.75 × conviction, regime/hard-conflict/hot-whale logic, and thresholds 2.2 / -2.2 / 0.5. Current Edge v7 uses materially different hardcoded constants and thresholds ±1.5.
+- This confirms P1.1 is a real source-of-truth wiring defect.
+- **No implementation yet:** stabilization rules forbid changing strategy behavior before clean data verification.
+- Planned restoration: first shadow-compare the historical DB-driven scorer against the current canonical scorer; then, after verification, make `strategy_config` authoritative for active composite weights in one small canonical change. Threshold authority will be audited separately.
+- Strategy variants remain benchmark/shadow arms and should not be conflated with the active strategy config.
+- No DB values, historical rows, strategy thresholds, classifier, or production scoring were changed in this audit.
+
+Status: **P1.1 AUDIT COMPLETE — CONFIRMED DEFECT — IMPLEMENTATION DEFERRED UNTIL STABILIZATION GATE**
