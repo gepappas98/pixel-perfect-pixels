@@ -96,7 +96,7 @@ export const getShadowConflicts = createServerFn({ method: "GET" }).handler(
     const { supabase } = await import("@/integrations/supabase/client");
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const loose = supabaseAdmin as unknown as { from: (t: string) => any };
+    const loose = supabase as unknown as { from: (t: string) => any };
     const since24h = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
     const since30m = new Date(Date.now() - 30 * 60 * 1000).toISOString();
 
