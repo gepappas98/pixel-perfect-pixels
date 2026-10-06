@@ -112,11 +112,13 @@ Next sequence:
 
 ## P1 — Known items not to forget
 
-### P1.1 Strategy configuration wiring
-- Canonical `strategy_config` was intentionally NOT overwritten by legacy balanced settings.
-- Deployed signal combiner historically did not read `strategy_config` weights correctly.
-- Must verify configuration is actually authoritative before any strategy tuning.
-- Do not change current weights/thresholds merely to make metrics look better.
+### P1.1 Strategy configuration wiring — DONE / RUNTIME VERIFIED (2026-10-06)
+- Commit `11f97930911b6709075bdbd4e0e40eea5f133dca` wires the canonical production scorer to `strategy_config`.
+- Runtime verification on canonical DB `yckewtpfttvwiptmmrfq` confirms the active row is `chart-trader`: whale 0.5 / technicals 2.0 / prediction 0.5 / council 0.5; auto-switch enabled, 4h interval.
+- Fresh composite rows are using those weights. Example at 20:30 UTC: ETH = whale distribution (-0.50) + prediction leaning yes (+0.25) = -0.25, confidence 0.071428..., recommendation HOLD. This matches the configured production scorer contract.
+- 30-minute runtime evidence: 11 fresh composite rows and 30 strategy-shadow diagnostics; no scorer/runtime error observed.
+- No thresholds, classifier, EMA50/ADX, R:R, or historical data were changed.
+- Strategy tuning remains deferred; this closes the wiring defect only.
 
 ### P1.2 Cron / pipeline source-of-truth mismatch
 - Canonical cron previously observed at 10 minutes.
@@ -169,21 +171,20 @@ Reason: stabilization and clean data collection come first.
 ## Current execution order
 
 **NOW**
-1. Verify manual Run pipeline / improve its error reporting.
-2. **DEFERRED:** consolidate the scheduler interval/source-of-truth after higher-priority P0 checks.
-3. Verify one or more clean canonical cycles.
-4. Verify executor and risk behavior.
-5. Verify resolver ambiguity fix / deploy if still missing.
+1. **P0.2 — Fresh Council input:** keep the 30-minute freshness gate intact and verify the external Whale Radar feed produces a genuinely fresh decision. Current canonical `council-sync` safely returns `synced=0` when the external feed is stale.
+2. **P0.4 — Fresh canonical variant observation:** canonical producer is active, but the latest `strategy_variant_signals` row is still old and there were 0 new variant rows in the last 30 minutes. Do not mass-resolve historical rows.
+3. Verify one or more clean canonical cycles after fresh Council/variant data appears.
+4. Verify manual Run Pipeline UI diagnostics in the published frontend if not already visually confirmed.
+5. Verify executor/risk behavior and resolver 5m→15m ambiguity on a fresh row.
 
 **THEN**
 6. Verify canonical Dashboard/Shadow/DB alignment.
-7. Wire/verify strategy_config authority.
-8. Security/RLS audit.
-9. Observability cleanup.
+7. Security/RLS audit.
+8. Observability cleanup.
 
 **ONLY AFTER CLEAN DATA**
-10. Analyze strategy variants/regime performance.
-11. Consider strategy changes based on evidence.
+9. Complete regime × outcome and signal-independence analysis on the clean sample.
+10. Consider strategy/classifier changes based on evidence.
 
 ---
 
