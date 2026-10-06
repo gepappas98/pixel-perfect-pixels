@@ -1,6 +1,6 @@
 # Trading Command Center — P0/P1 Stabilization Tracker
 
-Last updated: 2026-10-06 UTC
+Last updated: 2026-10-06 UTC — manual-trigger diagnostic
 
 ## Operating rule
 
@@ -57,14 +57,21 @@ Hard constraints:
 - Production deployment was initiated after this change.
 
 ### OPEN — next immediate work
-1. Verify one manual **Run pipeline** creates a new canonical `pipeline_runs` row and completes.
-2. Verify Pipeline Health changes from stale/running 100% to healthy/running with the new run.
-3. Verify the new run contains canonical stage results and no executor HTTP 500.
-4. Verify no duplicate pipeline runs are created by manual + cron overlap.
+1. **Manual UI error handling remains OPEN.** The UI currently reports only `Edge Function returned a non-2xx status code`; it does not surface the orchestrator response body.
+2. A direct canonical manual diagnostic invocation was verified successfully: run `b7d5e64d-a2cf-41c6-87ea-1478e0816add`, 21.1s, status `completed`, all six canonical stages completed, no executor HTTP 500.
+3. A subsequent scheduled canonical run also completed successfully: run `3a86421e-559d-4e15-b467-9995b3b9092a`, 20.3s.
+4. The orchestrator's concurrency guard can legitimately return HTTP 409 with `skipped=true` when another run is active; the current UI collapses this into the generic non-2xx message. This must be made explicit in the manual-trigger handler.
+5. Verify Pipeline Health against the canonical run source after scheduler consolidation.
+6. Verify no duplicate pipeline runs are created by manual + cron overlap.
 
 ### CRITICAL — scheduler path still needs consolidation
-The UI schedule function still uses the old route:
-`set_pipeline_schedule()` → `trading-pipeline-auto` → `/api/public/cron` → legacy `runFullPipeline()`.
+The current canonical pg_cron state was re-checked:
+- active job: `trading-pipeline-orchestrator`, schedule `*/10 * * * *`
+- inactive legacy job: `trading-pipeline-every-15-min`
+- `pipeline_settings.id=1` currently has `interval_minutes=10`
+- the dashboard offers 2/5/10-minute choices, but the canonical DB scheduler is still at 10 minutes.
+
+Separately, the application route `/api/public/cron` still contains the legacy `runFullPipeline()` path. This must still be consolidated so there is no second pipeline implementation.
 
 This is NOT yet considered fixed.
 
