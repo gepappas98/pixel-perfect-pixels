@@ -80,8 +80,8 @@ function predictionDirectionForShadow(prediction: any | null): "bullish" | "bear
   const yes = Number(prediction?.yes_price);
   if (!Number.isFinite(yes)) return "neutral";
   const q = String(prediction?.question ?? "").toLowerCase();
-  const bullish = /\\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\\b/i.test(q);
-  const bearish = /\\b(dip|drop|fall|below|crash|down to|under|bottom)\\b/i.test(q);
+  const bullish = /\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\b/i.test(q);
+  const bearish = /\b(dip|drop|fall|below|crash|down to|under|bottom)\b/i.test(q);
   if (!bullish && !bearish) return "neutral";
   const up = bullish ? yes : 1 - yes;
   if (up > 0.6) return "bullish";
@@ -93,8 +93,8 @@ function predictionMagnitudeForShadow(prediction: any | null): number {
   const yes = Number(prediction?.yes_price);
   if (!Number.isFinite(yes)) return 0;
   const q = String(prediction?.question ?? "").toLowerCase();
-  const bullish = /\\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\\b/i.test(q);
-  const bearish = /\\b(dip|drop|fall|below|crash|down to|under|bottom)\\b/i.test(q);
+  const bullish = /\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\b/i.test(q);
+  const bearish = /\b(dip|drop|fall|below|crash|down to|under|bottom)\b/i.test(q);
   if (!bullish && !bearish) return 0;
   const up = bullish ? yes : 1 - yes;
   const distance = Math.abs(up - 0.5) * 2;
