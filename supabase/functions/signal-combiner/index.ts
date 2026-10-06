@@ -266,7 +266,7 @@ function ruleBasedRecommendation(
   indicator: any | null,
   prediction: any | null,
   council: any | null,
-): { recommendation: string; confidence: number; reasoning: string } {
+): { recommendation: string; confidence: number; reasoning: string; score: number } {
   let score = 0;
   const reasons: string[] = [];
 
@@ -324,6 +324,7 @@ function ruleBasedRecommendation(
     recommendation,
     confidence,
     reasoning: reasons.length ? reasons.join("; ") : "insufficient signal",
+    score,
   };
 }
 
@@ -414,7 +415,7 @@ Deno.serve(async (req) => {
             technicals_weight: strategySnapshot.technicals,
             prediction_weight: strategySnapshot.prediction,
             council_weight: strategySnapshot.council,
-            current_score: result.recommendation === "buy" ? result.confidence : result.recommendation === "sell" ? -result.confidence : 0,
+            current_score: result.score,
             current_recommendation: gate.recommendation,
             shadow_score: shadow.score,
             shadow_confidence: shadow.confidence,
