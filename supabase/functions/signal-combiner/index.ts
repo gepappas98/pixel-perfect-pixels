@@ -347,48 +347,51 @@ function ruleBasedRecommendation(
   indicator: any | null,
   prediction: any | null,
   council: any | null,
+  weights: StrategyWeights,
 ): { recommendation: string; confidence: number; reasoning: string; score: number; components: { whale: number; technicals: number; prediction: number; council: number } } {
   let score = 0;
   const reasons: string[] = [];
   const components = { whale: 0, technicals: 0, prediction: 0, council: 0 };
 
   if (whale?.direction === "accumulation") {
-    score += 1;
-    components.whale = 1;
+    score += weights.whale;
+    components.whale = weights.whale;
     reasons.push("whale accumulation");
   }
   if (whale?.direction === "distribution") {
-    score -= 1;
-    components.whale = -1;
+    score -= weights.whale;
+    components.whale = -weights.whale;
     reasons.push("whale distribution");
   }
 
   if (indicator?.signal === "bullish") {
-    score += 1;
-    components.technicals = 1;
+    score += weights.technicals;
+    components.technicals = weights.technicals;
     reasons.push("bullish technicals (4h)");
   }
   if (indicator?.signal === "bearish") {
-    score -= 1;
-    components.technicals = -1;
+    score -= weights.technicals;
+    components.technicals = -weights.technicals;
     reasons.push("bearish technicals (4h)");
   }
 
   if (prediction?.yes_price != null) {
-    if (prediction.yes_price > 0.6) {
-      score += 0.5;
-      components.prediction = 0.5;
+    if (Number(prediction.yes_price) > 0.6) {
+      const contribution = 0.5 * weights.prediction;
+      score += contribution;
+      components.prediction = contribution;
       reasons.push("prediction market leaning yes");
     }
-    if (prediction.yes_price < 0.4) {
-      score -= 0.5;
-      components.prediction = -0.5;
+    if (Number(prediction.yes_price) < 0.4) {
+      const contribution = 0.5 * weights.prediction;
+      score -= contribution;
+      components.prediction = -contribution;
       reasons.push("prediction market leaning no");
     }
   }
 
   if (council?.final_verdict) {
-    const weight = (council.conviction ?? 50) / 100 * 1.5;
+    const weight = (Number(council.conviction ?? 50) / 100) * 1.5 * weights.council;
     const verdict = String(council.final_verdict).toUpperCase();
     if (verdict === "BUY") {
       score += weight;
@@ -405,7 +408,8 @@ function ruleBasedRecommendation(
     }
   }
 
-  const confidence = Math.min(1, Math.abs(score) / 3);
+  const max = weights.whale + weights.technicals + 0.5 * weights.prediction + 1.5 * weights.council;
+  const confidence = max > 0 ? Math.min(1, Math.abs(score) / max) : 0;
   let recommendation: "buy" | "sell" | "hold" | "watch" = "watch";
   if (score >= 1.5) recommendation = "buy";
   else if (score <= -1.5) recommendation = "sell";
@@ -492,7 +496,15 @@ Deno.serve(async (req) => {
 
       if (!whale && !indicator && !prediction && !council) continue;
 
-      const result = ruleBasedRecommendation(whale, indicator, prediction, council);
+      const productionWeights: StrategyWeights = strategySnapshot ?? {
+        whale: 1,
+        technicals: 1,
+        prediction: 1,
+        council: 1,
+        preset_name: null,
+        updated_at: null,
+      };
+      const result = ruleBasedRecommendation(whale, indicator, prediction, council, productionWeights);
       const gate = applyMtfGate(result.recommendation, mtf, mtfGate);
 
       if (strategySnapshot) {
