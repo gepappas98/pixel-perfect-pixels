@@ -73,32 +73,59 @@ Deno.serve(async (req) => {
   if (preflight) return preflight;
 
   try {
-    const markets = await fetchActiveMarkets();
-    const relevant = markets
-      .map((m) => ({ market: m, symbol: matchSymbol(m.question ?? "") }))
-      .filter((x) => x.symbol !== null);
+    const payload = await fetchActiveMarkets();
+    const markets = eventMarkets(payload);
+    const rows: Record<string, unknown>[] = [];
 
-    const rows = relevant.map(({ market, symbol }) => {
-      let yes = null, no = null;
+    for (const market of markets) {
+      if (!market.slug) continue;
+      const question = market.question ?? "";
+      const q = question.toLowerCase();
+      if (!cryptoWord.test(q)) continue;
+
+      const symbol = matchSymbolFromQuestion(q);
+      if (!symbol) continue;
+      if (!isUsablePredictionQuestion(question)) continue;
+
+      let yes: number | null = null;
+      let no: number | null = null;
       try {
-        const prices = JSON.parse(market.outcomePrices ?? "[]");
+        const prices = JSON.parse(market.outcomePrices ?? "[]") as string[];
         yes = prices[0] ? parseFloat(prices[0]) : null;
         no = prices[1] ? parseFloat(prices[1]) : null;
-      } catch { /* leave null if unparsable */ }
+      } catch {
+        continue;
+      }
 
-      return {
+      const volume = Number(market.volume24hr);
+      if (
+        yes == null ||
+        !Number.isFinite(yes) ||
+        yes < PREDICTION_RESOLVED_LOW ||
+        yes > PREDICTION_RESOLVED_HIGH ||
+        !Number.isFinite(volume) ||
+        volume < PREDICTION_MIN_VOLUME_USD
+      ) continue;
+
+      rows.push({
         market_slug: market.slug,
-        question: market.question,
+        question,
         related_symbol: symbol,
         yes_price: yes,
         no_price: no,
-        volume_24h: market.volume24hr ?? null,
+        volume_24h: volume,
         raw: market,
         created_at: new Date().toISOString(),
-      };
-    });
+      });
+    }
 
     const supabase = getServiceClient();
+    if (rows.length === 0) {
+      return new Response(JSON.stringify({ inserted: 0, scanned: markets.length, snapshots: [] }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     const { data, error } = await supabase
       .from("prediction_snapshots")
       .upsert(rows, { onConflict: "market_slug", ignoreDuplicates: false })
@@ -106,7 +133,7 @@ Deno.serve(async (req) => {
 
     if (error) throw error;
 
-    return new Response(JSON.stringify({ inserted: data.length, snapshots: data }), {
+    return new Response(JSON.stringify({ inserted: data?.length ?? 0, scanned: markets.length, snapshots: data ?? [] }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err) {
