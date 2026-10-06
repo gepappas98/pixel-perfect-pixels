@@ -22,7 +22,7 @@ const SIGNAL_ORDER: Record<string, number> = {
 export function IndicatorPanel() {
   // Fetch plenty of rows — with 3 timeframes (4h/1h/1d) there are ~285 rows
   // per cycle for 95 coins. 500 covers current scale with room to spare.
-  const { rows, loading } = useLiveTable<IndicatorSnapshot>("indicator_snapshots", 500);
+  const { rows, loading, realtimeStatus, realtimeError } = useLiveTable<IndicatorSnapshot>("indicator_snapshots", 500);
 
   // ── Filter to the primary (4h) timeframe only ─────────────────
   // Multi-timeframe analysis writes 3 rows per coin (4h + 1h + 1d).
@@ -47,6 +47,9 @@ export function IndicatorPanel() {
     return displaySymbol(a.symbol).localeCompare(displaySymbol(b.symbol));
   });
 
+  const realtimeLabel = realtimeStatus === "SUBSCRIBED" ? "live" : realtimeStatus === "CONNECTING" ? "connecting" : realtimeStatus === "TIMED_OUT" ? "timed out" : realtimeStatus === "CHANNEL_ERROR" ? "error" : "closed";
+  const realtimeClass = realtimeStatus === "SUBSCRIBED" ? "text-bull" : realtimeStatus === "CONNECTING" ? "text-warn" : "text-destructive";
+
   return (
     <section className="panel">
       <div className="mb-3 flex items-start justify-between gap-3">
@@ -56,8 +59,8 @@ export function IndicatorPanel() {
             Latest per symbol · {indicators.length} active
           </p>
         </div>
-        <span className="flex items-center gap-1.5 text-[10px] text-bull">
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-bull" /> live
+        <span className={`flex items-center gap-1.5 text-[10px] ${realtimeClass}`} title={realtimeError ?? `Realtime: ${realtimeStatus}`}>
+          <span className={`h-1.5 w-1.5 rounded-full ${realtimeStatus === "SUBSCRIBED" ? "animate-pulse bg-bull" : realtimeStatus === "CONNECTING" ? "animate-pulse bg-warn" : "bg-destructive"}`} /> {realtimeLabel}
         </span>
       </div>
 
