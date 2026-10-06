@@ -266,3 +266,25 @@ For each ported feature:
 6. only then mark the feature DONE.
 
 **Do not deploy strategy changes merely because a legacy feature looks attractive. Stabilization and clean observations remain the priority.**
+
+## 2026-10-06 — Legacy → Canonical audit VERIFIED against current main
+
+The canonical source was inspected directly before any porting change. The previously listed legacy mechanisms are already represented in the current canonical implementation, so **no duplicate port was applied**:
+
+- Hot-whale queue: canonical pipeline uses `recordHotWhale()`, `getHotWhaleBatch()` and hot-whale tags.
+- Hard-conflict gate: canonical `detectHardConflict()` is called by the signal combiner.
+- Candle resilience: canonical Binance hosts include `api.binance.com` and `data-api.binance.vision`, with Bybit kline fallback.
+- Bounded concurrency: canonical `pMap()` is used for feed/symbol fan-out.
+- Feed isolation: individual source/symbol failures are caught and recorded without aborting the cycle.
+- Variant ambiguity: canonical resolver checks 5m then 15m and returns `ambiguous` when one lower-timeframe candle touches both TP and SL.
+- Market session: canonical signals persist `market_session`; the session score modifier remains gated by configuration and was not enabled.
+- Core majors: `CORE_ALWAYS_INCLUDE = [BTC, ETH, SOL]` is already enforced by the watchlist resolver.
+- Provenance: canonical watchlist context and `tagsFor()` preserve symbol origin/tags.
+- Error serialization: canonical pipeline and market-regime paths use `serializeError()`.
+- Variant performance: canonical pipeline writes variant rows itself; legacy `runFullPipeline()` remains disabled.
+
+**Safety decision:** No production strategy logic was changed in this pass, no historical `strategy_variant_signals` rows were rewritten, and no second writer/pipeline was introduced.
+
+**Result:** the Legacy → Canonical improvement pass requires **no additional code port at this point**. The next work is verification of these existing safeguards in live canonical cycles, not reimplementation.
+
+This supersedes the previous `PORT CANDIDATE` wording for the mechanisms proven above.
