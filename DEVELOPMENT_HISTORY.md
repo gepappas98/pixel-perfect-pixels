@@ -63,3 +63,28 @@ GitHub sync commit: f1ce006700b58eee9a5ddd3a327a3c7ba255fda5.
 - Therefore strategy_config is authoritative for the application/server strategy layer and auto-switch persistence, but not authoritative for the canonical Edge composite producer used by the orchestrator.
 - This is a genuine P1 architecture/source-of-truth mismatch, not a reason to change weights immediately.
 - Safety decision: do not modify strategy_config, thresholds, or signal scoring during this audit. Next step is to inspect historical canonical intent and decide the smallest restoration path so the DB strategy config becomes authoritative without changing current behavior accidentally.
+
+
+## 2026-10-06 — P1.1 deep historical strategy-authority audit
+
+### Evidence recovered
+- The historical application pipeline had an explicit fetchStrategy() loader from public.strategy_config, cached for 60s, and combineSignals() passed those weights into the production ruleBased() scorer.
+- Historical ruleBased() is materially richer than the currently deployed Edge scorer: it uses whale_weight, technicals_weight, prediction_weight, and council_weight; prediction contribution is magnitude-aware; technicals use the MTF score; council contribution uses a 0.75 base weight times conviction; asset-regime adjustments, hard-conflict handling, and hot-whale conviction boost are part of the historical scoring path.
+- Historical scoring thresholds were buy=2.2, sell=-2.2, hold=0.5, with a bounded hot-whale sparse-symbol threshold override documented separately. The active Edge signal-combiner v7 instead hardcodes whale/technical contributions at 1.0, prediction at 0.5, council at conviction×1.5, confidence denominator 3, and thresholds ±1.5.
+- Historical unit tests explicitly validate weight sensitivity: whale-focused can produce BUY from whale accumulation alone and chart-trader can produce BUY from aligned MTF alone. This proves the DB/preset weights were not merely UI metadata; they were intended to affect production scoring.
+- The current strategy.functions.ts still implements manual persistence and auto-switching against strategy_config, so the auto-switch subsystem can change the DB configuration even though the active canonical Edge producer does not consume those weights.
+- Current production DB was rechecked: chart-trader (0.5 / 2.0 / 0.5 / 0.5), auto-switch ON, interval 4h, last auto-switch 2026-10-02.
+
+### Root cause
+The architecture drifted into two strategy engines: the historical/server engine is DB-driven, while canonical signal-combiner v7 is a simplified hardcoded engine. Because the legacy runFullPipeline() writer is disabled, the DB-driven scorer is no longer the live producer. Therefore the current auto-adaptive strategy can update strategy_config without necessarily changing the actual canonical composite scoring.
+
+### Best restoration path (decision, not implementation yet)
+1. Keep public.strategy_config as the single source of truth for the active composite strategy weights.
+2. Port the proven historical ruleBased() semantics into the canonical Edge signal-combiner, rather than inventing a new scoring model or simply copying the current simplified v7 constants.
+3. Keep strategy_variant_signals presets isolated as benchmark/shadow arms; they should remain hardcoded preset definitions because they intentionally represent alternative strategies, not the active strategy.
+4. Do not change the live DB weights, thresholds, or classifier during the stabilization window. The first implementation pass should be a shadow comparison: load strategy_config, compute the DB-driven historical score alongside the current score, persist diagnostics only, and verify parity/expected deltas on clean canonical inputs.
+5. After the shadow comparison is verified, make the DB-driven scorer authoritative in one small canonical change, with explicit logging of the strategy snapshot/preset used for every composite signal. This makes auto-switch changes observable and reproducible.
+6. Thresholds are a separate authority problem: they are not currently columns in strategy_config. Do not silently move the historical 2.2/-2.2/0.5 thresholds into the DB in the same change. First restore weight authority; then audit threshold authority as a separate P1 decision.
+
+### Safety conclusion
+This is a confirmed P1 wiring defect, not a request to optimize strategy performance. No production code, strategy weights, thresholds, classifier, or historical rows were changed in this audit.
