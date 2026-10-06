@@ -53,3 +53,13 @@ GitHub sync commit: f1ce006700b58eee9a5ddd3a327a3c7ba255fda5.
 4. Verify every production change with a targeted query or invocation.
 5. Record every meaningful investigation, change, commit, and verification result here.
 6. Vercel is not the target; canonical Supabase + GitHub/Lovable path is authoritative.
+
+
+## 2026-10-06 — P1.1 strategy_config authority audit
+- Audit only; no production code or DB values changed.
+- public.strategy_config currently has chart-trader = whale 0.5 / technicals 2.0 / prediction 0.5 / council 0.5; auto-switch enabled; interval 4h; last auto-switch 2026-10-02.
+- Repo server strategy loader (src/lib/pipeline.server.ts) reads strategy_config, and strategy.functions.ts owns manual/auto-switch persistence.
+- Canonical deployed signal-combiner v7 does not read strategy_config for production composite scoring. Its production ruleBasedRecommendation() uses fixed 1-point whale/technicals, 0.5 prediction, and council conviction x1.5, with hard thresholds buy >=1.5 / sell <=-1.5; its separate variant presets are also hardcoded in the Edge Function.
+- Therefore strategy_config is authoritative for the application/server strategy layer and auto-switch persistence, but not authoritative for the canonical Edge composite producer used by the orchestrator.
+- This is a genuine P1 architecture/source-of-truth mismatch, not a reason to change weights immediately.
+- Safety decision: do not modify strategy_config, thresholds, or signal scoring during this audit. Next step is to inspect historical canonical intent and decide the smallest restoration path so the DB strategy config becomes authoritative without changing current behavior accidentally.
