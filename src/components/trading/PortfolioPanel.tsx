@@ -166,7 +166,7 @@ async function fetchSpotMarks(
           return null;
         }
 
-        return [symbol, price] as const;
+        return [binanceSymbol(symbol), price] as const;
       } catch (err) {
         console.warn(
           `[PORTFOLIO_MARK_FETCH_ERROR] ${symbol}:`,
