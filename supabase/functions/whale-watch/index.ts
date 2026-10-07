@@ -126,6 +126,18 @@ function normalizeCoinLobster(raw: CoinLobsterTrade) {
     raw,
   };
 }
+async function fetchBybitRecentTrades(symbol: string): Promise<any[]> {
+  const url = new URL("https://" + "api.bybit.com/v5/market/recent-trade");
+  url.searchParams.set("category", "spot");
+  url.searchParams.set("symbol", symbol + "USDT");
+  url.searchParams.set("limit", "60");
+  try {
+    const res = await fetch(url.toString(), { signal: AbortSignal.timeout(12000) });
+    if (!res.ok) return [];
+    const json = await res.json();
+    return json?.retCode === 0 && Array.isArray(json?.result?.list) ? json.result.list : [];
+  } catch { return []; }
+}
 async function fetchRecentTrades(coin: string): Promise<HyperliquidTrade[]> {
   const res = await fetch("https://api.hyperliquid.xyz/info", {
     method: "POST",
@@ -284,7 +296,15 @@ Deno.serve(async (req) => {
     const hyperliquidRows: any[] = results.flat();
     const watchSymbols = new Set(watchlist.symbols);
     const coinLobsterRows = (await fetchCoinLobsterWhales(50)).map(normalizeCoinLobster).filter((row) => row && watchSymbols.has(row.symbol));
-    const rows: any[] = [...hyperliquidRows, ...coinLobsterRows];
+    const bybitResults = await Promise.all(scanCoins.map(async (coin) => {
+      const trades = await fetchBybitRecentTrades(coin);
+      return trades.flatMap((t) => {
+        const usd = Number(t.price ?? 0) * Number(t.size ?? 0);
+        if (!Number.isFinite(usd) || usd < whaleFloor(coin)) return [];
+        return [{ symbol: coin, chain: "bybit-spot", direction: String(t.side ?? "").toLowerCase() === "buy" ? "accumulation" : "distribution", usd_value: usd, wallet_address: null, tx_hash: "bybit-" + String(t.execId ?? (coin + "-" + String(t.time ?? Date.now()))), source: "bybit-recent-trades", created_at: new Date(Number(t.time ?? Date.now())).toISOString(), raw: t }];
+      });
+    }));
+    const rows: any[] = [...hyperliquidRows, ...coinLobsterRows, ...bybitResults.flat()];
 
     if (rows.length) {
       const { data, error } = await supabase
