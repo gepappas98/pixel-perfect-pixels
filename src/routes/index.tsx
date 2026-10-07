@@ -5,6 +5,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
 import { SignalFeed } from "@/components/trading/SignalFeed";
 import { WhalePanel } from "@/components/trading/WhalePanel";
+import { EventFlowTransmissionPanel } from "@/components/trading/EventFlowTransmissionPanel";
 import { IndicatorPanel } from "@/components/trading/IndicatorPanel";
 import { PredictionPanel } from "@/components/trading/PredictionPanel";
 import { CouncilPanel } from "@/components/trading/CouncilPanel";
@@ -325,6 +326,7 @@ function CommandCenter() {
           <SignalFeed />
         </div>
         <WhalePanel />
+        <EventFlowTransmissionPanel />
         <IndicatorPanel />
         <PredictionPanel />
         <CouncilPanel />
