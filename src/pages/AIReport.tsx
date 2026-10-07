@@ -511,17 +511,15 @@ export default function AIReport() {
       // ── 7. Real trades opened in same period ─────────────────
       const { data: recentTrades, error: tradesError } = await supabase
         .from("trades")
-        .select("id,symbol,side,status,opened_at")
+        .select("id,symbol,side,status,created_at")
         .eq("side", "buy")
-        .gte("opened_at", executionSince);
+        .gte("created_at", executionSince);
 
       if (tradesError) {
         console.warn("[AI_DIAGNOSTIC] trade query failed:", tradesError.message);
       }
 
-      const openedTrades = ((recentTrades ?? []) as Row[]).filter(
-        (trade) => trade.status === "open" || trade.opened_at != null,
-      ).length;
+      const openedTrades = ((recentTrades ?? []) as Row[]).length;
 
       // ── 8. Determine execution health ────────────────────────
       let executionStatus: ExecutionStatus = "ok";
