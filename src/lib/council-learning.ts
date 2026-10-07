@@ -135,6 +135,7 @@ export async function generatePostMortems(): Promise<LearningResult> {
       "id, symbol, side, quantity, entry_price, exit_price, pnl, close_reason, closed_at, composite_signal_id",
     )
     .eq("status", "closed")
+    .eq("side", "buy")
     .eq("post_mortem_generated", false)
     .order("closed_at", { ascending: false })
     .limit(POST_MORTEM_BATCH_MAX);
