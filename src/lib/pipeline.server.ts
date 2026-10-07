@@ -824,338 +824,68 @@ function computeAtrPct(highs: number[], lows: number[], closes: number[], period
 }
 
 
-/* ───────────── Accumulation / breakout shadow experiment ─────────────
- * Intentionally isolated from composite execution and Shadow V2.
- * First instrument: CrediaBank (CREDIA.AT), daily Yahoo Finance candles.
- * This is research telemetry only: it never creates trades or BUY/SELL rows.
- */
-
-type YahooChart = {
-  chart?: {
-    result?: Array<{
-      timestamp?: number[];
-      indicators?: {
-        quote?: Array<{
-          open?: Array<number | null>;
-          high?: Array<number | null>;
-          low?: Array<number | null>;
-          close?: Array<number | null>;
-          volume?: Array<number | null>;
-        }>;
-      };
-    }>;
-  };
-};
-
-const ACCUMULATION_SHADOW_INSTRUMENTS = [
-  { instrument: "CREDIA.AT", displaySymbol: "CREDIA", timeframe: "1d" },
-] as const;
-
-function sma(values: number[], period: number): number {
-  if (values.length < period) return NaN;
-  const slice = values.slice(-period);
-  return slice.reduce((a, b) => a + b, 0) / period;
-}
-
-function obvSeries(closes: number[], volumes: number[]): number[] {
-  const out: number[] = [0];
-  for (let i = 1; i < closes.length; i++) {
-    const prev = out[i - 1]!;
-    out.push(prev + (closes[i]! > closes[i - 1]! ? volumes[i]! : closes[i]! < closes[i - 1]! ? -volumes[i]! : 0));
-  }
-  return out;
-}
-
-function cmfValue(highs: number[], lows: number[], closes: number[], volumes: number[], period = 20): number {
-  if (closes.length < period) return NaN;
-  let mfv = 0, vol = 0;
-  for (let i = closes.length - period; i < closes.length; i++) {
-    const range = highs[i]! - lows[i]!;
-    const mfm = range > 0 ? ((closes[i]! - lows[i]!) - (highs[i]! - closes[i]!)) / range : 0;
-    mfv += mfm * volumes[i]!;
-    vol += volumes[i]!;
-  }
-  return vol > 0 ? mfv / vol : 0;
-}
-
-function trueRangeSeries(highs: number[], lows: number[], closes: number[]): number[] {
-  const out: number[] = [];
-  for (let i = 1; i < closes.length; i++) {
-    out.push(Math.max(highs[i]! - lows[i]!, Math.abs(highs[i]! - closes[i - 1]!), Math.abs(lows[i]! - closes[i - 1]!)));
-  }
-  return out;
-}
-
-function atrSeries(highs: number[], lows: number[], closes: number[], period = 14): number[] {
-  const tr = trueRangeSeries(highs, lows, closes);
-  const out: number[] = [];
-  if (tr.length < period) return out;
-  let atr = tr.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  out.push(atr);
-  for (let i = period; i < tr.length; i++) {
-    atr = (atr * (period - 1) + tr[i]!) / period;
-    out.push(atr);
-  }
-  return out;
-}
-
-function percentileMedian(values: number[]): number {
-  const clean = values.filter(Number.isFinite).sort((a, b) => a - b);
-  if (!clean.length) return NaN;
-  const mid = Math.floor(clean.length / 2);
-  return clean.length % 2 ? clean[mid]! : (clean[mid - 1]! + clean[mid]!) / 2;
-}
-
-async function fetchYahooDaily(symbol: string): Promise<{
-  timestamps: number[];
-  opens: number[];
-  highs: number[];
-  lows: number[];
-  closes: number[];
-  volumes: number[];
-} | null> {
-  try {
-    const url = new URL("https://query1.finance.yahoo.com/v8/finance/chart/" + encodeURIComponent(symbol));
-    url.searchParams.set("interval", "1d");
-    url.searchParams.set("range", "1y");
-    const response = await fetchWithTimeout(url.toString(), {
-      headers: { "User-Agent": "TradingCommandCenter/1.0" },
-    });
-    if (!response.ok) return null;
-    const payload = (await response.json()) as YahooChart;
-    const result = payload.chart?.result?.[0];
-    const ts = result?.timestamp ?? [];
-    const q = result?.indicators?.quote?.[0];
-    if (!q) return null;
-
-    const rows = ts.map((t, i) => ({
-      t: Number(t),
-      o: Number(q.open?.[i]),
-      h: Number(q.high?.[i]),
-      l: Number(q.low?.[i]),
-      c: Number(q.close?.[i]),
-      v: Number(q.volume?.[i]),
-    })).filter((r) =>
-      Number.isFinite(r.t) && Number.isFinite(r.o) && Number.isFinite(r.h) &&
-      Number.isFinite(r.l) && Number.isFinite(r.c) && Number.isFinite(r.v),
-    );
-
-    if (rows.length < 60) return null;
-    return {
-      timestamps: rows.map(r => r.t * 1000),
-      opens: rows.map(r => r.o),
-      highs: rows.map(r => r.h),
-      lows: rows.map(r => r.l),
-      closes: rows.map(r => r.c),
-      volumes: rows.map(r => r.v),
-    };
-  } catch (e) {
-    console.error("[ACCUM_SHADOW] Yahoo fetch failed", symbol, e);
-    return null;
-  }
-}
-
-function accumulationSnapshot(
-  timestamps: number[],
-  highs: number[],
-  lows: number[],
-  closes: number[],
-  volumes: number[],
-  sampleIndex: number,
+function computeAccumulationFeatures(
+  highs: number[], lows: number[], closes: number[], volumes: number[],
 ) {
-  const end = sampleIndex + 1;
-  const c = closes.slice(0, end);
-  const h = highs.slice(0, end);
-  const l = lows.slice(0, end);
-  const v = volumes.slice(0, end);
-  const price = c[c.length - 1]!;
-  const ma20 = sma(c, 20);
-  const ma50 = sma(c, 50);
-  const obv = obvSeries(c, v);
-  const obvNow = obv[obv.length - 1]!;
-  const obvBase = obv.length >= 21 ? obv[obv.length - 21]! : NaN;
-  const obvChangePct20 = Number.isFinite(obvBase) && Math.abs(obvBase) > 0
-    ? ((obvNow - obvBase) / Math.abs(obvBase)) * 100 : 0;
-  const cmf20 = cmfValue(h, l, c, v, 20);
-  const atr = atrSeries(h, l, c, 14);
-  const atr14 = atr.length ? atr[atr.length - 1]! : NaN;
-  const atrPct = price > 0 ? (atr14 / price) * 100 : NaN;
-  const atrPctHistory: number[] = [];
-  for (let i = 14; i < c.length; i++) {
-    const a = atrSeries(h.slice(0, i + 1), l.slice(0, i + 1), c.slice(0, i + 1), 14).at(-1);
-    const p = c[i]!;
-    if (Number.isFinite(a) && p > 0) atrPctHistory.push((a! / p) * 100);
+  if (closes.length < 60) return null;
+  const last = closes.length - 1;
+  const price = closes[last]!;
+  const ma20 = closes.slice(-20).reduce((a,b)=>a+b,0)/20;
+  const ma50 = closes.slice(-50).reduce((a,b)=>a+b,0)/50;
+
+  let obv = 0;
+  const obvSeries: number[] = [0];
+  for (let i=1;i<closes.length;i++) {
+    obv += closes[i]! > closes[i-1]! ? volumes[i]! : closes[i]! < closes[i-1]! ? -volumes[i]! : 0;
+    obvSeries.push(obv);
   }
-  const atrMedian20 = percentileMedian(atrPctHistory.slice(-20));
-  const atrCompressionPct = Number.isFinite(atrMedian20) && atrMedian20 > 0
-    ? ((atrMedian20 - atrPct) / atrMedian20) * 100 : 0;
+  const obv20Base = obvSeries[Math.max(0,last-20)]!;
+  const obvChangePct20 = Math.abs(obv20Base) > 0 ? ((obv-obv20Base)/Math.abs(obv20Base))*100 : 0;
 
-  const volume20 = sma(v, 20);
-  const volumeRatio = volume20 > 0 ? v[v.length - 1]! / volume20 : 0;
-  const priorHighs = h.slice(-21, -1);
-  const priorLows = l.slice(-21, -1);
-  const resistance20 = priorHighs.length ? Math.max(...priorHighs) : NaN;
-  const support20 = priorLows.length ? Math.min(...priorLows) : NaN;
-  const breakoutConfirmed =
-    Number.isFinite(resistance20) && price > resistance20 * 1.005 &&
-    volumeRatio >= 1.5 && Number.isFinite(obvChangePct20) && obvChangePct20 > 0;
-
-  let score = 0;
-  if (cmf20 > 0.05) score += 20; else if (cmf20 > 0) score += 10;
-  if (obvChangePct20 > 5) score += 20; else if (obvChangePct20 > 0) score += 10;
-  if (Number.isFinite(ma20) && price >= ma20) score += 10;
-  if (Number.isFinite(ma20) && Number.isFinite(ma50) && ma20 >= ma50) score += 10;
-  if (atrCompressionPct >= 15) score += 15; else if (atrCompressionPct >= 5) score += 8;
-  if (volumeRatio >= 0.8) score += 5;
-  if (Number.isFinite(support20) && price <= support20 * 1.06) score += 10;
-  if (Number.isFinite(resistance20) && price < resistance20 * 1.02) score += 10;
-  if (breakoutConfirmed) score = Math.max(score, 85);
-
-  const status = breakoutConfirmed
-    ? "BREAKOUT_CONFIRMED"
-    : score >= 60
-      ? "ACCUMULATION_WATCH"
-      : "NEUTRAL";
-
-  return {
-    price, ma20, ma50, cmf20, obv: obvNow, obvChangePct20,
-    atr14, atrPct, atrCompressionPct, volume: v[v.length - 1]!,
-    avgVolume20: volume20, volumeRatio, support20, resistance20,
-    breakoutConfirmed, score, status,
-    candleTime: new Date(timestamps[sampleIndex]!).toISOString(),
-  };
-}
-
-async function resolveAccumulationOutcomes(
-  db: Admin,
-  instrument: string,
-  candles: Awaited<ReturnType<typeof fetchYahooDaily>>,
-): Promise<number> {
-  if (!candles) return 0;
-  const { data, error } = await db
-    .from("accumulation_shadow_samples")
-    .select("id,candle_time,price,outcome_1d_pct,outcome_3d_pct,outcome_5d_pct")
-    .eq("instrument", instrument)
-    .is("resolved_at", null)
-    .order("candle_time", { ascending: false })
-    .limit(100);
-  if (error || !data) return 0;
-
-  let updated = 0;
-  for (const row of data as Array<Record<string, unknown>>) {
-    const t0 = new Date(String(row.candle_time)).getTime();
-    const entry = Number(row.price);
-    if (!Number.isFinite(t0) || !Number.isFinite(entry) || entry <= 0) continue;
-
-    const futurePrice = (days: number) => {
-      const target = t0 + days * 24 * 60 * 60 * 1000;
-      for (let i = 0; i < candles.timestamps.length; i++) {
-        if (candles.timestamps[i]! >= target) return candles.closes[i]!;
-      }
-      return null;
-    };
-
-    const p1 = futurePrice(1), p3 = futurePrice(3), p5 = futurePrice(5);
-    const patch: Record<string, unknown> = {};
-    if (p1 != null && row.outcome_1d_pct == null) {
-      patch.outcome_1d_price = p1; patch.outcome_1d_pct = ((p1 - entry) / entry) * 100;
-    }
-    if (p3 != null && row.outcome_3d_pct == null) {
-      patch.outcome_3d_price = p3; patch.outcome_3d_pct = ((p3 - entry) / entry) * 100;
-    }
-    if (p5 != null && row.outcome_5d_pct == null) {
-      patch.outcome_5d_price = p5; patch.outcome_5d_pct = ((p5 - entry) / entry) * 100;
-    }
-    if (p5 != null) patch.resolved_at = new Date().toISOString();
-    if (!Object.keys(patch).length) continue;
-    const { error: updateError } = await db
-      .from("accumulation_shadow_samples")
-      .update(patch as never)
-      .eq("id", row.id);
-    if (!updateError) updated++;
+  let cmfVol=0, cmfFlow=0;
+  for(let i=last-19;i<=last;i++){
+    const range=highs[i]!-lows[i]!;
+    const mfm=range>0?((closes[i]!-lows[i]!)-(highs[i]!-closes[i]!))/range:0;
+    cmfFlow += mfm*volumes[i]!;
+    cmfVol += volumes[i]!;
   }
-  return updated;
-}
+  const cmf20 = cmfVol>0 ? cmfFlow/cmfVol : 0;
 
-export async function collectAccumulationShadowSamples(): Promise<number> {
-  const db = await admin();
-  let inserted = 0;
-  let resolved = 0;
-
-  for (const cfg of ACCUMULATION_SHADOW_INSTRUMENTS) {
-    const candles = await fetchYahooDaily(cfg.instrument);
-    if (!candles) continue;
-
-    resolved += await resolveAccumulationOutcomes(db, cfg.instrument, candles);
-
-    const last = candles.timestamps.length - 1;
-    // During an open market day Yahoo can expose an incomplete current candle.
-    // Use the latest candle that is at least 20h old when possible.
-    const sampleIndex = candles.timestamps[last]! > Date.now() - 20 * 60 * 60 * 1000
-      ? Math.max(0, last - 1)
-      : last;
-    const snap = accumulationSnapshot(
-      candles.timestamps, candles.highs, candles.lows, candles.closes, candles.volumes, sampleIndex,
-    );
-
-    const { data, error } = await db
-      .from("accumulation_shadow_samples")
-      .upsert({
-        instrument: cfg.instrument,
-        display_symbol: cfg.displaySymbol,
-        asset_class: "equity",
-        timeframe: cfg.timeframe,
-        data_source: "yahoo_chart",
-        candle_time: snap.candleTime,
-        observed_at: new Date().toISOString(),
-        price: snap.price,
-        ma20: snap.ma20,
-        ma50: snap.ma50,
-        cmf20: snap.cmf20,
-        obv: snap.obv,
-        obv_change_pct20: snap.obvChangePct20,
-        atr14: snap.atr14,
-        atr_pct: snap.atrPct,
-        atr_compression_pct: snap.atrCompressionPct,
-        volume: snap.volume,
-        avg_volume20: snap.avgVolume20,
-        volume_ratio: snap.volumeRatio,
-        support20: snap.support20,
-        resistance20: snap.resistance20,
-        breakout_confirmed: snap.breakoutConfirmed,
-        accumulation_score: snap.score,
-        status: snap.status,
-        features: {
-          obv_rising: snap.obvChangePct20 > 0,
-          cmf_positive: snap.cmf20 > 0,
-          volatility_compressed: snap.atrCompressionPct >= 10,
-          price_above_ma20: snap.price >= snap.ma20,
-          ma20_above_ma50: snap.ma20 >= snap.ma50,
-          breakout_volume_confirmed: snap.breakoutConfirmed,
-        },
-      } as never, { onConflict: "instrument,timeframe,candle_time", ignoreDuplicates: false })
-      .select("id")
-      .maybeSingle();
-    if (error) {
-      console.error("[ACCUM_SHADOW] sample persist failed", cfg.instrument, error);
-      continue;
-    }
-    if (data) inserted++;
-    console.log(
-      "[ACCUM_SHADOW] " + cfg.displaySymbol +
-      " score=" + snap.score.toFixed(0) +
-      " status=" + snap.status +
-      " price=" + snap.price.toFixed(4) +
-      " OBVΔ20=" + snap.obvChangePct20.toFixed(2) + "%" +
-      " CMF20=" + snap.cmf20.toFixed(3) +
-      " ATR%=" + snap.atrPct.toFixed(3) +
-      " compression=" + snap.atrCompressionPct.toFixed(1) + "%" +
-      " breakout=" + snap.breakoutConfirmed +
-      " resolved=" + resolved,
-    );
+  const tr:number[]=[];
+  for(let i=1;i<closes.length;i++){
+    tr.push(Math.max(highs[i]!-lows[i]!,Math.abs(highs[i]!-closes[i-1]!),Math.abs(lows[i]!-closes[i-1]!)));
   }
+  const atrPctSeries:number[]=[];
+  for(let i=14;i<tr.length;i++){
+    const atr=tr.slice(i-13,i+1).reduce((a,b)=>a+b,0)/14;
+    const p=closes[i+1]!;
+    atrPctSeries.push(p>0?(atr/p)*100:0);
+  }
+  const atrPct=atrPctSeries.at(-1) ?? 0;
+  const priorAtr=atrPctSeries.slice(-21,-1).filter(Number.isFinite);
+  const sorted=[...priorAtr].sort((a,b)=>a-b);
+  const median=sorted.length?sorted[Math.floor(sorted.length/2)]!:atrPct;
+  const atrCompressionPct=median>0?((median-atrPct)/median)*100:0;
 
-  return inserted;
+  const priorHighs=highs.slice(-21,-1), priorLows=lows.slice(-21,-1);
+  const resistance20=Math.max(...priorHighs), support20=Math.min(...priorLows);
+  const avgVolume20=volumes.slice(-21,-1).reduce((a,b)=>a+b,0)/20;
+  const volume=volumes[last]!;
+  const volumeRatio=avgVolume20>0?volume/avgVolume20:0;
+  const breakoutConfirmed=price>resistance20 && volumeRatio>=1.5;
+
+  let score=0;
+  if(price>=ma20) score+=10;
+  if(price>=ma50) score+=10;
+  if(cmf20>0) score+=20;
+  if(obvChangePct20>0) score+=20;
+  if(atrCompressionPct>=15) score+=15;
+  if(volumeRatio>=1) score+=10;
+  if(breakoutConfirmed) score+=15;
+  const status=breakoutConfirmed?"BREAKOUT_CONFIRMED":score>=60?"ACCUMULATION_WATCH":"NEUTRAL";
+
+  return {ma20,ma50,cmf20,obv,obvChangePct20,atrPct,atrCompressionPct,volume,avgVolume20,volumeRatio,
+    support20,resistance20,breakoutConfirmed,score,status};
 }
 
 interface SmcResult {
@@ -1313,6 +1043,9 @@ async function fetchIndicatorForTimeframe(coin: string, timeframe: string): Prom
     const vwap = computeVwap(highs, lows, closes, volumes);
     const smc = detectSmc(opens, highs, lows, closes);
     const atrPct = computeAtrPct(highs, lows, closes, 14);
+    const accumulation = timeframe === "1d"
+      ? computeAccumulationFeatures(highs, lows, closes, volumes)
+      : null;
     const candleCloseTime = new Date(Number(raw[raw.length - 1]?.[6]) || Date.now()).toISOString();
 
     return {
@@ -1329,6 +1062,7 @@ async function fetchIndicatorForTimeframe(coin: string, timeframe: string): Prom
         aroon: trend,
         bollinger: { upper: bb.upper, lower: bb.lower },
         vwap, smc, atr_pct: atrPct,
+        accumulation,
         source: result.source,
       },
     };
