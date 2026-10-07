@@ -34,6 +34,7 @@ const PRESET_ORDER = [
   "sentiment-first",
   "ai-driven",
   "conservative",
+  "accumulation",
 ];
 
 const PRESET_LABEL: Record<string, string> = {
@@ -46,6 +47,7 @@ const PRESET_LABEL: Record<string, string> = {
   "sentiment-first": "Sentiment",
   "ai-driven": "AI",
   conservative: "Conservative",
+  accumulation: "Accumulation",
 };
 
 interface StrategyStats {
