@@ -1,6 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 
-const BINANCE_BASE_URL = "https://api.binance.com";
+const BINANCE_BASE_URLS = [
+  "https://api.binance.com",
+  "https://api1.binance.com",
+] as const;
 
 /*
  * Server-side proxy for Binance Spot prices.
@@ -37,36 +40,68 @@ export const Route = createFileRoute("/api/binance/spot-price")({
         }
 
         try {
-          const response = await fetch(
-            `${BINANCE_BASE_URL}/api/v3/ticker/price?symbol=${encodeURIComponent(
-              normalized,
-            )}`,
-            {
-              cache: "no-store",
-              signal: AbortSignal.timeout(5000),
-            },
-          );
+          let lastUpstreamFailure: {
+            status: number;
+            statusText: string;
+            retryAfter: string | null;
+            usedWeight1m: string | null;
+            usedWeight1mIp: string | null;
+            baseUrl: string;
+          } | null = null;
 
-          const body = await response.text();
+          let body = "";
+          let response: Response | null = null;
+
+          for (const baseUrl of BINANCE_BASE_URLS) {
+            try {
+              const candidate = await fetch(
+                `${baseUrl}/api/v3/ticker/price?symbol=${encodeURIComponent(
+                  normalized,
+                )}`,
+                {
+                  cache: "no-store",
+                  signal: AbortSignal.timeout(5000),
+                },
+              );
+
+              if (candidate.ok) {
+                response = candidate;
+                body = await candidate.text();
+                break;
+              }
+
+              lastUpstreamFailure = {
+                status: candidate.status,
+                statusText: candidate.statusText,
+                retryAfter: candidate.headers.get("retry-after"),
+                usedWeight1m: candidate.headers.get("x-mbx-used-weight-1m"),
+                usedWeight1mIp: candidate.headers.get("x-mbx-used-weight-1m-ip"),
+                baseUrl,
+              };
+            } catch (error) {
+              console.error("[BINANCE_SPOT_PRICE_ATTEMPT]", {
+                symbol: normalized,
+                baseUrl,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
 
           // Keep the proxy response at 502 for the UI, but expose the
           // actual upstream Binance status so incidents can be diagnosed.
-          if (!response.ok) {
+          if (!response) {
             console.error("[BINANCE_SPOT_PRICE_UPSTREAM]", {
               symbol: normalized,
-              upstreamStatus: response.status,
-              upstreamStatusText: response.statusText,
-              retryAfter: response.headers.get("retry-after"),
-              usedWeight1m: response.headers.get("x-mbx-used-weight-1m"),
-              usedWeight1mIp: response.headers.get("x-mbx-used-weight-1m-ip"),
+              ...lastUpstreamFailure,
             });
 
             return Response.json(
               {
                 error: "Binance Spot price request failed",
-                status: response.status,
-                upstreamStatus: response.status,
-                upstreamStatusText: response.statusText,
+                status: lastUpstreamFailure?.status ?? 502,
+                upstreamStatus: lastUpstreamFailure?.status ?? 502,
+                upstreamStatusText:
+                  lastUpstreamFailure?.statusText ?? "No Binance response",
               },
               { status: 502 },
             );
