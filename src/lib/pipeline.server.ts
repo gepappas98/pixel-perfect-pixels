@@ -2872,7 +2872,8 @@ async function closeTriggeredTrades(): Promise<number> {
   const { data: openTrades, error } = await db
     .from("trades")
     .select("id, symbol, side, quantity, entry_price, stop_loss, take_profit, mode, created_at")
-    .eq("status", "open");
+    .eq("status", "open")
+    .eq("side", "buy");
   if (error) throw error;
   const trades = (openTrades ?? []) as {
     id: string; symbol: string; side: "buy" | "sell"; quantity: number;
@@ -3201,8 +3202,8 @@ export async function executeTrades(opts?: {
 
   const [signalsRes, openTradesRes, recentlyClosedRes] = await Promise.all([
     db.from("composite_signals").select("*").gte("created_at", since).gte("confidence", MIN_CONFIDENCE).in("recommendation", ["buy", "sell"]).order("confidence", { ascending: false }),
-    db.from("trades").select("id, symbol, side, quantity, entry_price, mode, composite_signal_id, created_at").eq("status", "open"),
-    db.from("trades").select("symbol").eq("status", "closed").gte("closed_at", cooldownSince),
+    db.from("trades").select("id, symbol, side, quantity, entry_price, mode, composite_signal_id, created_at").eq("status", "open").eq("side", "buy"),
+    db.from("trades").select("symbol").eq("status", "closed").eq("side", "buy").gte("closed_at", cooldownSince),
   ]);
   if (signalsRes.error) throw signalsRes.error;
   if (openTradesRes.error) throw openTradesRes.error;
