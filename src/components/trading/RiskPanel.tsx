@@ -48,7 +48,8 @@ const getRiskStatus = createServerFn({ method: "GET" }).handler(
       )
         .select("symbol, side, entry_price, stop_loss, quantity")
         .eq("mode", "paper")
-        .eq("status", "open");
+        .eq("status", "open")
+        .eq("side", "buy");
 
       if (openErr) throw new Error(openErr.message);
 
