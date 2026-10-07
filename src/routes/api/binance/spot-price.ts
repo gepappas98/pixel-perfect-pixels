@@ -49,11 +49,24 @@ export const Route = createFileRoute("/api/binance/spot-price")({
 
           const body = await response.text();
 
+          // Keep the proxy response at 502 for the UI, but expose the
+          // actual upstream Binance status so incidents can be diagnosed.
           if (!response.ok) {
+            console.error("[BINANCE_SPOT_PRICE_UPSTREAM]", {
+              symbol: normalized,
+              upstreamStatus: response.status,
+              upstreamStatusText: response.statusText,
+              retryAfter: response.headers.get("retry-after"),
+              usedWeight1m: response.headers.get("x-mbx-used-weight-1m"),
+              usedWeight1mIp: response.headers.get("x-mbx-used-weight-1m-ip"),
+            });
+
             return Response.json(
               {
                 error: "Binance Spot price request failed",
                 status: response.status,
+                upstreamStatus: response.status,
+                upstreamStatusText: response.statusText,
               },
               { status: 502 },
             );
@@ -67,6 +80,10 @@ export const Route = createFileRoute("/api/binance/spot-price")({
           try {
             payload = JSON.parse(body);
           } catch {
+            console.error("[BINANCE_SPOT_PRICE_INVALID_JSON]", {
+              symbol: normalized,
+            });
+
             return Response.json(
               { error: "Invalid Binance response" },
               { status: 502 },
@@ -76,6 +93,12 @@ export const Route = createFileRoute("/api/binance/spot-price")({
           const price = Number(payload.price);
 
           if (!Number.isFinite(price) || price <= 0) {
+            console.error("[BINANCE_SPOT_PRICE_INVALID_PRICE]", {
+              symbol: normalized,
+              upstreamSymbol: payload.symbol,
+              rawPrice: payload.price,
+            });
+
             return Response.json(
               { error: "Invalid Binance price" },
               { status: 502 },
@@ -94,7 +117,10 @@ export const Route = createFileRoute("/api/binance/spot-price")({
             },
           );
         } catch (error) {
-          console.error("[BINANCE_SPOT_PRICE]", error);
+          console.error("[BINANCE_SPOT_PRICE]", {
+            symbol: normalized,
+            error: error instanceof Error ? error.message : String(error),
+          });
 
           return Response.json(
             { error: "Binance Spot price unavailable" },
