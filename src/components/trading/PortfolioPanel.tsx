@@ -134,60 +134,48 @@ async function fetchSpotMarks(
     return {};
   }
 
-  const results =
-    await Promise.all(
-      unique.map(
-        async (symbol) => {
-          try {
-            const response =
-              await fetch(
-                `/api/binance/spot-price?symbol=${encodeURIComponent(
-                  binanceSymbol(symbol),
-                )}`,
-                {
-                  cache: "no-store",
-                },
-              );
+  const results = await Promise.all(
+    unique.map(async (symbol) => {
+      try {
+        const response = await fetch(
+          `https://api.binance.com/api/v3/ticker/price?symbol=${encodeURIComponent(
+            binanceSymbol(symbol),
+          )}`,
+          {
+            cache: "no-store",
+          },
+        );
 
-            if (!response.ok) {
-              console.warn(
-                `[PORTFOLIO_MARK_UNAVAILABLE] ${symbol} HTTP ${response.status}`,
-              );
-              return null;
-            }
+        if (!response.ok) {
+          console.warn(
+            `[PORTFOLIO_MARK_UNAVAILABLE] ${symbol} HTTP ${response.status}`,
+          );
+          return null;
+        }
 
-            const payload =
-              (await response.json()) as {
-                price?: string | number;
-              };
+        const payload = (await response.json()) as {
+          price?: string | number;
+        };
 
-            const price =
-              Number(payload.price);
+        const price = Number(payload.price);
 
-            if (
-              !Number.isFinite(price) ||
-              price <= 0
-            ) {
-              console.warn(
-                `[PORTFOLIO_MARK_UNAVAILABLE] ${symbol} invalid price`,
-              );
-              return null;
-            }
+        if (!Number.isFinite(price) || price <= 0) {
+          console.warn(
+            `[PORTFOLIO_MARK_UNAVAILABLE] ${symbol} invalid price`,
+          );
+          return null;
+        }
 
-            return [
-              binanceSymbol(symbol),
-              price,
-            ] as const;
-          } catch (err) {
-            console.warn(
-              `[PORTFOLIO_MARK_FETCH_ERROR] ${symbol}:`,
-              err,
-            );
-            return null;
-          }
-        },
-      ),
-    );
+        return [symbol, price] as const;
+      } catch (err) {
+        console.warn(
+          `[PORTFOLIO_MARK_FETCH_ERROR] ${symbol}:`,
+          err,
+        );
+        return null;
+      }
+    }),
+  );
 
   return Object.fromEntries(
     results.filter(
