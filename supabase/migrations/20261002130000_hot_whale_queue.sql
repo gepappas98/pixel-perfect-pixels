@@ -37,39 +37,8 @@ CREATE INDEX IF NOT EXISTS idx_hot_whale_total_usd
 
 ALTER TABLE public.hot_whale_signals ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "hot_whale_select_all" ON public.hot_whale_signals;
-CREATE POLICY "hot_whale_select_all"
-  ON public.hot_whale_signals
-  FOR SELECT
-  TO anon, authenticated
-  USING (true);
-
-DROP POLICY IF EXISTS "hot_whale_insert_authenticated" ON public.hot_whale_signals;
-CREATE POLICY "hot_whale_insert_authenticated"
-  ON public.hot_whale_signals
-  FOR INSERT
-  TO authenticated
-  WITH CHECK (true);
-
-DROP POLICY IF EXISTS "hot_whale_update_authenticated" ON public.hot_whale_signals;
-CREATE POLICY "hot_whale_update_authenticated"
-  ON public.hot_whale_signals
-  FOR UPDATE
-  TO authenticated
-  USING (true)
-  WITH CHECK (true);
-
-DROP POLICY IF EXISTS "hot_whale_delete_authenticated" ON public.hot_whale_signals;
-CREATE POLICY "hot_whale_delete_authenticated"
-  ON public.hot_whale_signals
-  FOR DELETE
-  TO authenticated
-  USING (true);
-
--- Explicit grants (in addition to RLS policies above):
-GRANT SELECT                          ON public.hot_whale_signals TO anon;
-GRANT SELECT, INSERT, UPDATE, DELETE  ON public.hot_whale_signals TO authenticated;
-GRANT ALL                             ON public.hot_whale_signals TO service_role;
+REVOKE ALL ON public.hot_whale_signals FROM anon, authenticated;
+GRANT ALL ON public.hot_whale_signals TO service_role;
 
 -- ─── 3. RPC: record_hot_whale ───
 
@@ -148,12 +117,12 @@ $$;
 
 -- ─── 6. Function-level grants ───
 
-GRANT EXECUTE ON FUNCTION public.record_hot_whale(text, numeric, boolean, text)
-  TO authenticated, service_role;
-GRANT EXECUTE ON FUNCTION public.get_hot_whale_symbols(int, int)
-  TO anon, authenticated, service_role;
-GRANT EXECUTE ON FUNCTION public.cleanup_hot_whales(int)
-  TO authenticated, service_role;
+REVOKE ALL ON FUNCTION public.record_hot_whale(text, numeric, boolean, text) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.record_hot_whale(text, numeric, boolean, text) TO service_role;
+REVOKE ALL ON FUNCTION public.get_hot_whale_symbols(int, int) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.get_hot_whale_symbols(int, int) TO service_role;
+REVOKE ALL ON FUNCTION public.cleanup_hot_whales(int) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.cleanup_hot_whales(int) TO service_role;
 
 -- ─── 7. Schema reload ───
 
