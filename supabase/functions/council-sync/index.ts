@@ -277,18 +277,25 @@ async function groqBatch(
             name: "tcc_long_only_council_batch",
             strict: true,
             schema: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  symbol: { type: "string" },
-                  verdict: { type: "string", enum: ["BUY", "HOLD", "AVOID"] },
-                  conviction: { type: "number" },
-                  reflection: { type: "string" },
+              type: "object",
+              properties: {
+                results: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      symbol: { type: "string" },
+                      verdict: { type: "string", enum: ["BUY", "HOLD", "AVOID"] },
+                      conviction: { type: "number" },
+                      reflection: { type: "string" },
+                    },
+                    required: ["symbol", "verdict", "conviction", "reflection"],
+                    additionalProperties: false,
+                  },
                 },
-                required: ["symbol", "verdict", "conviction", "reflection"],
-                additionalProperties: false,
               },
+              required: ["results"],
+              additionalProperties: false,
             },
           },
         },
@@ -305,12 +312,8 @@ async function groqBatch(
     const raw = body.choices?.[0]?.message?.content ?? "";
     if (!raw) throw new Error("empty Groq response");
 
-    const parsed = JSON.parse(raw) as {
-      symbol: string;
-      verdict: string;
-      conviction: number;
-      reflection: string;
-    }[];
+    const parsedBody = JSON.parse(raw) as { results?: { symbol: string; verdict: string; conviction: number; reflection: string }[] };
+    const parsed = Array.isArray(parsedBody) ? parsedBody : (parsedBody.results ?? []);
 
     for (const item of parsed) {
       const symbol = String(item.symbol ?? "").toUpperCase();
