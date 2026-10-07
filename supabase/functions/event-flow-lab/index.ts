@@ -53,7 +53,8 @@ async function discoverAssets(db:any){
   return universe??[];
 }
 async function collect(db:any){
-  const universe=await discoverAssets(db);
+  const {data:universe,error:uerr}=await db.from("tracked_assets").select("asset,binance_symbol").eq("enabled",true).order("asset");
+  if(uerr)throw uerr;
   if(uerr)throw uerr;
   const assets=(universe??[]).map((x:any)=>String(x.asset)); if(!assets.length)throw new Error("tracked_assets is empty");
   const now=new Date(); const observedAt=new Date(Math.floor(now.getTime()/300000)*300000).toISOString();
