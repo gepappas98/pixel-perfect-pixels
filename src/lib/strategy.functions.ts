@@ -790,6 +790,7 @@ async function applyPreset(
         .select("pnl")
         .eq("status", "closed")
         .eq("mode", "paper")
+        .eq("side", "buy")
         .gte("closed_at", since);
       if (error || !data) return null;
       const closed = data.length;
