@@ -342,6 +342,36 @@ function applyMtfGate(
   return { recommendation, note: null };
 }
 
+function calculateMtfCounterfactual(
+  result: { score: number; components: { whale: number; technicals: number; prediction: number; council: number } },
+  mtf: ReturnType<typeof classifyMtf>,
+  whale: any | null,
+  council: any | null,
+) {
+  const rejectedBuy = result.score >= 1.5 && mtf.bullCount < 2;
+  const whalePositive = whale?.direction === "accumulation" && result.components.whale > 0;
+  const councilBuy = String(council?.final_verdict ?? "").toUpperCase() === "BUY"
+    && Number(council?.conviction ?? 0) > 0
+    && result.components.council > 0;
+  const noHardConflict = !(whalePositive && result.components.prediction < 0 && mtf.p === "neutral");
+  const eligible = rejectedBuy && mtf.bullCount === 1 && result.score >= 2.5 && whalePositive && councilBuy && noHardConflict;
+
+  let reason = "not_eligible";
+  if (eligible) {
+    reason = "score>=2.5 + 1/3 bullish MTF + whale accumulation + council BUY + no hard conflict";
+  } else if (rejectedBuy) {
+    const missing: string[] = [];
+    if (mtf.bullCount !== 1) missing.push("exactly 1 bullish timeframe");
+    if (result.score < 2.5) missing.push("score>=2.5");
+    if (!whalePositive) missing.push("positive whale accumulation");
+    if (!councilBuy) missing.push("council BUY");
+    if (!noHardConflict) missing.push("no hard conflict");
+    reason = missing.length ? "rejected_by_counterfactual: " + missing.join(", ") : "rejected_by_counterfactual";
+  }
+
+  return { evaluated: rejectedBuy, eligible, classification: eligible ? "HIGH_CONVICTION_BUY" : "NONE", would_execute: false, reason };
+}
+
 function ruleBasedRecommendation(
   whale: any | null,
   indicator: any | null,
@@ -531,6 +561,7 @@ Deno.serve(async (req) => {
               shadow_mode: mtfGate.shadow_mode,
               min_timeframes: mtfGate.min_timeframes,
               current: { recommendation: gate.recommendation, note: gate.note },
+              counterfactual: calculateMtfCounterfactual(result, mtf, whale, council),
               shadow: shadow.mtf,
               hard_conflict: shadow.hardConflict,
             },
