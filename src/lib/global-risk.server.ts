@@ -224,11 +224,12 @@ export async function computePortfolioSnapshot(
   prices: Map<string, number>,
 ): Promise<PortfolioSnapshot> {
   const [closedRes, openRes] = await Promise.all([
-    db.from("trades").select("net_pnl").eq("status", "closed"),
+    db.from("trades").select("net_pnl").eq("status", "closed").eq("side", "buy"),
     db
       .from("trades")
       .select("id, symbol, side, quantity, entry_price")
-      .eq("status", "open"),
+      .eq("status", "open")
+      .eq("side", "buy"),
   ]);
 
   if (closedRes.error) throw closedRes.error;
@@ -603,7 +604,8 @@ export async function closeAllOpenTrades(
   const { data: openTrades, error } = await db
     .from("trades")
     .select("id, symbol, side, quantity, entry_price, mode, created_at")
-    .eq("status", "open");
+    .eq("status", "open")
+    .eq("side", "buy");
   if (error) throw error;
 
   const trades = (openTrades ?? []) as {
@@ -629,7 +631,8 @@ export async function closeAllOpenTrades(
   const { data: closedRows } = await db
     .from("trades")
     .select("net_pnl")
-    .eq("status", "closed");
+    .eq("status", "closed")
+    .eq("side", "buy");
   const priorRealized = ((closedRows ?? []) as { net_pnl: number | null }[])
     .reduce((s, r) => s + (Number(r.net_pnl) || 0), 0);
 
