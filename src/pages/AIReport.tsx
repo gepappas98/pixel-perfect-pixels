@@ -246,7 +246,7 @@ export default function AIReport() {
           .select("*")
           .eq("status", "open")
           .eq("side", "buy")
-          .order("created_at", { ascending: false })
+          .order("opened_at", { ascending: false })
           .limit(200),
         supabase
           .from("trades")
@@ -262,10 +262,10 @@ export default function AIReport() {
           .limit(2000),
         supabase
           .from("pipeline_runs")
-          .select("created_at, error_message, status")
+          .select("started_at, error_message, status")
           .eq("status", "error")
-          .gte("created_at", since)
-          .order("created_at", { ascending: false })
+          .gte("started_at", since)
+          .order("started_at", { ascending: false })
           .limit(30),
       ]);
 
@@ -511,9 +511,9 @@ export default function AIReport() {
       // ── 7. Real trades opened in same period ─────────────────
       const { data: recentTrades, error: tradesError } = await supabase
         .from("trades")
-        .select("id,symbol,side,status,opened_at,created_at")
+        .select("id,symbol,side,status,opened_at")
         .eq("side", "buy")
-        .gte("created_at", executionSince);
+        .gte("opened_at", executionSince);
 
       if (tradesError) {
         console.warn("[AI_DIAGNOSTIC] trade query failed:", tradesError.message);
