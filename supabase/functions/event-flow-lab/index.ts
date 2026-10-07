@@ -30,8 +30,31 @@ async function redditForAsset(asset:string){const q=encodeURIComponent((ASSET_NA
 function eventType(text:string){const t=text.toLowerCase();if(/etf|sec|regulat|law|senate|congress|mica|ban/.test(t))return"regulation";if(/hack|exploit|breach|stolen|attack/.test(t))return"security";if(/listing|delist|exchange|binance|coinbase/.test(t))return"exchange";if(/upgrade|fork|mainnet|network/.test(t))return"network";if(/partnership|integrat|adoption/.test(t))return"adoption";if(/liquidat|funding|whale|flow/.test(t))return"market";return"other";}
 async function fp(s:string){const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(s));return Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,"0")).join("");}
 
+async function discoverAssets(db:any){
+  const exchange=await fetch("https://api.binance.com/api/v3/exchangeInfo",{signal:AbortSignal.timeout(12000)});
+  if(!exchange.ok)throw new Error("Binance exchangeInfo HTTP "+exchange.status);
+  const exchangeJson=await exchange.json();
+  const symbols=(exchangeJson.symbols??[]).filter((s:any)=>s.status==="TRADING"&&s.quoteAsset==="USDT"&&s.isSpotTradingAllowed!==false);
+  const ticker=await fetch("https://api.binance.com/api/v3/ticker/24hr",{signal:AbortSignal.timeout(12000)});
+  if(!ticker.ok)throw new Error("Binance ticker HTTP "+ticker.status);
+  const tickers=await ticker.json();
+  const tickerMap=new Map((tickers??[]).map((x:any)=>[x.symbol,x]));
+  const watchlist=new Set<string>();
+  const {data:wl}=await db.from("dynamic_watchlist_snapshots").select("symbols").order("computed_at",{ascending:false}).limit(1);
+  for(const x of wl?.[0]?.symbols??[])watchlist.add(String(x).toUpperCase());
+  const {data:wa}=await db.from("whale_alerts").select("symbol,usd_value").gte("created_at",new Date(Date.now()-7*86400000).toISOString()).limit(10000);
+  const whale=new Map<string,{count:number,usd:number}>();
+  for(const x of wa??[]){const a=String(x.symbol).toUpperCase();const z=whale.get(a)||{count:0,usd:0};z.count++;z.usd+=Number(x.usd_value)||0;whale.set(a,z);}
+  const candidates=symbols.map((s:any)=>{const t:any=tickerMap.get(s.symbol)||{};const a=s.baseAsset.toUpperCase();const w=whale.get(a)||{count:0,usd:0};return {asset:a,binance_symbol:s.symbol,volume_24h:Number(t.volume)||0,quote_volume_24h:Number(t.quoteVolume)||0,whale_alerts_7d:w.count,whale_usd_7d:w.usd,watchlist:watchlist.has(a)};});
+  const {error:refreshError}=await db.rpc("refresh_tracked_assets_dynamic",{p_candidates:candidates,p_limit:30});
+  if(refreshError)throw refreshError;
+  const {data:universe,error:uerr}=await db.from("tracked_assets").select("asset,binance_symbol").eq("enabled",true).order("asset");
+  if(uerr)throw uerr;
+  return universe??[];
+}
 async function collect(db:any){
-  const {data:universe,error:uerr}=await db.from("tracked_assets").select("asset,binance_symbol").order("asset");
+  const {data:universe,error:uerr}=await db.from("tracked_assets").select("asset,binance_symbol").eq("enabled",true).order("asset");
+  if(uerr)throw uerr;
   if(uerr)throw uerr;
   const assets=(universe??[]).map((x:any)=>String(x.asset)); if(!assets.length)throw new Error("tracked_assets is empty");
   const now=new Date(); const observedAt=new Date(Math.floor(now.getTime()/300000)*300000).toISOString();
@@ -56,4 +79,4 @@ async function collect(db:any){
   const {data:tx,error:txErr}=await db.rpc("refresh_event_flow_transmissions",{p_lookback_hours:48});if(txErr)console.warn("[TRANSMISSION]",txErr);
   return{ok:true,assets:assets.length,prices:prices.filter(Boolean).length,flows:flowRows.filter(Boolean).length,sentiment:sentimentRows.length,news:newsRows.length,transmissions_refreshed:tx??0,observed_at:observedAt};
 }
-Deno.serve(async req=>{const pre=handleOptions(req);if(pre)return pre;try{const db=getServiceClient();const body=await req.json().catch(()=>({}));if(body?.action==="analyze"){const {data,error}=await db.from("event_flow_transmissions").select("*").order("event_at",{ascending:false}).limit(100);if(error)throw error;return new Response(JSON.stringify({ok:true,rows:data??[]}),{headers:{...corsHeaders,"Content-Type":"application/json"}});}const result=await collect(db);return new Response(JSON.stringify(result),{headers:{...corsHeaders,"Content-Type":"application/json"}});}catch(e){console.error("[EVENT_FLOW_LAB]",e);return new Response(JSON.stringify({ok:false,error:e instanceof Error?e.message:String(e)}),{status:500,headers:{...corsHeaders,"Content-Type":"application/json"}});}});
+Deno.serve(async req=>{const pre=handleOptions(req);if(pre)return pre;try{const db=getServiceClient();const body=await req.json().catch(()=>({}));if(body?.action==="discover"){const universe=await discoverAssets(db);return new Response(JSON.stringify({ok:true,selected:universe.length,assets:universe.map((x:any)=>x.asset)}),{headers:{...corsHeaders,"Content-Type":"application/json"}});}if(body?.action==="analyze"){const {data,error}=await db.from("event_flow_transmissions").select("*").order("event_at",{ascending:false}).limit(100);if(error)throw error;return new Response(JSON.stringify({ok:true,rows:data??[]}),{headers:{...corsHeaders,"Content-Type":"application/json"}});}const result=await collect(db);return new Response(JSON.stringify(result),{headers:{...corsHeaders,"Content-Type":"application/json"}});}catch(e){console.error("[EVENT_FLOW_LAB]",e);return new Response(JSON.stringify({ok:false,error:e instanceof Error?e.message:String(e)}),{status:500,headers:{...corsHeaders,"Content-Type":"application/json"}});}});
