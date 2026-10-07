@@ -502,36 +502,57 @@ Deno.serve(async (req) => {
     }
 
     // Direction-aware council batching:
-    // reserve most of the batch for long-relevant candidates, then use the
-    // remaining slots for the highest gross-whale-risk context. This prevents
-    // large bearish/distribution flow from crowding accumulation candidates
-    // (e.g. AVAX) out of the long-only council.
-    const longRelevant = candidates.filter((candidate) => {
-      const rsi4h = Number(candidate.primary?.rsi);
-      const oversold = Number.isFinite(rsi4h) && rsi4h < 30;
-      return candidate.whale.direction === "accumulation" || oversold;
-    });
+    // accumulation is the primary long-only signal and must not compete with
+    // oversold context for the same reserved slots. First reserve up to 10
+    // slots for accumulation candidates, then use any remaining reserved slots
+    // for oversold candidates, and finally keep gross-whale context.
+    const accumulationRanked = candidates
+      .filter((candidate) => candidate.whale.direction === "accumulation")
+      .sort((a, b) => b.whaleUsd - a.whaleUsd);
 
-    const longRanked = [...longRelevant].sort((a, b) => {
-      const aScore =
-        a.whaleUsd * (a.whale.direction === "accumulation" ? 2 : 1) +
-        (Number.isFinite(Number(a.primary?.rsi)) && Number(a.primary?.rsi) < 30 ? whaleFloor(a.symbol) * 2 : 0);
-      const bScore =
-        b.whaleUsd * (b.whale.direction === "accumulation" ? 2 : 1) +
-        (Number.isFinite(Number(b.primary?.rsi)) && Number(b.primary?.rsi) < 30 ? whaleFloor(b.symbol) * 2 : 0);
-      return bScore - aScore;
-    });
+    const oversoldRanked = candidates
+      .filter((candidate) => {
+        const rsi4h = Number(candidate.primary?.rsi);
+        return (
+          candidate.whale.direction !== "accumulation" &&
+          Number.isFinite(rsi4h) &&
+          rsi4h < 30
+        );
+      })
+      .sort((a, b) => {
+        const aRsi = Number(a.primary?.rsi);
+        const bRsi = Number(b.primary?.rsi);
+        const aScore = b.whaleUsd - a.whaleUsd + (30 - aRsi) * whaleFloor(a.symbol);
+        const bScore = a.whaleUsd - b.whaleUsd + (30 - bRsi) * whaleFloor(b.symbol);
+        return bScore - aScore;
+      });
 
     const LONG_BATCH_TARGET = Math.min(10, AI_BATCH_MAX);
-    const selectedLong = longRanked.slice(0, LONG_BATCH_TARGET);
-    const selectedSymbols = new Set(selectedLong.map((candidate) => candidate.symbol));
+    const selectedAccumulation = accumulationRanked.slice(0, LONG_BATCH_TARGET);
+    const selectedSymbols = new Set(selectedAccumulation.map((candidate) => candidate.symbol));
+
+    const remainingLongSlots = Math.max(0, LONG_BATCH_TARGET - selectedAccumulation.length);
+    const selectedOversold = oversoldRanked
+      .filter((candidate) => !selectedSymbols.has(candidate.symbol))
+      .slice(0, remainingLongSlots);
+
+    for (const candidate of selectedOversold) {
+      selectedSymbols.add(candidate.symbol);
+    }
 
     const grossRanked = [...candidates]
       .filter((candidate) => !selectedSymbols.has(candidate.symbol))
       .sort((a, b) => b.whaleUsd - a.whaleUsd);
 
-    const remainingSlots = Math.max(0, AI_BATCH_MAX - selectedLong.length);
-    const batch = [...selectedLong, ...grossRanked.slice(0, remainingSlots)];
+    const remainingSlots = Math.max(
+      0,
+      AI_BATCH_MAX - selectedAccumulation.length - selectedOversold.length,
+    );
+    const batch = [
+      ...selectedAccumulation,
+      ...selectedOversold,
+      ...grossRanked.slice(0, remainingSlots),
+    ];
 
     if (batch.length === 0) {
       return new Response(JSON.stringify({
