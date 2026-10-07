@@ -154,7 +154,7 @@ function fallback(candidate: Candidate, regime: string): CouncilResult {
       symbol: candidate.symbol,
       verdict: "BUY",
       conviction: Math.min(80, 50 + alignedBull * 8 + (Number.isFinite(rsi) && rsi < 30 ? 8 : 0)),
-      reflection: \`Deterministic fallback: whale accumulation with ${alignedBull}/3 bullish timeframes in ${regime} regime.\`,
+      reflection: `Deterministic fallback: whale accumulation with ${alignedBull}/3 bullish timeframes in ${regime} regime.`,
     };
   }
 
@@ -163,7 +163,7 @@ function fallback(candidate: Candidate, regime: string): CouncilResult {
       symbol: candidate.symbol,
       verdict: "AVOID",
       conviction: Math.min(85, 55 + alignedBear * 8),
-      reflection: \`Deterministic fallback: whale distribution with ${alignedBear}/3 bearish timeframes in ${regime} regime.\`,
+      reflection: `Deterministic fallback: whale distribution with ${alignedBear}/3 bearish timeframes in ${regime} regime.`,
     };
   }
 
@@ -238,7 +238,7 @@ async function groqBatch(
     prediction_question: String(c.prediction?.question ?? "").slice(0, 220) || null,
     market_regime: regime,
     past_lessons: (lessons.get(c.symbol) ?? []).slice(0, 3)
-      .map((l) => \`[\${l.outcome}] \${l.lesson.slice(0, 180)}\`),
+      .map((l) => `[${l.outcome}] ${l.lesson.slice(0, 180)}`),
   }));
 
   const systemPrompt = [
@@ -252,14 +252,14 @@ async function groqBatch(
     "Return exactly one object per supplied symbol.",
     "Conviction is 0-100 and reflects evidence quality, not certainty.",
     "Reflection is one concise evidence-based sentence.",
-  ].join("\\n");
+  ].join("\n");
 
   try {
     const response = await fetch(GROQ_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: \`Bearer \${apiKey}\`,
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         model: GROQ_MODEL,
@@ -297,7 +297,7 @@ async function groqBatch(
       signal: AbortSignal.timeout(GROQ_TIMEOUT_MS),
     });
 
-    if (!response.ok) throw new Error(\`Groq HTTP \${response.status}\`);
+    if (!response.ok) throw new Error(`Groq HTTP ${response.status}`);
 
     const body = await response.json() as {
       choices?: { message?: { content?: string } }[];
@@ -327,7 +327,7 @@ async function groqBatch(
     }
 
     console.log(
-      \`[TCC_NATIVE_COUNCIL] Groq batch model=\${GROQ_MODEL} received=\${result.size}/\${candidates.length} tokens=\${body.usage?.total_tokens ?? 0}\`,
+      `[TCC_NATIVE_COUNCIL] Groq batch model=${GROQ_MODEL} received=${result.size}/${candidates.length} tokens=${body.usage?.total_tokens ?? 0}`,
     );
   } catch (error) {
     console.error("[TCC_NATIVE_COUNCIL] Groq batch failed:", error);
@@ -525,7 +525,7 @@ Deno.serve(async (req) => {
       const ai = aiResults.get(candidate.symbol);
       if (ai) {
         rowsToWrite.push({
-          source_id: \`tcc-native:\${batchTimestamp}:\${candidate.symbol}\`,
+          source_id: `tcc-native:${batchTimestamp}:${candidate.symbol}`,
           symbol: candidate.symbol,
           final_verdict: ai.verdict,
           conviction: ai.conviction,
@@ -548,7 +548,7 @@ Deno.serve(async (req) => {
           : batchTimestamp;
 
         rowsToWrite.push({
-          source_id: \`tcc-native-fallback:\${batchTimestamp}:\${candidate.symbol}\`,
+          source_id: `tcc-native-fallback:${batchTimestamp}:${candidate.symbol}`,
           symbol: candidate.symbol,
           final_verdict: fb.verdict,
           conviction: fb.conviction,
