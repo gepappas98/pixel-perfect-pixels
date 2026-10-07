@@ -252,6 +252,7 @@ export default function AIReport() {
           .from("trades")
           .select("*")
           .eq("status", "closed")
+          .eq("side", "buy")
           .order("closed_at", { ascending: false })
           .limit(100),
         supabase
@@ -510,7 +511,8 @@ export default function AIReport() {
       // ── 7. Real trades opened in same period ─────────────────
       const { data: recentTrades, error: tradesError } = await supabase
         .from("trades")
-        .select("id,symbol,status,opened_at,created_at")
+        .select("id,symbol,side,status,opened_at,created_at")
+        .eq("side", "buy")
         .gte("created_at", executionSince);
 
       if (tradesError) {
