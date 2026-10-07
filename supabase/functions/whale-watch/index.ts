@@ -9,9 +9,26 @@ const MAX_COINS = 150;
 const ADD_THRESHOLD_USD = 5_000_000;
 const REMOVE_THRESHOLD_USD = 3_000_000;
 const STABILITY_HOURS = 6;
-const TOP_WHALE_SCAN = 25;
-const MIN_USD_VALUE = 100_000;
+const TOP_WHALE_SCAN = 50;
 const TRADES_PER_COIN = 200;
+
+const WHALE_MIN_USD: Record<string, number> = {
+  BTC: 50_000, ETH: 50_000, BNB: 50_000,
+  SOL: 25_000, XRP: 25_000, ADA: 25_000, DOGE: 25_000,
+  TRX: 20_000,
+  AVAX: 15_000, DOT: 15_000, LTC: 15_000, BCH: 15_000,
+  LINK: 10_000, MATIC: 10_000, ATOM: 10_000, NEAR: 10_000,
+  APT: 10_000, SUI: 10_000, UNI: 10_000, AAVE: 10_000,
+  MKR: 10_000, ETC: 10_000, XLM: 10_000, ICP: 10_000,
+  FIL: 10_000, RNDR: 10_000,
+  CRV: 5_000, ARB: 5_000, OP: 5_000, INJ: 5_000, TIA: 5_000, SEI: 5_000,
+  RUNE: 5_000, FTM: 5_000, HBAR: 5_000, ALGO: 5_000, VET: 5_000,
+  SAND: 5_000, MANA: 5_000, AXS: 5_000, GALA: 5_000, IMX: 5_000, GRT: 5_000,
+  SHIB: 5_000, PEPE: 5_000, ORDI: 5_000,
+  WIF: 3_000, BONK: 3_000, FLOKI: 3_000, BOME: 3_000, MEME: 3_000,
+};
+const DEFAULT_MIN_WHALE_USD = 25_000;
+const whaleFloor = (coin: string) => WHALE_MIN_USD[coin] ?? DEFAULT_MIN_WHALE_USD;
 
 interface HyperliquidTrade {
   coin?: string; px: string; sz: string; side: "B" | "A";
@@ -169,7 +186,9 @@ Deno.serve(async (req) => {
     const watchlist = await resolveWatchlist(supabase);
 
     // Whale scanning remains bounded: dynamic universe selects the candidates,
-    // while only the highest-volume 25 are queried for recent large prints.
+    // while only the highest-volume 50 are queried for recent large prints.
+    // Floors are aligned with the canonical TCC whale thresholds instead of a
+    // single $100K gate, so legitimate lower-tier accumulation is not erased.
     const volumeOrder = [...watchlist.symbols];
     const pinnedSet = new Set(watchlist.pinned);
     const scanCoins = [
@@ -177,31 +196,38 @@ Deno.serve(async (req) => {
       ...volumeOrder.filter((s) => !pinnedSet.has(s)),
     ].slice(0, TOP_WHALE_SCAN);
 
-    const rows: any[] = [];
-    for (const coin of scanCoins) {
-      try {
-        const trades = await fetchRecentTrades(coin);
-        for (const t of trades) {
-          const usdValue = Number.parseFloat(t.px) * Number.parseFloat(t.sz);
-          if (!Number.isFinite(usdValue) || usdValue < MIN_USD_VALUE) continue;
-          rows.push({
-            symbol: coin,
-            chain: "hyperliquid-perp",
-            direction: t.side === "B" ? "accumulation" : "distribution",
-            usd_value: usdValue,
-            wallet_address: null,
-            tx_hash: t.hash ?? String(t.tid),
-            source: pinnedSet.has(coin) ? "hyperliquid-dynamic-pinned" : "hyperliquid-dynamic-volume",
-            raw: t,
+    const results = await Promise.all(
+      scanCoins.map(async (coin) => {
+        try {
+          const trades = await fetchRecentTrades(coin);
+          return trades.flatMap((t) => {
+            const usdValue = Number.parseFloat(t.px) * Number.parseFloat(t.sz);
+            if (!Number.isFinite(usdValue) || usdValue < whaleFloor(coin)) return [];
+            return [{
+              symbol: coin,
+              chain: "hyperliquid-perp",
+              direction: t.side === "B" ? "accumulation" : "distribution",
+              usd_value: usdValue,
+              wallet_address: null,
+              tx_hash: t.hash ?? String(t.tid),
+              source: pinnedSet.has(coin) ? "hyperliquid-dynamic-pinned" : "hyperliquid-dynamic-volume",
+              created_at: Number.isFinite(t.time) ? new Date(t.time).toISOString() : new Date().toISOString(),
+              raw: t,
+            }];
           });
+        } catch (e) {
+          console.error(`[WHALE] skipping ${coin}:`, e);
+          return [];
         }
-      } catch (e) {
-        console.error(`[WHALE] skipping ${coin}:`, e);
-      }
-    }
+      }),
+    );
+    const rows: any[] = results.flat();
 
     if (rows.length) {
-      const { data, error } = await supabase.from("whale_alerts").insert(rows).select();
+      const { data, error } = await supabase
+        .from("whale_alerts")
+        .upsert(rows, { onConflict: "source,tx_hash", ignoreDuplicates: true })
+        .select();
       if (error) throw error;
       return new Response(JSON.stringify({
         inserted: data.length,
