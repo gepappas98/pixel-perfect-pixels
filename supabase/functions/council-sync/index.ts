@@ -501,8 +501,37 @@ Deno.serve(async (req) => {
       });
     }
 
-    candidates.sort((a, b) => b.whaleUsd - a.whaleUsd);
-    const batch = candidates.slice(0, AI_BATCH_MAX);
+    // Direction-aware council batching:
+    // reserve most of the batch for long-relevant candidates, then use the
+    // remaining slots for the highest gross-whale-risk context. This prevents
+    // large bearish/distribution flow from crowding accumulation candidates
+    // (e.g. AVAX) out of the long-only council.
+    const longRelevant = candidates.filter((candidate) => {
+      const rsi4h = Number(candidate.primary?.rsi);
+      const oversold = Number.isFinite(rsi4h) && rsi4h < 30;
+      return candidate.whale.direction === "accumulation" || oversold;
+    });
+
+    const longRanked = [...longRelevant].sort((a, b) => {
+      const aScore =
+        a.whaleUsd * (a.whale.direction === "accumulation" ? 2 : 1) +
+        (Number.isFinite(Number(a.primary?.rsi)) && Number(a.primary?.rsi) < 30 ? whaleFloor(a.symbol) * 2 : 0);
+      const bScore =
+        b.whaleUsd * (b.whale.direction === "accumulation" ? 2 : 1) +
+        (Number.isFinite(Number(b.primary?.rsi)) && Number(b.primary?.rsi) < 30 ? whaleFloor(b.symbol) * 2 : 0);
+      return bScore - aScore;
+    });
+
+    const LONG_BATCH_TARGET = Math.min(10, AI_BATCH_MAX);
+    const selectedLong = longRanked.slice(0, LONG_BATCH_TARGET);
+    const selectedSymbols = new Set(selectedLong.map((candidate) => candidate.symbol));
+
+    const grossRanked = [...candidates]
+      .filter((candidate) => !selectedSymbols.has(candidate.symbol))
+      .sort((a, b) => b.whaleUsd - a.whaleUsd);
+
+    const remainingSlots = Math.max(0, AI_BATCH_MAX - selectedLong.length);
+    const batch = [...selectedLong, ...grossRanked.slice(0, remainingSlots)];
 
     if (batch.length === 0) {
       return new Response(JSON.stringify({
