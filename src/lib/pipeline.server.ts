@@ -1347,7 +1347,7 @@ async function groqBatchCouncil(candidates: AiCandidate[]): Promise<Map<string, 
       whale_buy_count: Number(c.whale?.["buy_count"] ?? 0),
       whale_sell_count: Number(c.whale?.["sell_count"] ?? 0),
       vwap_4h: (() => {
-        const v = (c.mtfRaw.primary?.["raw"] as Row | null | undefined)?.["vwap"];
+        const v = (c.mtfRaw?.primary?.["raw"] as Row | null | undefined)?.["vwap"];
         return typeof v === "number" ? Number(v) : null;
       })(),
       market_regime: currentRegimeLabel ?? "unknown",
