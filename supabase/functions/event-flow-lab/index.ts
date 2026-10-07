@@ -1,5 +1,7 @@
-import { corsHeaders, handleOptions } from "../_shared/cors.ts";
-import { getServiceClient } from "../_shared/supabase.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+const corsHeaders = {"Access-Control-Allow-Origin":"*","Access-Control-Allow-Headers":"authorization, x-client-info, apikey, content-type"};
+function handleOptions(req:Request){return req.method==="OPTIONS"?new Response("ok",{headers:corsHeaders}):null;}
+function getServiceClient(){return createClient(Deno.env.get("SUPABASE_URL")!,Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);}
 
 const SOURCES = [
   { name: "coindesk", url: "https://www.coindesk.com/arc/outboundfeeds/rss/" },
