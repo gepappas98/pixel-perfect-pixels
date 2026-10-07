@@ -233,7 +233,6 @@ async function groqBatch(
     vwap_4h: Number.isFinite(Number((c.primary?.raw as Row | undefined)?.vwap))
       ? Number((c.primary?.raw as Row).vwap)
       : null,
-    prediction_direction: c.prediction?.direction ?? null,
     prediction_yes_price: c.prediction?.yes_price ?? null,
     prediction_question: String(c.prediction?.question ?? "").slice(0, 220) || null,
     market_regime: regime,
@@ -388,7 +387,7 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     const watchlist =
-      snapshot?.symbols && Array.isArray(snapshot.symbols) && fresh(snapshot.expires_at, 24 * 60 * 60 * 1000)
+      snapshot?.symbols && Array.isArray(snapshot.symbols) && new Date(String(snapshot.expires_at ?? "")).getTime() > Date.now()
         ? (snapshot.symbols as string[]).map((s) => String(s).toUpperCase())
         : CORE_FALLBACK;
 
