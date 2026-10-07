@@ -31,7 +31,26 @@ function eventType(text:string){const t=text.toLowerCase();if(/etf|sec|regulat|l
 async function fp(s:string){const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(s));return Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,"0")).join("");}
 
 async function collect(db:any){
-  const {data:universe,error:uerr}=await db.from("tracked_assets").select("asset,binance_symbol").order("asset");
+  const {data:current,error:currentError}=await db.from("tracked_assets").select("asset,binance_symbol,enabled").order("asset");
+  if(currentError)throw currentError;
+  const exchange=await fetch("https://api.binance.com/api/v3/exchangeInfo",{signal:AbortSignal.timeout(12000)});
+  if(!exchange.ok)throw new Error("Binance exchangeInfo HTTP "+exchange.status);
+  const exchangeJson=await exchange.json();
+  const symbols=(exchangeJson.symbols??[]).filter((s:any)=>s.status==="TRADING"&&s.quoteAsset==="USDT"&&s.isSpotTradingAllowed!==false);
+  const ticker=await fetch("https://api.binance.com/api/v3/ticker/24hr",{signal:AbortSignal.timeout(12000)});
+  if(!ticker.ok)throw new Error("Binance ticker HTTP "+ticker.status);
+  const tickers=await ticker.json();
+  const tickerMap=new Map((tickers??[]).map((x:any)=>[x.symbol,x]));
+  const watchlist=new Set<string>();
+  const {data:wl}=await db.from("dynamic_watchlist_snapshots").select("symbols").order("computed_at",{ascending:false}).limit(1);
+  for(const x of wl?.[0]?.symbols??[])watchlist.add(String(x).toUpperCase());
+  const {data:wa}=await db.from("whale_alerts").select("symbol,usd_value").gte("created_at",new Date(Date.now()-7*86400000).toISOString()).limit(10000);
+  const whale=new Map<string,{count:number,usd:number}>();
+  for(const x of wa??[]){const a=String(x.symbol).toUpperCase();const z=whale.get(a)||{count:0,usd:0};z.count++;z.usd+=Number(x.usd_value)||0;whale.set(a,z);}
+  const candidates=symbols.map((s:any)=>{const t:any=tickerMap.get(s.symbol)||{};const a=s.baseAsset.toUpperCase();const w=whale.get(a)||{count:0,usd:0};return {asset:a,binance_symbol:s.symbol,volume_24h:Number(t.volume)||0,quote_volume_24h:Number(t.quoteVolume)||0,whale_alerts_7d:w.count,whale_usd_7d:w.usd,watchlist:watchlist.has(a)};});
+  const {data:refreshed,error:refreshError}=await db.rpc("refresh_tracked_assets_dynamic",{p_candidates:candidates,p_limit:30});
+  if(refreshError)throw refreshError;
+  const {data:universe,error:uerr}=await db.from("tracked_assets").select("asset,binance_symbol").eq("enabled",true).order("asset");
   if(uerr)throw uerr;
   const assets=(universe??[]).map((x:any)=>String(x.asset)); if(!assets.length)throw new Error("tracked_assets is empty");
   const now=new Date(); const observedAt=new Date(Math.floor(now.getTime()/300000)*300000).toISOString();
