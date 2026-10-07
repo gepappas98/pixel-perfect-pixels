@@ -419,7 +419,7 @@ Deno.serve(async (req) => {
         .order("created_at", { ascending: false })
         .limit(5000),
       db.from("prediction_snapshots")
-        .select("id,related_symbol,created_at,yes_price,question,direction")
+        .select("id,related_symbol,created_at,yes_price,question")
         .in("related_symbol", symbols)
         .gte("created_at", new Date(Date.now() - PREDICTION_MAX_AGE_MS).toISOString())
         .order("created_at", { ascending: false })
