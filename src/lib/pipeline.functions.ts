@@ -206,8 +206,8 @@ export const getSystemResourceMetrics = createServerFn({ method: "GET" }).handle
 
   const resource = (resourceData ?? {}) as Record<string, unknown>;
   const health = (healthData ?? {}) as Record<string, any>;
-  const latestRun = (health["latestRun"] ?? null) as Record<string, any> | null;
-  const status = String(health["status"] ?? "unknown");
+  const latestRun = (health.latestRun ?? null) as Record<string, any> | null;
+  const status = String(health.status ?? "unknown");
 
   const current = Number(resource["current_connections"] ?? 0);
   const max = Number(resource["max_connections"] ?? 0);
