@@ -524,7 +524,20 @@ export default function AIReport() {
       let executionStatus: ExecutionStatus = "ok";
       let executionIssue: string | null = null;
 
-      if (eligibleBuySignals.length > 0 && executionAuditCoveragePct < 100) {
+      // No eligible BUY is an absence of an executable opportunity, not
+      // proof that the execution path is healthy. Keep the distinction
+      // explicit so Diagnostic cannot report a misleading 100/100 merely
+      // because there was nothing to execute in the window.
+      if (
+        eligibleBuySignals.length === 0 &&
+        executionAudits.length === 0
+      ) {
+        executionStatus = "warning";
+        executionIssue =
+          "No eligible BUY signals were present in the execution window; " +
+          "execution was not exercised, so execution health cannot be proven " +
+          "from this window.";
+      } else if (eligibleBuySignals.length > 0 && executionAuditCoveragePct < 100) {
         executionStatus = "critical";
         executionIssue =
           `${uncoveredEligibleSignals} of ${eligibleBuySignals.length} ` +
