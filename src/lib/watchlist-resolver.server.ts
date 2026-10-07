@@ -253,7 +253,8 @@ async function loadPinnedOpenPositions(db: Admin): Promise<Set<string>> {
   const { data, error } = await db
     .from("trades")
     .select("symbol")
-    .eq("status", "open");
+    .eq("status", "open")
+    .eq("side", "buy");
 
   if (error) {
     console.error("[WATCHLIST_RESOLVER] open positions load failed:", error);
