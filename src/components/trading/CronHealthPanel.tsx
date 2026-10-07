@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { AlertTriangle, CheckCircle, Clock, AlertCircle, ChevronRight, Loader2 } from "lucide-react";
+import { AlertTriangle, CheckCircle, Clock, AlertCircle, Loader2 } from "lucide-react";
 import { getCronHealth } from "@/lib/pipeline.functions";
 
 function timeAgo(value?: string | null) {
@@ -139,31 +139,6 @@ export function CronHealthPanel() {
             <p className="mt-2 text-[10px] text-warn/80">
               These are canonical pipeline failures after the latest successful run.
             </p>
-          </div>
-        )}
-
-        {health.recentErrors && health.recentErrors.length > 0 && (
-          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3">
-            <div className="flex items-center gap-2 mb-2">
-              <AlertCircle className="h-3.5 w-3.5 text-destructive flex-shrink-0" />
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-destructive">
-                New Errors — since last successful run ({health.recentErrors.length})
-              </span>
-            </div>
-            <div className="space-y-1.5">
-              {health.recentErrors.map((err) => (
-                <details key={err.id} className="group">
-                  <summary className="flex items-center gap-1.5 cursor-pointer text-[10px] text-destructive/90 hover:text-destructive">
-                    <ChevronRight className="h-3 w-3 transition-transform group-open:rotate-90" />
-                    <span className="font-mono">{formatTime(err.started_at)}</span>
-                    <span className="truncate">{err.message.slice(0, 80)}</span>
-                  </summary>
-                  <pre className="mt-1.5 whitespace-pre-wrap break-words rounded border border-destructive/20 bg-background/40 p-2 font-mono text-[10px] text-destructive/80">
-                    {err.message}
-                  </pre>
-                </details>
-              ))}
-            </div>
           </div>
         )}
 
