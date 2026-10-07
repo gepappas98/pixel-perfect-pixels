@@ -178,7 +178,16 @@ export const getCronHealth = createServerFn({ method: "GET" }).handler(async () 
       consecutiveFailures: Number(health.consecutiveFailures ?? 0),
       stale: status === "STALE",
       staleAfterMinutes,
-      recentErrors: Array.isArray(health.recentErrors) ? health.recentErrors.slice(0, 5) : [],
+      recentErrors: Array.isArray(health.recentErrors)
+        ? health.recentErrors
+            .filter((err) => {
+              if (!health.lastSuccessAt) return true;
+              const startedAt = new Date(err.started_at).getTime();
+              const lastSuccessAt = new Date(health.lastSuccessAt).getTime();
+              return Number.isFinite(startedAt) && Number.isFinite(lastSuccessAt) && startedAt > lastSuccessAt;
+            })
+            .slice(0, 5)
+        : [],
     };
   } catch (error) {
     console.error("[CRON_HEALTH] failed to read canonical pipeline health:", error);
