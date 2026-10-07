@@ -1,11 +1,62 @@
 import { useLiveTable } from "@/hooks/useLiveTable";
 import type { WhaleAlert } from "@/lib/trading-types";
 
+type WhaleFlowSnapshot = {
+  id: string;
+  bucket_at: string;
+  sample_size: number;
+  accumulation_pct: number;
+  neutral_pct: number;
+  distribution_pct: number;
+  flow_score: number;
+  dominant_state: "accumulation" | "neutral" | "distribution";
+};
+
+type WhaleFlowTransition = {
+  id: string;
+  previous_state: "accumulation" | "neutral" | "distribution";
+  new_state: "accumulation" | "neutral" | "distribution";
+  detected_at: string;
+  delta_pp: number;
+  velocity_pp_per_hour: number | null;
+  transition_speed: "smooth" | "accelerating" | "violent";
+  trigger_candidates: Array<{ type?: string; value?: number; delta_pp?: number }>;
+};
+
 const usd = (v: number) =>
   v >= 1_000_000 ? `$${(v / 1_000_000).toFixed(2)}M` : `$${Math.round(v / 1000)}K`;
 
+const stateLabel = (state: WhaleFlowTransition["new_state"]) =>
+  state === "accumulation" ? "Accumulation" : state === "distribution" ? "Distribution" : "Neutral";
+
+const stateClass = (state: WhaleFlowTransition["new_state"]) =>
+  state === "accumulation" ? "text-bull" : state === "distribution" ? "text-bear" : "text-muted-foreground";
+
+const speedClass = (speed: WhaleFlowTransition["transition_speed"]) =>
+  speed === "violent" ? "text-bear" : speed === "accelerating" ? "text-yellow-500" : "text-muted-foreground";
+
+const timeAgo = (iso: string) => {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return "just now";
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+};
+
 export function WhalePanel() {
   const { rows, loading } = useLiveTable<WhaleAlert>("whale_alerts", 12);
+  const { rows: history } = useLiveTable<WhaleFlowSnapshot>(
+    "whale_flow_snapshots",
+    18,
+    "bucket_at",
+  );
+  const { rows: transitions } = useLiveTable<WhaleFlowTransition>(
+    "whale_flow_transitions",
+    1,
+    "detected_at",
+  );
 
   const accumulationUsd = rows
     .filter((w) => w.direction === "accumulation")
@@ -14,9 +65,8 @@ export function WhalePanel() {
     .filter((w) => w.direction === "distribution")
     .reduce((sum, w) => sum + Number(w.usd_value), 0);
   const totalFlowUsd = accumulationUsd + distributionUsd;
-  const rawFlowScore = totalFlowUsd > 0
-    ? (accumulationUsd - distributionUsd) / totalFlowUsd
-    : 0;
+  const rawFlowScore =
+    totalFlowUsd > 0 ? (accumulationUsd - distributionUsd) / totalFlowUsd : 0;
   const flowScore = Math.max(-1, Math.min(1, rawFlowScore));
   const flowPercent = Math.round(Math.abs(flowScore) * 100);
   const flowLabel =
@@ -26,6 +76,26 @@ export function WhalePanel() {
         ? "Distribution"
         : "Neutral";
   const markerPosition = ((flowScore + 1) / 2) * 100;
+
+  const lastTurn = transitions[0];
+  const chartPoints = [...history].reverse();
+  const hasHistory = chartPoints.length >= 2;
+  const maxAbsScore = Math.max(
+    0.1,
+    ...chartPoints.map((point) => Math.abs(Number(point.flow_score) || 0)),
+  );
+
+  const triggerText = lastTurn?.trigger_candidates
+    ?.filter((x) => x?.type)
+    .map((x) => {
+      if (x.type === "whale_flow_imbalance") {
+        return `imbalance ${Number(x.delta_pp ?? 0) >= 0 ? "+" : ""}${Number(x.delta_pp ?? 0).toFixed(0)}pp`;
+      }
+      if (x.type === "sell_usd") return `sell ${usd(Number(x.value ?? 0))}`;
+      if (x.type === "buy_usd") return `buy ${usd(Number(x.value ?? 0))}`;
+      return x.type;
+    })
+    .join(" · ");
 
   return (
     <section className="panel">
@@ -54,6 +124,77 @@ export function WhalePanel() {
             {flowLabel}{flowLabel !== "Neutral" ? ` ${flowPercent}%` : ""}
           </span>
         </div>
+      </div>
+
+      <div className="mb-3 rounded border border-border/60 bg-muted/20 p-2">
+        <div className="mb-1.5 flex items-center justify-between">
+          <span className="text-[9px] font-mono uppercase tracking-wider text-muted-foreground">
+            History
+          </span>
+          <span className="text-[9px] font-mono text-muted-foreground">
+            {history.length > 0 ? `${history.length} snapshots` : "Building history"}
+          </span>
+        </div>
+
+        {hasHistory ? (
+          <>
+            <div className="flex h-12 items-center gap-1">
+              {chartPoints.map((point) => {
+                const score = Number(point.flow_score) || 0;
+                const height = Math.max(8, Math.round((Math.abs(score) / maxAbsScore) * 22));
+                return (
+                  <div
+                    key={point.id}
+                    className={`flex-1 ${score > 0.05 ? "bg-bull/70" : score < -0.05 ? "bg-bear/70" : "bg-muted-foreground/30"}`}
+                    style={{ height: `${height}px`, marginTop: score >= 0 ? 0 : `${height * 0.6}px` }}
+                    title={`${stateLabel(point.dominant_state)} · ${new Date(point.bucket_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · ${(score * 100).toFixed(0)}pp`}
+                  />
+                );
+              })}
+            </div>
+            <div className="mt-1 flex justify-between text-[8px] font-mono text-muted-foreground">
+              <span>{new Date(chartPoints[0]!.bucket_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+              <span>now</span>
+            </div>
+          </>
+        ) : (
+          <div className="py-3 text-[10px] font-mono text-muted-foreground">
+            Building history — turns appear after enough snapshots are collected.
+          </div>
+        )}
+
+        {lastTurn ? (
+          <div className="mt-2 border-t border-border/50 pt-2">
+            <div className="flex items-center justify-between gap-2 text-[10px] font-mono">
+              <span className="text-muted-foreground">Last turn</span>
+              <span className={speedClass(lastTurn.transition_speed)}>
+                {lastTurn.transition_speed}
+              </span>
+            </div>
+            <div className="mt-0.5 text-[11px] font-mono">
+              <span className={stateClass(lastTurn.previous_state)}>
+                {stateLabel(lastTurn.previous_state)}
+              </span>
+              <span className="mx-1 text-muted-foreground">→</span>
+              <span className={stateClass(lastTurn.new_state)}>
+                {stateLabel(lastTurn.new_state)}
+              </span>
+              <span className="ml-2 text-muted-foreground">
+                {timeAgo(lastTurn.detected_at)} · {lastTurn.delta_pp >= 0 ? "+" : ""}
+                {Number(lastTurn.delta_pp).toFixed(0)}pp
+              </span>
+            </div>
+            {triggerText && (
+              <div className="mt-1 text-[9px] font-mono text-muted-foreground">
+                Possible coincident factors: {triggerText}
+              </div>
+            )}
+          </div>
+        ) : history.length >= 2 ? (
+          <div className="mt-2 border-t border-border/50 pt-2 text-[9px] font-mono text-muted-foreground">
+            No confirmed state transition yet.
+          </div>
+        ) : null}
       </div>
 
       {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
