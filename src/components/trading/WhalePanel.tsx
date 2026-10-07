@@ -23,6 +23,31 @@ type WhaleFlowTransition = {
   trigger_candidates: Array<{ type?: string; value?: number; delta_pp?: number }>;
 };
 
+type WhaleFlowContext = {
+  id: string;
+  transition_id: string;
+  captured_at: string;
+  indicator_context: {
+    samples?: number;
+    bullish?: number;
+    bearish?: number;
+    neutral?: number;
+  };
+  signal_context: {
+    samples?: number;
+    buy?: number;
+    sell?: number;
+    hold?: number;
+    avg_confidence?: number | null;
+  };
+  prediction_context: {
+    samples?: number;
+  };
+  sentiment_context?: { available?: boolean; reason?: string };
+  news_context?: { available?: boolean; reason?: string };
+  data_quality: string;
+};
+
 const usd = (v: number) =>
   v >= 1_000_000 ? `$${(v / 1_000_000).toFixed(2)}M` : `$${Math.round(v / 1000)}K`;
 
@@ -57,6 +82,11 @@ export function WhalePanel() {
     1,
     "detected_at",
   );
+  const { rows: contexts } = useLiveTable<WhaleFlowContext>(
+    "whale_flow_transition_context",
+    1,
+    "captured_at",
+  );
 
   const accumulationUsd = rows
     .filter((w) => w.direction === "accumulation")
@@ -78,6 +108,7 @@ export function WhalePanel() {
   const markerPosition = ((flowScore + 1) / 2) * 100;
 
   const lastTurn = transitions[0];
+  const lastContext = contexts[0];
   const chartPoints = [...history].reverse();
   const hasHistory = chartPoints.length >= 2;
   const maxAbsScore = Math.max(
@@ -187,6 +218,46 @@ export function WhalePanel() {
             {triggerText && (
               <div className="mt-1 text-[9px] font-mono text-muted-foreground">
                 Possible coincident factors: {triggerText}
+              </div>
+            )}
+
+            {lastContext && (
+              <div className="mt-2 border-t border-border/40 pt-2">
+                <div className="mb-1 text-[9px] font-mono uppercase tracking-wider text-muted-foreground">
+                  Context at turn · {lastContext.data_quality}
+                </div>
+                <div className="grid grid-cols-3 gap-1.5 text-[9px] font-mono">
+                  <div className="rounded bg-muted/30 px-1.5 py-1">
+                    <div className="text-muted-foreground">Technicals</div>
+                    <div className="mt-0.5">
+                      <span className="text-bull">{lastContext.indicator_context?.bullish ?? 0} B</span>
+                      {" · "}
+                      <span className="text-bear">{lastContext.indicator_context?.bearish ?? 0} S</span>
+                      {" · "}
+                      <span className="text-muted-foreground">{lastContext.indicator_context?.neutral ?? 0} N</span>
+                    </div>
+                  </div>
+                  <div className="rounded bg-muted/30 px-1.5 py-1">
+                    <div className="text-muted-foreground">Composite</div>
+                    <div className="mt-0.5">
+                      <span className="text-bull">{lastContext.signal_context?.buy ?? 0} B</span>
+                      {" · "}
+                      <span className="text-bear">{lastContext.signal_context?.sell ?? 0} S</span>
+                      {" · "}
+                      <span className="text-muted-foreground">{lastContext.signal_context?.hold ?? 0} H</span>
+                    </div>
+                  </div>
+                  <div className="rounded bg-muted/30 px-1.5 py-1">
+                    <div className="text-muted-foreground">Predictions</div>
+                    <div className="mt-0.5">{lastContext.prediction_context?.samples ?? 0} samples</div>
+                  </div>
+                </div>
+
+                {(lastContext.sentiment_context?.available === false || lastContext.news_context?.available === false) && (
+                  <div className="mt-1 text-[8px] font-mono text-muted-foreground">
+                    Sentiment/news history not yet persisted — shown as unavailable, never inferred.
+                  </div>
+                )}
               </div>
             )}
           </div>
