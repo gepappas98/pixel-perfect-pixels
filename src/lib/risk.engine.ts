@@ -95,7 +95,8 @@ export async function getOpenPortfolioRisk(db: Admin): Promise<number> {
   const { data, error } = await (db.from as any)("trades")
     .select("entry_price, stop_loss, quantity")
     .eq("mode", "paper")
-    .eq("status", "open");
+    .eq("status", "open")
+    .eq("side", "buy");
   if (error) throw new Error(`getOpenPortfolioRisk: ${error.message}`);
 
   return ((data ?? []) as { entry_price: number; stop_loss: number | null; quantity: number }[])
@@ -130,7 +131,8 @@ export async function getOpenUnrealizedPnL(
   const { data, error } = await (db.from as any)("trades")
     .select("symbol, side, entry_price, quantity")
     .eq("mode", "paper")
-    .eq("status", "open");
+    .eq("status", "open")
+    .eq("side", "buy");
   if (error) throw new Error(`getOpenUnrealizedPnL: ${error.message}`);
 
   return ((data ?? []) as { symbol: string; side: "buy" | "sell"; entry_price: number; quantity: number }[])
@@ -160,7 +162,8 @@ async function countOpenPositions(db: Admin): Promise<number> {
   const { count, error } = await (db.from as any)("trades")
     .select("id", { count: "exact", head: true })
     .eq("mode", "paper")
-    .eq("status", "open");
+    .eq("status", "open")
+    .eq("side", "buy");
   if (error) throw new Error(`countOpenPositions: ${error.message}`);
   return count ?? 0;
 }
