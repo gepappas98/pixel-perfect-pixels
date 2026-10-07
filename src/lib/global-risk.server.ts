@@ -667,6 +667,7 @@ export async function closeAllOpenTrades(
       })
       .eq("id", trade.id)
       .eq("status", "open")
+      .eq("side", "buy")
       .select("id")
       .maybeSingle();
 
