@@ -138,49 +138,62 @@ async function fetchSpotMarks(
     await Promise.all(
       unique.map(
         async (symbol) => {
-          const response =
-            await fetch(
-              `/api/binance/spot-price?symbol=${encodeURIComponent(
-                binanceSymbol(symbol),
-              )}`,
-              {
-                cache: "no-store",
-              },
-            );
+          try {
+            const response =
+              await fetch(
+                `/api/binance/spot-price?symbol=${encodeURIComponent(
+                  binanceSymbol(symbol),
+                )}`,
+                {
+                  cache: "no-store",
+                },
+              );
 
-          if (!response.ok) {
-            throw new Error(
-              `Binance price HTTP ${response.status} for ${symbol}`,
+            if (!response.ok) {
+              console.warn(
+                `[PORTFOLIO_MARK_UNAVAILABLE] ${symbol} HTTP ${response.status}`,
+              );
+              return null;
+            }
+
+            const payload =
+              (await response.json()) as {
+                price?: string | number;
+              };
+
+            const price =
+              Number(payload.price);
+
+            if (
+              !Number.isFinite(price) ||
+              price <= 0
+            ) {
+              console.warn(
+                `[PORTFOLIO_MARK_UNAVAILABLE] ${symbol} invalid price`,
+              );
+              return null;
+            }
+
+            return [
+              binanceSymbol(symbol),
+              price,
+            ] as const;
+          } catch (err) {
+            console.warn(
+              `[PORTFOLIO_MARK_FETCH_ERROR] ${symbol}:`,
+              err,
             );
+            return null;
           }
-
-          const payload =
-            (await response.json()) as {
-              price?: string | number;
-            };
-
-          const price =
-            Number(payload.price);
-
-          if (
-            !Number.isFinite(price) ||
-            price <= 0
-          ) {
-            throw new Error(
-              `Invalid Binance mark for ${symbol}`,
-            );
-          }
-
-          return [
-            binanceSymbol(symbol),
-            price,
-          ] as const;
         },
       ),
     );
 
   return Object.fromEntries(
-    results,
+    results.filter(
+      (entry): entry is readonly [string, number] =>
+        entry !== null,
+    ),
   );
 }
 
