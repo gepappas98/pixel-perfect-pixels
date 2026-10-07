@@ -318,6 +318,30 @@ function calculateVariant(
   return { recommendation, confidence, score, reasoning: reasons.length ? reasons.join("; ") : "insufficient signal" };
 }
 
+function calculateAccumulationVariant(indicator1d: any | null) {
+  const a = indicator1d?.raw?.accumulation;
+  if (!a || !Number.isFinite(Number(a.score))) {
+    return { recommendation: "watch", confidence: 0, score: 0, reasoning: "accumulation features unavailable" };
+  }
+  const score = Math.max(0, Math.min(100, Number(a.score)));
+  const recommendation = score >= 60 ? "buy" : "watch";
+  const confidence = score / 100;
+  const reasons: string[] = [];
+  if (Number(a.cmf20) > 0) reasons.push("CMF positive");
+  if (Number(a.obvChangePct20) > 0) reasons.push("OBV rising");
+  if (Number(a.atrCompressionPct) >= 15) reasons.push("ATR compression");
+  if (Number(a.volumeRatio) >= 1) reasons.push("volume above 20d average");
+  if (Number(a.ma20) > 0 && Number(indicator1d?.price) >= Number(a.ma20)) reasons.push("price above MA20");
+  if (Number(a.ma50) > 0 && Number(indicator1d?.price) >= Number(a.ma50)) reasons.push("price above MA50");
+  if (a.breakoutConfirmed) reasons.push("breakout + volume confirmed");
+  return {
+    recommendation,
+    confidence,
+    score,
+    reasoning: reasons.length ? reasons.join("; ") : "accumulation conditions not confirmed",
+  };
+}
+
 function applyMtfGate(
   recommendation: string,
   mtf: ReturnType<typeof classifyMtf>,
@@ -620,12 +644,34 @@ Deno.serve(async (req) => {
                 prediction?.id ?? "", council?.id ?? ""
               ].join("|"),
             };
-          })
-          .filter((v) => v.recommendation === "buy");
-        if (variantRows.length) {
+          });
+
+        const accumulation = calculateAccumulationVariant(mtf.trend);
+        if (accumulation.recommendation === "buy") {
+          variantRows.push({
+            strategy_name: "accumulation",
+            symbol,
+            confidence: accumulation.confidence,
+            recommendation: accumulation.recommendation,
+            reasoning: accumulation.reasoning,
+            score: accumulation.score,
+            entry_price: variantEntryPrice,
+            outcome: "open",
+            production_regime_label: productionRegimeLabel,
+            regime_label: productionRegimeLabel,
+            market_session: productionMarketSession,
+            created_at: new Date().toISOString(),
+            source_fingerprint: [
+              "accumulation", symbol, indicator?.id ?? "", mtf.trend?.id ?? "",
+            ].join("|"),
+          });
+        }
+
+        const buyVariantRows = variantRows.filter((v) => v.recommendation === "buy");
+        if (buyVariantRows.length) {
           const { error: variantError } = await supabase
             .from("strategy_variant_signals")
-            .upsert(variantRows, { onConflict: "source_fingerprint", ignoreDuplicates: true });
+            .upsert(buyVariantRows, { onConflict: "source_fingerprint", ignoreDuplicates: true });
           if (variantError) throw variantError;
         }
       }
