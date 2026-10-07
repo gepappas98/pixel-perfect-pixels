@@ -260,10 +260,10 @@ export default function AIReport() {
           .limit(2000),
         supabase
           .from("pipeline_runs")
-          .select("created_at, error_message, status")
+          .select("started_at, error_message, status")
           .eq("status", "error")
-          .gte("created_at", since)
-          .order("created_at", { ascending: false })
+          .gte("started_at", since)
+          .order("started_at", { ascending: false })
           .limit(30),
       ]);
 
@@ -507,18 +507,19 @@ export default function AIReport() {
             );
 
       // ── 7. Real trades opened in same period ─────────────────
+      // trades has no opened_at column; created_at is the real open timestamp.
       const { data: recentTrades, error: tradesError } = await supabase
         .from("trades")
-        .select("id,symbol,status,opened_at,created_at")
+        .select("id,symbol,side,status,created_at")
+        .eq("side", "buy")
         .gte("created_at", executionSince);
 
       if (tradesError) {
         console.warn("[AI_DIAGNOSTIC] trade query failed:", tradesError.message);
       }
 
-      const openedTrades = ((recentTrades ?? []) as Row[]).filter(
-        (trade) => trade.status === "open" || trade.opened_at != null,
-      ).length;
+      // Every row returned was opened (created) inside the window.
+      const openedTrades = ((recentTrades ?? []) as Row[]).length;
 
       // ── 8. Determine execution health ────────────────────────
       let executionStatus: ExecutionStatus = "ok";
