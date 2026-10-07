@@ -83,7 +83,8 @@ export async function getPaperEquity(db: Admin): Promise<number> {
   const { data, error } = await (db.from as any)("trades")
     .select("pnl")
     .eq("mode", "paper")
-    .eq("status", "closed");
+    .eq("status", "closed")
+    .eq("side", "buy");
   if (error) throw new Error(`getPaperEquity: ${error.message}`);
   const realized = ((data ?? []) as { pnl: number | null }[])
     .reduce((sum, t) => sum + (Number(t.pnl) || 0), 0);
@@ -95,7 +96,8 @@ export async function getOpenPortfolioRisk(db: Admin): Promise<number> {
   const { data, error } = await (db.from as any)("trades")
     .select("entry_price, stop_loss, quantity")
     .eq("mode", "paper")
-    .eq("status", "open");
+    .eq("status", "open")
+    .eq("side", "buy");
   if (error) throw new Error(`getOpenPortfolioRisk: ${error.message}`);
 
   return ((data ?? []) as { entry_price: number; stop_loss: number | null; quantity: number }[])
@@ -117,6 +119,7 @@ export async function getDailyRealizedPnL(db: Admin): Promise<number> {
     .select("pnl")
     .eq("mode", "paper")
     .eq("status", "closed")
+    .eq("side", "buy")
     .gte("closed_at", dayStart);
   if (error) throw new Error(`getDailyRealizedPnL: ${error.message}`);
   return ((data ?? []) as { pnl: number | null }[])
@@ -130,7 +133,8 @@ export async function getOpenUnrealizedPnL(
   const { data, error } = await (db.from as any)("trades")
     .select("symbol, side, entry_price, quantity")
     .eq("mode", "paper")
-    .eq("status", "open");
+    .eq("status", "open")
+    .eq("side", "buy");
   if (error) throw new Error(`getOpenUnrealizedPnL: ${error.message}`);
 
   return ((data ?? []) as { symbol: string; side: "buy" | "sell"; entry_price: number; quantity: number }[])
@@ -160,7 +164,8 @@ async function countOpenPositions(db: Admin): Promise<number> {
   const { count, error } = await (db.from as any)("trades")
     .select("id", { count: "exact", head: true })
     .eq("mode", "paper")
-    .eq("status", "open");
+    .eq("status", "open")
+    .eq("side", "buy");
   if (error) throw new Error(`countOpenPositions: ${error.message}`);
   return count ?? 0;
 }
@@ -186,6 +191,7 @@ export async function canOpenTrade(db: Admin, req: TradeRequest): Promise<RiskDe
 
   try {
     const { entryPrice, stopLoss, side } = req;
+    if (side !== "buy") return reject("long_only", `${req.symbol} SELL: short execution is disabled; SELL remains a market signal, not an executable position.`);
     if (entryPrice <= 0 || stopLoss <= 0) return reject("invalid_stop", `${req.symbol} ${side}: entryPrice or stopLoss <= 0`);
     const stopDistance = Math.abs(entryPrice - stopLoss);
     if (stopDistance <= 0) return reject("invalid_stop", `${req.symbol} ${side}: stopDistance is zero`);
@@ -235,6 +241,7 @@ export async function canOpenTrade(db: Admin, req: TradeRequest): Promise<RiskDe
         .select("pnl")
         .eq("status", "closed")
         .eq("mode", "paper")
+        .eq("side", "buy")
         .order("closed_at", { ascending: false })
         .limit(RISK_CONFIG.LOSS_STREAK_LOOKBACK);
 
