@@ -245,6 +245,7 @@ export default function AIReport() {
           .from("trades")
           .select("*")
           .eq("status", "open")
+          .eq("side", "buy")
           .order("created_at", { ascending: false })
           .limit(200),
         supabase
