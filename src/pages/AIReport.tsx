@@ -525,18 +525,26 @@ export default function AIReport() {
       let executionIssue: string | null = null;
 
       // No eligible BUY is an absence of an executable opportunity, not
-      // proof that the execution path is healthy. Keep the distinction
-      // explicit so Diagnostic cannot report a misleading 100/100 merely
-      // because there was nothing to execute in the window.
-      if (
-        eligibleBuySignals.length === 0 &&
-        executionAudits.length === 0
-      ) {
+      // proof that the execution path is healthy. An audit row alone is
+      // also insufficient: if it contains no real execution events, the
+      // execution path was not actually exercised.
+      const executionPathExercised = executionAudits.some(({ audit }) => {
+        const summary = (audit?.["summary"] ?? {}) as Record<string, unknown>;
+        const events = (audit?.["events"] ?? []) as Array<Record<string, unknown>>;
+        const hasEligible = Number(summary["eligible_buy_signals"] ?? 0) > 0;
+        const hasRealEvent = events.some(
+          (event) =>
+            ((event["details"] ?? {}) as Record<string, unknown>)["audit_seed"] !== true,
+        );
+        return hasEligible || hasRealEvent;
+      });
+
+      if (eligibleBuySignals.length === 0 && !executionPathExercised) {
         executionStatus = "warning";
         executionIssue =
           "No eligible BUY signals were present in the execution window; " +
-          "execution was not exercised, so execution health cannot be proven " +
-          "from this window.";
+          "the execution audit ran but the execution path was not exercised, " +
+          "so execution health cannot be proven from this window.";
       } else if (eligibleBuySignals.length > 0 && executionAuditCoveragePct < 100) {
         executionStatus = "critical";
         executionIssue =
@@ -718,7 +726,10 @@ export default function AIReport() {
         health: {
           overall,
           score: overallScore,
-          issues,
+          issues: [
+            ...issues,
+            ...(executionIssue ? [executionIssue] : []),
+          ],
 
           subsystems: {
             database: {
@@ -744,15 +755,18 @@ export default function AIReport() {
           summary: {
             q: "What is the current system status?",
             a:
-              executionHealth.eligible_buy_signals > 0 &&
-              executionHealth.opened_trades === 0
-                ? `System infrastructure is operational, but ` +
-                  `${executionHealth.eligible_buy_signals} eligible BUY ` +
-                  `signals were detected and 0 trades were opened. ` +
-                  `Execution requires investigation.`
-                : `${openTrades.length} open trades, ` +
-                  `${closedTrades.length} closed trades, ` +
-                  `${variantRows.length} recent variants.`,
+              executionHealth.status !== "ok"
+                ? `System infrastructure is operational, but execution health is ` +
+                  `not proven: ${executionHealth.issue ?? "diagnostic warning"}`
+                : executionHealth.eligible_buy_signals > 0 &&
+                    executionHealth.opened_trades === 0
+                  ? `System infrastructure is operational, but ` +
+                    `${executionHealth.eligible_buy_signals} eligible BUY ` +
+                    `signals were detected and 0 trades were opened. ` +
+                    `Execution requires investigation.`
+                  : `${openTrades.length} open trades, ` +
+                    `${closedTrades.length} closed trades, ` +
+                    `${variantRows.length} recent variants.`,
             confidence: "high",
           },
           execution: {
