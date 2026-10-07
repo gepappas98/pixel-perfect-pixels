@@ -66,7 +66,67 @@ async function fetchBinanceUSDTBases() {
   return set;
 }
 
-const COINLOBSTER_TIMEOUT_MS = 10_000;,interface CoinLobsterTrade { tradeId?: string; pair?: string; exchange?: string; price?: number; quantity_base?: number; quantity_quote?: number; isBuy?: boolean; timestamp?: number; _src?: string; [key: string]: unknown; },async function fetchCoinLobsterWhales(limit = 50): Promise<CoinLobsterTrade[]> {,  const url = new URL("https://" + "coinlobster.com/api/public/crypto-whales");,  url.searchParams.set("limit", String(Math.min(limit, 50)));,  try {,    const res = await fetch(url.toString(), { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(COINLOBSTER_TIMEOUT_MS) });,    if (!res.ok) return [];,    const json = await res.json();,    const trades = Array.isArray(json) ? json : Array.isArray(json?.whales) ? json.whales : Array.isArray(json?.data) ? json.data : Array.isArray(json?.trades) ? json.trades : [];,    return Array.isArray(trades) ? trades : [];,  } catch (e) { console.error("[COINLOBSTER] fetch failed:", e); return []; },},function normalizeCoinLobster(raw: CoinLobsterTrade) {,  const pair = String(raw.pair ?? "");,  const symbol = (pair.includes("/") ? pair.split("/")[0] : pair).toUpperCase().trim();,  if (!symbol || typeof raw.isBuy !== "boolean") return null;,  let usd = Number(raw.quantity_quote ?? 0);,  if (!Number.isFinite(usd) || usd <= 0) usd = Number(raw.price ?? 0) * Number(raw.quantity_base ?? 0);,  if (!Number.isFinite(usd) || usd <= 0) return null;,  const ts = Number(raw.timestamp ?? Date.now());,  const createdAt = new Date(ts < 1e12 ? ts * 1000 : ts);,  const source = raw._src === "dex" ? "coinlobster-dex" : "coinlobster-cex";,  const exchange = String(raw.exchange ?? "cex").toLowerCase().replace(/\s+/g, "-");,  const txHash = String(raw.tradeId ?? (exchange + "-" + symbol + "-" + ts + "-" + Math.round(usd)));,  return { symbol, chain: raw._src === "dex" ? "dex-" + exchange : "cex-" + exchange, direction: raw.isBuy ? "accumulation" : "distribution", usd_value: Math.round(usd * 100) / 100, wallet_address: null, tx_hash: txHash, source, created_at: createdAt.toISOString(), raw };,},async function fetchRecentTrades(coin: string): Promise<HyperliquidTrade[]> {
+const COINLOBSTER_TIMEOUT_MS = 10_000;
+
+interface CoinLobsterTrade {
+  tradeId?: string;
+  pair?: string;
+  exchange?: string;
+  price?: number;
+  quantity_base?: number;
+  quantity_quote?: number;
+  isBuy?: boolean;
+  timestamp?: number;
+  _src?: string;
+  [key: string]: unknown;
+}
+
+async function fetchCoinLobsterWhales(limit = 50): Promise<CoinLobsterTrade[]> {
+  const url = new URL("https://" + "coinlobster.com/api/public/crypto-whales");
+  url.searchParams.set("limit", String(Math.min(limit, 50)));
+  try {
+    const res = await fetch(url.toString(), {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(COINLOBSTER_TIMEOUT_MS),
+    });
+    if (!res.ok) return [];
+    const json = await res.json();
+    const trades = Array.isArray(json) ? json :
+      Array.isArray(json?.whales) ? json.whales :
+      Array.isArray(json?.data) ? json.data :
+      Array.isArray(json?.trades) ? json.trades : [];
+    return Array.isArray(trades) ? trades : [];
+  } catch (e) {
+    console.error("[COINLOBSTER] fetch failed:", e);
+    return [];
+  }
+}
+
+function normalizeCoinLobster(raw: CoinLobsterTrade) {
+  const pair = String(raw.pair ?? "");
+  const symbol = (pair.includes("/") ? pair.split("/")[0] : pair).toUpperCase().trim();
+  if (!symbol || typeof raw.isBuy !== "boolean") return null;
+  let usd = Number(raw.quantity_quote ?? 0);
+  if (!Number.isFinite(usd) || usd <= 0) usd = Number(raw.price ?? 0) * Number(raw.quantity_base ?? 0);
+  if (!Number.isFinite(usd) || usd <= 0) return null;
+  const ts = Number(raw.timestamp ?? Date.now());
+  const createdAt = new Date(ts < 1e12 ? ts * 1000 : ts);
+  const source = raw._src === "dex" ? "coinlobster-dex" : "coinlobster-cex";
+  const exchange = String(raw.exchange ?? "cex").toLowerCase().replace(/\s+/g, "-");
+  const txHash = String(raw.tradeId ?? (exchange + "-" + symbol + "-" + ts + "-" + Math.round(usd)));
+  return {
+    symbol,
+    chain: raw._src === "dex" ? "dex-" + exchange : "cex-" + exchange,
+    direction: raw.isBuy ? "accumulation" : "distribution",
+    usd_value: Math.round(usd * 100) / 100,
+    wallet_address: null,
+    tx_hash: txHash,
+    source,
+    created_at: createdAt.toISOString(),
+    raw,
+  };
+}
+async function fetchRecentTrades(coin: string): Promise<HyperliquidTrade[]> {
   const res = await fetch("https://api.hyperliquid.xyz/info", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
