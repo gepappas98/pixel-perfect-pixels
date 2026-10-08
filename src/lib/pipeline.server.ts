@@ -4066,16 +4066,37 @@ export async function executeTrades(opts?: {
     );
     continue;
   }
-  const aiRisk = aiRiskBySignalId.get(signal.id);
+  let aiRisk = aiRiskBySignalId.get(signal.id);
   if (!aiRisk) {
-    console.warn(`[AI_RISK_GATE] no decision for ${signal.symbol} — fail-closed`);
-    auditReject(
+    console.warn(`[AI_RISK_GATE] no decision for ${signal.symbol} — research=${researchMode}`);
+    if (!researchMode) {
+      auditReject(
+        signal.symbol,
+        "AI_RISK",
+        "no AI risk decision (fail-closed)",
+        { signalId: signal.id, confidence: signal.confidence },
+      );
+      continue;
+    }
+
+    aiRisk = {
+      symbol: signal.symbol,
+      risk_level: "high",
+      trade_allowed: true,
+      data_quality: "insufficient",
+      reasons: ["AI risk decision missing; research mode does not veto the opportunity"],
+    };
+
+    auditAccept(
       signal.symbol,
       "AI_RISK",
-      "no AI risk decision (fail-closed)",
-      { signalId: signal.id, confidence: signal.confidence },
+      "research mode continues without AI risk decision",
+      {
+        signalId: signal.id,
+        confidence: signal.confidence,
+        details: { research_mode: true, fallback: true },
+      },
     );
-    continue;
   }
   const aiRiskNote = `[AI_RISK_GATE: ${aiRisk.trade_allowed ? "ALLOW" : "BLOCK"} ${aiRisk.risk_level}/${aiRisk.data_quality} — ${aiRisk.reasons.join("; ")}]`;
   const { error: riskAnnotationError } = await db
@@ -4084,7 +4105,33 @@ export async function executeTrades(opts?: {
     .eq("id", signal.id);
   if (riskAnnotationError) {
     console.error(`[AI_RISK_GATE] annotation failed for ${signal.symbol}`, riskAnnotationError);
-    continue;
+    if (!researchMode) {
+      auditReject(
+        signal.symbol,
+        "AI_RISK",
+        "AI risk annotation persistence failed",
+        {
+          signalId: signal.id,
+          confidence: signal.confidence,
+          details: { error: riskAnnotationError.message },
+        },
+      );
+      continue;
+    }
+
+    auditAccept(
+      signal.symbol,
+      "AI_RISK",
+      "research mode ignores AI annotation persistence failure",
+      {
+        signalId: signal.id,
+        confidence: signal.confidence,
+        details: {
+          research_mode: true,
+          persistence_error: riskAnnotationError.message,
+        },
+      },
+    );
   }
   if (!aiRisk.trade_allowed) {
     console.log(`[AI_RISK_GATE] blocked ${signal.symbol}: ${aiRiskNote}`);
