@@ -709,6 +709,50 @@ Deno.serve(async (req) => {
 
       if (error) throw error;
       if (inserted) created.push(inserted);
+
+      // Append one observational row per BUY evaluation. This ledger never gates execution.
+      if (inserted && gate.recommendation === "buy") {
+        const signalPrice = Number(indicator?.price ?? 0);
+        const { data: openSameSymbol, error: openLookupError } = await supabase
+          .from("trades")
+          .select("id,entry_price,created_at")
+          .eq("symbol", symbol)
+          .eq("mode", "paper")
+          .eq("status", "open")
+          .order("created_at", { ascending: true })
+          .limit(1);
+        if (openLookupError) console.error("[REPEATED_BUY_LEDGER] concentration lookup failed:", openLookupError.message);
+        const existingResearchPosition = openSameSymbol?.[0] ?? null;
+        const confidenceEligible = Number(result.confidence) >= 0.6;
+        const { error: ledgerError } = await supabase.from("repeated_buy_research_ledger").insert({
+          composite_signal_id: inserted.id,
+          signal_fingerprint: signalFingerprint,
+          symbol,
+          recommendation: gate.recommendation,
+          confidence: result.confidence,
+          signal_reasoning: reasoningParts.join("; "),
+          signal_price: signalPrice > 0 ? signalPrice : null,
+          signal_created_at: inserted.created_at ?? new Date().toISOString(),
+          research_decision: confidenceEligible ? "pending_execution_audit" : "rejected",
+          research_reason: confidenceEligible ? null : "confidence_below_minimum_0.60",
+          limited_position_decision: existingResearchPosition ? "blocked_same_symbol_position_open" : "would_open",
+          limited_position_reason: existingResearchPosition
+            ? "counterfactual cap: one simultaneous open paper position per symbol"
+            : "counterfactual cap: no open paper position for symbol at observation time",
+          limited_position_trade_id: existingResearchPosition?.id ?? null,
+          limited_position_entry_price: existingResearchPosition?.entry_price ?? null,
+          limited_position_entry_at: existingResearchPosition?.created_at ?? null,
+          metadata: {
+            confidence_minimum: 0.6,
+            research_capacity_gates_bypassed: true,
+            counterfactual_policy: "one_open_position_per_symbol",
+            market_regime: productionRegimeLabel,
+            market_session: productionMarketSession,
+            source_tags: sourceTags,
+          },
+        });
+        if (ledgerError) console.error("[REPEATED_BUY_LEDGER] insert failed:", ledgerError.message);
+      }
     }
 
     return new Response(
