@@ -327,13 +327,17 @@ export default function AIReport() {
           .limit(100),
         supabase
           .from("strategy_variant_signals")
-          .select("*", { count: "exact" })
+          // Diagnostic only: fetch all 7d variant rows needed for accurate
+          // open/resolved counts. The previous 2,000-row cap silently made
+          // resolved_count depend on sort order while count remained exact.
+          .select("symbol,outcome,created_at", { count: "exact" })
+          .gte("created_at", since)
           .order("created_at", { ascending: false })
-          .limit(2000),
+          .limit(10000),
         supabase
           .from("pipeline_runs")
           .select("started_at, error_message, status")
-          .eq("status", "error")
+          .eq("status", "failed")
           .gte("started_at", since)
           .order("started_at", { ascending: false })
           .limit(30),
