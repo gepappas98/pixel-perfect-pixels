@@ -17,6 +17,9 @@ CREATE INDEX IF NOT EXISTS idx_entry_context_snapshots_captured_at
 CREATE INDEX IF NOT EXISTS idx_entry_context_snapshots_symbol
   ON public.entry_context_snapshots (symbol, captured_at DESC);
 
+CREATE INDEX IF NOT EXISTS idx_entry_context_snapshots_composite_signal_id
+  ON public.entry_context_snapshots (composite_signal_id);
+
 ALTER TABLE public.entry_context_snapshots ENABLE ROW LEVEL SECURITY;
 
 REVOKE ALL ON TABLE public.entry_context_snapshots FROM anon, authenticated;
