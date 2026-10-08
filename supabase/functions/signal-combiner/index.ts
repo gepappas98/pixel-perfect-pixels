@@ -1,5 +1,18 @@
-import { handleOptions, corsHeaders } from "../_shared/cors.ts";
-import { getServiceClient } from "../_shared/supabase.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const corsHeaders: Record<string, string> = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+};
+function handleOptions(req: Request): Response | null {
+  if (req.method !== "OPTIONS") return null;
+  return new Response("ok", { headers: corsHeaders });
+}
+function getServiceClient() {
+  return createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+}
+
 
 const WATCHLIST = [
   "BTC", "ETH", "SOL", "CRV", "LINK", "ARB", "DOGE", "XRP", "AVAX", "ADA", "MATIC",
