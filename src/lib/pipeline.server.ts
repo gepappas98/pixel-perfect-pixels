@@ -441,6 +441,9 @@ async function persistEntryContextSnapshot(
   const capturedAt = params.entryCapturedAt;
 
   try {
+    const entryMs = new Date(capturedAt).getTime();
+    const symbolAliases = [...new Set([signal.symbol, binanceSymbol(signal.symbol)])];
+
     const [
       compositeRes,
       whaleRes,
@@ -448,6 +451,8 @@ async function persistEntryContextSnapshot(
       predictionRes,
       councilRes,
       strategyRes,
+      sentimentRes,
+      newsRes,
     ] = await Promise.all([
       db.from("composite_signals").select("*").eq("id", signal.id).maybeSingle(),
       signal.whale_alert_id
@@ -463,10 +468,22 @@ async function persistEntryContextSnapshot(
         ? db.from("council_signals").select("*").eq("id", signal.council_signal_id).maybeSingle()
         : Promise.resolve({ data: null, error: null }),
       db.from("strategy_config").select("*").eq("id", 1).maybeSingle(),
+      db.from("asset_sentiment_snapshots")
+        .select("*")
+        .in("asset", symbolAliases)
+        .gte("observed_at", new Date(entryMs - 6 * 60 * 60 * 1000).toISOString())
+        .lte("observed_at", capturedAt)
+        .order("observed_at", { ascending: false })
+        .limit(72),
+      db.from("asset_news_events")
+        .select("*")
+        .in("asset", symbolAliases)
+        .gte("event_at", new Date(entryMs - 24 * 60 * 60 * 1000).toISOString())
+        .lte("event_at", capturedAt)
+        .order("event_at", { ascending: false })
+        .limit(50),
     ]);
 
-    const entryMs = new Date(capturedAt).getTime();
-    const symbolAliases = [...new Set([signal.symbol, binanceSymbol(signal.symbol)])];
     const additionalIndicators = await db
       .from("indicator_snapshots")
       .select("*")
@@ -519,6 +536,16 @@ async function persistEntryContextSnapshot(
       strategy: strategyAtEntry ? "present" : "missing",
       market_regime: currentRegimeLabel ? "present" : "missing",
       global_risk: globalRisk ? "present" : "missing",
+      sentiment: sentimentRes.error
+        ? "error"
+        : sentimentRes.data?.length
+          ? "present"
+          : "missing",
+      news: newsRes.error
+        ? "error"
+        : newsRes.data?.length
+          ? "present"
+          : "missing",
     };
 
     const snapshot = {
@@ -542,6 +569,14 @@ async function persistEntryContextSnapshot(
           label: currentRegimeLabel,
         },
         strategy: strategyAtEntry,
+        sentiment_context: {
+          lookback_hours: 6,
+          snapshots: sentimentRes.data ?? [],
+        },
+        news_context: {
+          lookback_hours: 24,
+          events: newsRes.data ?? [],
+        },
       },
       execution_context: {
         mode: params.mode,
