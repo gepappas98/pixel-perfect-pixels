@@ -175,7 +175,7 @@ export function VariantComparisonPanel() {
             Variant Performance (7d)
           </h2>
           <p className="mt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-            Legacy Variant Performance · historical hypothetical results per preset
+            Shadow Variant Performance · canonical benchmark per preset
           </p>
         </div>
         <span className="text-[10px] text-muted-foreground">
@@ -200,7 +200,7 @@ export function VariantComparisonPanel() {
           position caps.
           <br />
           <span className="text-muted-foreground/70">
-            Shadow-only: does NOT affect real trades.
+            Canonical shadow benchmark: open rows are current observations; resolved rows are historical outcomes. Does NOT affect real trades.
           </span>
         </p>
       </div>
