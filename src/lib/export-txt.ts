@@ -22,10 +22,10 @@ function buildContent(report: DiagnosticReportLike, aiAnalysis?: string | null) 
   const variants = data.variants ?? { open_count: 0, total_count: 0, by_symbol_top: [] };
   const pipeline = data.pipeline ?? { recent_errors: [] };
   const sections = [
-    line(), "TRADING COMMAND CENTER — FULL DIAGNOSTIC EXPORT", line(),
+    line(), "RESEARCH LAB — FULL DIAGNOSTIC EXPORT", line(),
     `Generated: ${report.generated_at ?? "-"}`, `Duration: ${report.duration_ms ?? "-"}ms`, `Health: ${(report.health?.overall ?? "unknown").toUpperCase()} (${report.health?.score ?? "-"}/100)`,
     `AI analysis: ${aiAnalysis ? `included (${aiAnalysis.length} chars)` : "not included"}`,
-    "", line(), "1. EXECUTIVE SUMMARY", line(),
+    "", "DISCLAIMER: Experimental research and simulated trading only. Not financial or investment advice. Simulated or past performance does not guarantee future results.", "", line(), "1. EXECUTIVE SUMMARY", line(),
     `Open trades: ${trades.open_count}`, `Closed trades: ${trades.closed_count}`, `Realized PnL: ${money(portfolio?.["realized_pnl"])}`, `Unrealized PnL: ${money(portfolio?.["unrealized_pnl"])}`,
     `Win rate: ${portfolio?.["win_rate_pct"] ?? "n/a"}%`, `Profit factor: ${portfolio?.["profit_factor"] ?? "n/a"}`, `Open variants: ${variants.open_count}`, `Resolved variants: ${variants.resolved_count ?? "n/a"}`, `Total variants: ${variants.total_count}`,
     `Pipeline errors (24h): ${pipeline.recent_errors.length}`, `Anomalies: ${(report.anomalies ?? []).length}`,
@@ -47,7 +47,7 @@ export function exportTxtReport(report: DiagnosticReportLike, aiAnalysis?: strin
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = `trading-diagnostic-${new Date(report.generated_at ?? Date.now()).toISOString().replace(/[:.]/g, "-").slice(0, 19)}.txt`;
+  anchor.download = `research-lab-diagnostic-${new Date(report.generated_at ?? Date.now()).toISOString().replace(/[:.]/g, "-").slice(0, 19)}.txt`;
   document.body.appendChild(anchor); anchor.click(); anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
