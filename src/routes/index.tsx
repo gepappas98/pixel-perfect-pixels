@@ -256,17 +256,17 @@ function ResetButton() {
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Trading Command Center — whale flow, technicals & signals" },
+      { title: "Research Lab — whale flow, technicals & signals" },
       {
         name: "description",
         content:
-          "One screen combining whale flow, technical indicators, prediction markets and AI council verdicts into live trade signals.",
+          "Experimental research environment for crypto market analysis and simulated trading.",
       },
-      { property: "og:title", content: "Trading Command Center" },
+      { property: "og:title", content: "Research Lab" },
       {
         property: "og:description",
         content:
-          "Live whale flow, technicals, prediction markets and AI council verdicts combined into one signal feed.",
+          "Experimental crypto research and simulated trading; not financial advice.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -289,10 +289,10 @@ function CommandCenter() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="font-mono text-base font-semibold tracking-tight">
-              Trading Command Center
+              Research Lab
             </h1>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Whale flow · technicals · prediction markets · AI council — combined into one signal feed.
+              Experimental crypto research · whale flow · technicals · prediction markets · AI council.
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -373,6 +373,16 @@ function CommandCenter() {
             </p>
           </div>
 
+          <div className="rounded-md border border-warn/30 bg-warn/5 p-4 text-left">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-warn">Research Disclaimer</h2>
+            <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+              This platform is an experimental research environment for cryptocurrency market analysis and simulated trading.
+              Signals, performance metrics, and hypothetical results are for research and educational purposes only and do not
+              constitute financial or investment advice. Past or simulated performance does not guarantee future results.
+              Cryptocurrency markets involve substantial risk. Research mode is intended for paper trading only; verify that
+              live execution remains disabled before use.
+            </p>
+          </div>
           <SupportDeveloper />
         </div>
       </footer>
