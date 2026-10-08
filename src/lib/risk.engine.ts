@@ -6,7 +6,11 @@
  * - 1.2% max aggregate open stop-risk, INCLUDING estimated fees.
  * - 1.2% daily economic loss limit = realized PnL today + current unrealized
  *   PnL on all open paper trades (net of estimated exit fees).
- * - 3 maximum open paper positions.
+ * - 3 maximum open paper positions in normal mode.
+ *
+ * Paper research mode retains the calculations above for telemetry but does
+ * not use capacity/economic brakes to reject BUY opportunities. Live mode
+ * never enables research mode.
  *
  * Loss-streak kill switch: if 3+ of last 5 closed trades are losses, halt new entries.
  */
