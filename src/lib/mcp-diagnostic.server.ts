@@ -5,6 +5,8 @@
  * a whitelist of read-only RPCs. No inserts/updates/deletes/DDL/trading.
  */
 
+import { createClient } from "@supabase/supabase-js";
+
 export const MCP_PROTOCOL_VERSION = "2025-03-26";
 export const EXECUTION_CONFIDENCE_THRESHOLD = 0.6;
 
@@ -38,8 +40,6 @@ type AnyClient = { from: (t: string) => any; rpc: (fn: string, args?: Row) => an
  * the production browser client and Edge Functions.
  */
 export function createCanonicalDiagnosticClient(): AnyClient {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { createClient } = require("@supabase/supabase-js") as typeof import("@supabase/supabase-js");
   return createClient(CANONICAL_SUPABASE_URL, CANONICAL_SUPABASE_PUBLISHABLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   }) as AnyClient;
