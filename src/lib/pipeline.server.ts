@@ -2240,18 +2240,25 @@ export async function combineSignals(): Promise<number> {
   const binSymbols = symbols.map(binanceSymbol);
   const whaleSince = new Date(Date.now() - WHALE_LOOKBACK_HOURS * 60 * 60 * 1000).toISOString();
 
-  const [whalesRes, indicatorsRes, predictionsRes, councilsRes] = await Promise.all([
+  const [whalesRes, indicatorsRes, predictionsRes, councilsRes, regimeWhalesRes, regimeIndicatorsRes, regimePredictionsRes, regimeCouncilsRes] = await Promise.all([
     db.from("whale_alerts").select("*").in("symbol", symbols).gte("created_at", whaleSince).order("created_at", { ascending: false }).limit(3000),
     db.from("indicator_snapshots").select("*").in("symbol", binSymbols).order("created_at", { ascending: false }).limit(5000),
     db.from("prediction_snapshots").select("*").in("related_symbol", symbols).order("created_at", { ascending: false }).limit(1000),
     db.from("council_signals").select("*").in("symbol", symbols).order("source_created_at", { ascending: false }).limit(1000),
+    db.from("whale_alerts").select("*").gte("created_at", whaleSince).order("created_at", { ascending: false }).limit(5000),
+    db.from("indicator_snapshots").select("*").eq("timeframe", "4h").gte("created_at", new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString()).order("created_at", { ascending: false }).limit(5000),
+    db.from("prediction_snapshots").select("*").gte("created_at", new Date(Date.now() - 30 * 60 * 1000).toISOString()).order("created_at", { ascending: false }).limit(2000),
+    db.from("council_signals").select("*").gte("source_created_at", new Date(Date.now() - 30 * 60 * 1000).toISOString()).order("source_created_at", { ascending: false }).limit(5000),
   ]);
 
+  // Market Regime is explicitly a whole-market reading. Keep its inputs
+  // independent from the active execution/watchlist universe so the regime
+  // label stored on signals cannot drift merely because the watchlist changes.
   const regime = computeRegimeSnapshot({
-    whales: (whalesRes.data ?? []) as Record<string, unknown>[],
-    indicators: (indicatorsRes.data ?? []) as Record<string, unknown>[],
-    predictions: (predictionsRes.data ?? []) as Record<string, unknown>[],
-    councils: (councilsRes.data ?? []) as Record<string, unknown>[],
+    whales: (regimeWhalesRes.data ?? []) as Record<string, unknown>[],
+    indicators: (regimeIndicatorsRes.data ?? []) as Record<string, unknown>[],
+    predictions: (regimePredictionsRes.data ?? []) as Record<string, unknown>[],
+    councils: (regimeCouncilsRes.data ?? []) as Record<string, unknown>[],
   });
   currentRegimeLabel = regime.label;
   console.log(
