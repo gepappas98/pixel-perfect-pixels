@@ -16,6 +16,8 @@ function getServiceClient() {
 
 const MIN_CONFIDENCE = 0.6;
 const PAPER_POSITION_USD = 1000;
+// Keep in sync with public.trading_fee_rate() and src/lib/fees.ts (0.05% per side).
+const TRADING_FEE_RATE = 0.0005;
 const STOP_LOSS_PCT = 0.03;
 const TAKE_PROFIT_PCT = 0.06;
 const EXECUTION_WINDOW_MINUTES = 15;
@@ -153,6 +155,7 @@ Deno.serve(async (req) => {
       try {
         const price = await getCurrentPrice(symbol);
         const quantity = PAPER_POSITION_USD / price;
+        const entryFee = price * quantity * TRADING_FEE_RATE;
         const stopLoss = price * (1 - STOP_LOSS_PCT);
         const takeProfit = price * (1 + TAKE_PROFIT_PCT);
 
@@ -168,6 +171,9 @@ Deno.serve(async (req) => {
             take_profit: takeProfit,
             mode: "paper",
             status: "open",
+            entry_fee: entryFee,
+            exit_fee: 0,
+            total_fees: entryFee,
             exchange_order_id: null,
             source_tags: [
               "paper",
