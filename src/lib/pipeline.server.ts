@@ -420,6 +420,7 @@ async function persistEntryContextSnapshot(
   db: Admin,
   params: {
     tradeId: string;
+    entryCapturedAt: string;
     signal: ExecutionSignalForSnapshot;
     entryPrice: number;
     quantity: number;
@@ -436,7 +437,7 @@ async function persistEntryContextSnapshot(
   },
 ): Promise<void> {
   const { signal, tradeId } = params;
-  const capturedAt = new Date().toISOString();
+  const capturedAt = params.entryCapturedAt;
 
   try {
     const [
@@ -463,25 +464,39 @@ async function persistEntryContextSnapshot(
       db.from("strategy_config").select("*").eq("id", 1).maybeSingle(),
     ]);
 
+    const entryMs = new Date(capturedAt).getTime();
+    const symbolAliases = [...new Set([signal.symbol, binanceSymbol(signal.symbol)])];
     const additionalIndicators = await db
       .from("indicator_snapshots")
       .select("*")
-      .eq("symbol", signal.symbol)
+      .in("symbol", symbolAliases)
       .in("timeframe", ["4h", "1h", "1d"])
+      .lte("created_at", capturedAt)
       .order("created_at", { ascending: false })
       .limit(12);
 
     const globalRisk = await getGlobalRiskState();
+    const atEntry = (row: any, timeField = "created_at") => {
+      if (!row || !Number.isFinite(entryMs)) return null;
+      const ts = new Date(String(row[timeField] ?? "")).getTime();
+      return Number.isFinite(ts) && ts <= entryMs ? row : null;
+    };
+    const compositeAtEntry = atEntry(compositeRes.data);
+    const whaleAtEntry = atEntry(whaleRes.data);
+    const indicatorAtEntry = atEntry(indicatorRes.data);
+    const predictionAtEntry = atEntry(predictionRes.data);
+    const councilAtEntry = atEntry(councilRes.data, "source_created_at") ?? atEntry(councilRes.data, "synced_at");
+    const strategyAtEntry = atEntry(strategyRes.data, "updated_at");
 
     const sourceStatus = {
-      composite_signal: compositeRes.data ? "present" : "missing",
+      composite_signal: compositeAtEntry ? "present" : "missing",
       whale_flow: signal.whale_alert_id
-        ? whaleRes.data
+        ? whaleAtEntry
           ? "present"
           : "missing"
         : "not_applicable",
       technical_primary: signal.indicator_snapshot_id
-        ? indicatorRes.data
+        ? indicatorAtEntry
           ? "present"
           : "missing"
         : "not_applicable",
@@ -491,16 +506,16 @@ async function persistEntryContextSnapshot(
           ? "present"
           : "missing",
       prediction_market: signal.prediction_snapshot_id
-        ? predictionRes.data
+        ? predictionAtEntry
           ? "present"
           : "missing"
         : "not_applicable",
       ai_council: signal.council_signal_id
-        ? councilRes.data
+        ? councilAtEntry
           ? "present"
           : "missing"
         : "not_applicable",
-      strategy: strategyRes.data ? "present" : "missing",
+      strategy: strategyAtEntry ? "present" : "missing",
       market_regime: currentRegimeLabel ? "present" : "missing",
       global_risk: globalRisk ? "present" : "missing",
     };
@@ -511,21 +526,21 @@ async function persistEntryContextSnapshot(
       captured_at: capturedAt,
       source_status: sourceStatus,
       signal: {
-        composite: compositeRes.data ?? null,
+        composite: compositeAtEntry,
         execution_signal: signal,
       },
       upstream: {
-        whale_flow: whaleRes.data ?? null,
+        whale_flow: whaleAtEntry,
         technicals: {
-          primary: indicatorRes.data ?? null,
+          primary: indicatorAtEntry,
           recent_mtf: additionalIndicators.data ?? [],
         },
-        prediction_market: predictionRes.data ?? null,
-        ai_council: councilRes.data ?? null,
+        prediction_market: predictionAtEntry,
+        ai_council: councilAtEntry,
         market_regime: {
           label: currentRegimeLabel,
         },
-        strategy: strategyRes.data ?? null,
+        strategy: strategyAtEntry,
       },
       execution_context: {
         mode: params.mode,
@@ -4148,7 +4163,7 @@ export async function executeTrades(opts?: {
         execCtx,
         hotSymbolSet.has(signal.symbol) ? ["hot-whale"] : undefined,
       ),
-    } as never).select("id").single();
+    } as never).select("id,created_at").single();
 
     if (tradeErr) {
       const errorCode = (tradeErr as { code?: string }).code ?? "UNKNOWN";
@@ -4197,9 +4212,11 @@ export async function executeTrades(opts?: {
       throw tradeErr;
     }
     const tradeId = String((insertedTrade as { id?: string } | null)?.id ?? "");
-    if (tradeId) {
+    const tradeCreatedAt = String((insertedTrade as { created_at?: string } | null)?.created_at ?? "");
+    if (tradeId && tradeCreatedAt) {
       await persistEntryContextSnapshot(db, {
         tradeId,
+        entryCapturedAt: tradeCreatedAt,
         signal: signal as ExecutionSignalForSnapshot,
         entryPrice: price,
         quantity,
@@ -4215,7 +4232,7 @@ export async function executeTrades(opts?: {
         openTradesBefore: openTrades,
       });
     } else {
-      console.error("[ENTRY_CONTEXT] trade insert returned no id", {
+      console.error("[ENTRY_CONTEXT] trade insert returned incomplete identity", {
         signalId: signal.id,
         symbol: signal.symbol,
       });
