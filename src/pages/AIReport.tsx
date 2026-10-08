@@ -52,6 +52,21 @@ type NewBuyAlert = {
   created_at: string;
 };
 
+type ResearchAlert = {
+  id: string;
+  alert_type: string;
+  severity: string;
+  asset: string | null;
+  source: string | null;
+  event_id: string | null;
+  event_at: string;
+  detected_at: string;
+  message: string;
+  evidence: Record<string, unknown>;
+  acknowledged: boolean;
+  created_at: string;
+};
+
 /**
  * Must match executeTrades() executable-signal window.
  * 15 minutes = 0.25 hours.
@@ -64,6 +79,7 @@ const EXECUTION_CONFIDENCE_THRESHOLD = 0.6;
  * ============================================================ */
 
 const SEEN_BUY_IDS_KEY = "ai_report_seen_buy_signal_ids_v1";
+const SEEN_RESEARCH_ALERT_IDS_KEY = "ai_report_seen_research_alert_ids_v1";
 const SOUND_ENABLED_KEY = "ai_report_sound_enabled_v1";
 const POLL_INTERVAL_MS = 60_000;
 const MAX_SEEN_IDS = 500;
@@ -80,6 +96,27 @@ function loadSeenBuyIds(): Set<string> {
   } catch {
     return new Set();
   }
+}
+
+function loadSeenResearchAlertIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(SEEN_RESEARCH_ALERT_IDS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((x): x is string => typeof x === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveSeenResearchAlertIds(ids: Set<string>): void {
+  try {
+    localStorage.setItem(
+      SEEN_RESEARCH_ALERT_IDS_KEY,
+      JSON.stringify([...ids].slice(-MAX_SEEN_IDS)),
+    );
+  } catch {}
 }
 
 function saveSeenBuyIds(ids: Set<string>): void {
@@ -119,9 +156,11 @@ export default function AIReport() {
     loadSoundEnabled(),
   );
   const [newBuys, setNewBuys] = useState<NewBuyAlert[]>([]);
+  const [researchAlerts, setResearchAlerts] = useState<ResearchAlert[]>([]);
 
   const audioCtxRef = useRef<AudioContext | null>(null);
   const seenBuyIdsRef = useRef<Set<string>>(loadSeenBuyIds());
+  const seenResearchAlertIdsRef = useRef<Set<string>>(loadSeenResearchAlertIds());
   const primedRef = useRef<boolean>(false);
   const soundEnabledRef = useRef<boolean>(soundEnabled);
 
@@ -173,6 +212,37 @@ export default function AIReport() {
       playTone(1320, 0.20, 0.32);
     } catch (e) {
       console.warn("[AIReport] sound playback failed:", e);
+    }
+  }, []);
+
+  const playResearchAlert = useCallback(() => {
+    try {
+      const Ctor =
+        window.AudioContext ??
+        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!Ctor) return;
+      if (!audioCtxRef.current) audioCtxRef.current = new Ctor();
+      const ctx = audioCtxRef.current;
+      if (ctx.state === "suspended") void ctx.resume();
+      const playTone = (freq: number, start: number, duration: number) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "square";
+        osc.frequency.value = freq;
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        const t0 = ctx.currentTime + start;
+        gain.gain.setValueAtTime(0.0001, t0);
+        gain.gain.exponentialRampToValueAtTime(0.18, t0 + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+        osc.start(t0);
+        osc.stop(t0 + duration + 0.04);
+      };
+      playTone(660, 0, 0.16);
+      playTone(440, 0.18, 0.24);
+      playTone(660, 0.44, 0.16);
+    } catch (e) {
+      console.warn("[AIReport] research alert sound failed:", e);
     }
   }, []);
 
@@ -240,7 +310,7 @@ export default function AIReport() {
     try {
       const since = new Date(Date.now() - 86_400_000).toISOString();
 
-      const [open, closed, variants, errors] = await Promise.all([
+      const [open, closed, variants, errors, research] = await Promise.all([
         supabase
           .from("trades")
           .select("*")
@@ -267,6 +337,7 @@ export default function AIReport() {
           .gte("started_at", since)
           .order("started_at", { ascending: false })
           .limit(30),
+        supabase.rpc("get_research_alerts", { p_limit: 20 }),
       ]);
 
       if (open.error) throw open.error;
@@ -276,6 +347,20 @@ export default function AIReport() {
       const closedTrades = (closed.data ?? []) as Row[];
       const variantRows = (variants.data ?? []) as Row[];
       const pipelineErrors = (errors.data ?? []) as Row[];
+      const currentResearchAlerts = (research.data ?? []) as ResearchAlert[];
+      setResearchAlerts(currentResearchAlerts);
+
+      const seenResearchIds = seenResearchAlertIdsRef.current;
+      const currentResearchIds = new Set(currentResearchAlerts.map((a) => a.id).filter(Boolean));
+      if (!primedRef.current) {
+        for (const id of currentResearchIds) seenResearchIds.add(id);
+        saveSeenResearchAlertIds(seenResearchIds);
+      } else {
+        const newResearchAlerts = currentResearchAlerts.filter((a) => !seenResearchIds.has(a.id));
+        if (newResearchAlerts.length > 0 && soundEnabledRef.current) playResearchAlert();
+        for (const id of currentResearchIds) seenResearchIds.add(id);
+        saveSeenResearchAlertIds(seenResearchIds);
+      }
 
       const wins = closedTrades.filter((r) => pnl(r) > 0);
       const losses = closedTrades.filter((r) => pnl(r) < 0);
@@ -874,7 +959,7 @@ Interpretation rules:
     } finally {
       setLoading(false);
     }
-  }, [playBuyAlert]);
+  }, [playBuyAlert, playResearchAlert]);
 
   /* ============================================================
    * INITIAL LOAD + AUTO-POLL
@@ -917,6 +1002,43 @@ Interpretation rules:
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-6">
+      {/* ───────── Research early-warning banner ───────── */}
+      {researchAlerts.length > 0 && (
+        <div className="sticky top-0 z-50 rounded border-2 border-amber-500 bg-amber-50 p-4 shadow-lg">
+          <div className="flex items-start gap-3">
+            <div className="text-2xl leading-none">🚨</div>
+            <div className="min-w-0 flex-1">
+              <div className="text-lg font-bold text-amber-900">EARLY WARNING — NEWS → WHALE</div>
+              <div className="mt-1 text-xs font-medium text-amber-800">Research trigger · not a trading signal</div>
+              <div className="mt-3 space-y-2">
+                {researchAlerts.map((a) => {
+                  const e = a.evidence ?? {};
+                  const latency = Number(e.latency_min);
+                  const magnitude = Number(e.whale_delta_pp);
+                  const shock = Number(e.shock_score);
+                  return (
+                    <div key={a.id} className="rounded border border-amber-300 bg-white/70 p-3">
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-amber-950">
+                        <span className="font-mono font-bold">{a.asset ?? "MARKET"}</span>
+                        {a.source && <span>{a.source}</span>}
+                        <span className="font-semibold uppercase">{a.severity}</span>
+                      </div>
+                      <div className="mt-1 text-sm text-amber-950">{a.message}</div>
+                      <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-amber-800">
+                        {Number.isFinite(shock) && <span>Shock: {shock >= 0 ? "+" : ""}{shock.toFixed(3)}</span>}
+                        {Number.isFinite(latency) && <span>Whale latency: {latency.toFixed(1)} min</span>}
+                        {Number.isFinite(magnitude) && <span>Whale change: {magnitude >= 0 ? "+" : ""}{magnitude.toFixed(1)} pp</span>}
+                        <span>Detected: {new Date(a.detected_at).toLocaleTimeString()}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ───────── New BUY alert banner ───────── */}
       {newBuys.length > 0 && (
         <div className="sticky top-0 z-50 rounded border-2 border-green-600 bg-green-50 p-4 shadow-lg">
