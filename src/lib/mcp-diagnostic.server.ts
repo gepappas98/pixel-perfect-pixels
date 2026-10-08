@@ -249,7 +249,8 @@ export async function getTradeState(db: ReadOnlyDb, a: Row) {
   for (const row of (marks.data ?? []) as Row[]) {
     const asset = String(row.asset ?? "");
     const price = Number(row.price);
-    if (asset && Number.isFinite(price) && markPrices[asset] === undefined) markPrices[asset] = price;
+    const key = `${asset.toUpperCase()}USDT`;
+    if (asset && Number.isFinite(price) && markPrices[key] === undefined) markPrices[key] = price;
   }
 
   const portfolio = await db.rpc("get_portfolio_summary", { p_mark_prices: markPrices });
@@ -258,7 +259,7 @@ export async function getTradeState(db: ReadOnlyDb, a: Row) {
     recent_closed_trades: closed.data ?? [],
     portfolio: portfolio.data ?? null,
     mark_prices: markPrices,
-    portfolio_note: "Portfolio computed with latest stored asset_price_snapshots marks for open symbols.",
+    portfolio_note: "Portfolio computed with latest stored asset_price_snapshots marks for open symbols (RPC keys use SYMBOLUSDT).",
     errors: [open.error?.message, closed.error?.message, marks.error?.message, portfolio.error?.message].filter(Boolean),
   };
 }
