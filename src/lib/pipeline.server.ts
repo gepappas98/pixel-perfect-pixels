@@ -3723,6 +3723,7 @@ export async function executeTrades(opts?: {
       signalPrice > 0 &&
       Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT
     ) {
+      const driftPct = Math.abs(price - signalPrice) / signalPrice;
       auditReject(
         signal.symbol,
         "CANDIDATE_FILTER",
@@ -4019,6 +4020,7 @@ export async function executeTrades(opts?: {
         },
       },
     );
+
     continue;
   }
   const reasoning = String((signal as { reasoning?: string }).reasoning ?? "");
