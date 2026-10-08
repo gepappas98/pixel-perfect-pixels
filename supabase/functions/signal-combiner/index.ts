@@ -748,10 +748,14 @@ Deno.serve(async (req) => {
           signal_created_at: inserted.created_at ?? new Date().toISOString(),
           research_decision: confidenceEligible ? "pending_execution_audit" : "rejected",
           research_reason: confidenceEligible ? null : "confidence_below_minimum_0.60",
-          limited_position_decision: existingResearchPosition ? "blocked_same_symbol_position_open" : "would_open",
-          limited_position_reason: existingResearchPosition
-            ? "counterfactual cap: one simultaneous open paper position per symbol"
-            : "counterfactual cap: no open paper position for symbol at observation time",
+          limited_position_decision: !confidenceEligible
+            ? "rejected_quality_gate"
+            : existingResearchPosition ? "blocked_same_symbol_position_open" : "would_open",
+          limited_position_reason: !confidenceEligible
+            ? "counterfactual applies same confidence >= 0.60 quality gate"
+            : existingResearchPosition
+              ? "counterfactual cap: one simultaneous open paper position per symbol"
+              : "counterfactual cap: no open paper position for symbol at observation time",
           limited_position_trade_id: existingResearchPosition?.id ?? null,
           limited_position_entry_price: existingResearchPosition?.entry_price ?? null,
           limited_position_entry_at: existingResearchPosition?.created_at ?? null,
