@@ -310,7 +310,7 @@ export default function AIReport() {
     try {
       const since = new Date(Date.now() - 86_400_000).toISOString();
 
-      const [open, closed, variants, errors, research] = await Promise.all([
+      const [open, closed, variants, errors, research, marks] = await Promise.all([
         supabase
           .from("trades")
           .select("*")
@@ -342,6 +342,11 @@ export default function AIReport() {
           .order("started_at", { ascending: false })
           .limit(30),
         supabase.rpc("get_research_alerts", { p_limit: 20 }),
+        supabase
+          .from("asset_price_snapshots")
+          .select("asset,price,observed_at")
+          .order("observed_at", { ascending: false })
+          .limit(2000),
       ]);
 
       if (open.error) throw open.error;
@@ -352,6 +357,15 @@ export default function AIReport() {
       const variantRows = (variants.data ?? []) as Row[];
       const pipelineErrors = (errors.data ?? []) as Row[];
       const currentResearchAlerts = (research.data ?? []) as ResearchAlert[];
+      const priceRows = (marks.data ?? []) as Row[];
+      const latestMarks = new Map<string, number>();
+      for (const row of priceRows) {
+        const asset = String(row.asset ?? "").toUpperCase().replace(/USDT$/, "");
+        const price = Number(row.price ?? 0);
+        if (asset && Number.isFinite(price) && price > 0 && !latestMarks.has(asset)) {
+          latestMarks.set(asset, price);
+        }
+      }
       setResearchAlerts(currentResearchAlerts);
 
       const seenResearchIds = seenResearchAlertIdsRef.current;
@@ -370,7 +384,16 @@ export default function AIReport() {
       const losses = closedTrades.filter((r) => pnl(r) < 0);
 
       const realized = closedTrades.reduce((s, r) => s + pnl(r), 0);
-      const unrealized = openTrades.reduce((s, r) => s + pnl(r), 0);
+      // Open trades do not persist current PnL in trades.pnl. Mark them from
+      // the latest canonical asset_price_snapshots instead of reporting $0.
+      const unrealized = openTrades.reduce((sum, r) => {
+        const symbol = String(r.symbol ?? "").toUpperCase().replace(/USDT$/, "");
+        const entry = Number(r.entry_price ?? 0);
+        const qty = Number(r.quantity ?? 0);
+        const mark = latestMarks.get(symbol);
+        if (!Number.isFinite(entry) || !Number.isFinite(qty) || mark === undefined) return sum;
+        return sum + (mark - entry) * qty;
+      }, 0);
       const grossLoss = Math.abs(losses.reduce((s, r) => s + pnl(r), 0));
 
       const bySymbol = new Map<
