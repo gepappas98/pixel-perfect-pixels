@@ -3128,6 +3128,7 @@ export async function executeTrades(opts?: {
 }> {
   const db = await admin();
   const mode = tradingMode();
+  const researchMode = mode === "paper";
   const settings = await fetchTradingSettings();
 
   const audit: ExecutionAuditEvent[] = [];
@@ -3343,6 +3344,29 @@ export async function executeTrades(opts?: {
   const openSymbols = new Set(openTrades.map((t) => t.symbol));
   const cooldownSymbols = new Set(((recentlyClosedRes.data ?? []) as { symbol: string }[]).map((t) => t.symbol));
 
+  // In paper research mode we want every distinct BUY signal measured.
+  // Prevent only duplicate execution of the same composite signal; do not
+  // suppress a new signal merely because its symbol is already held.
+  let tradedSignalIds = new Set<string>();
+  if (researchMode) {
+    const signalIds = ((signalsRes.data ?? []) as Array<{ id?: string | null }>)
+      .map((s) => String(s.id ?? ""))
+      .filter(Boolean);
+    if (signalIds.length > 0) {
+      const { data: tradedRows, error: tradedRowsError } = await db
+        .from("trades")
+        .select("composite_signal_id")
+        .eq("mode", "paper")
+        .in("composite_signal_id", signalIds);
+      if (tradedRowsError) throw tradedRowsError;
+      tradedSignalIds = new Set(
+        ((tradedRows ?? []) as Array<{ composite_signal_id?: string | null }>)
+          .map((row) => String(row.composite_signal_id ?? ""))
+          .filter(Boolean),
+      );
+    }
+  }
+
   let prices: Map<string, number>;
   try { prices = await allBinancePrices(); }
   catch (e) { console.error("batch price fetch failed", e); return { opened: 0, audit }; }
@@ -3393,7 +3417,7 @@ export async function executeTrades(opts?: {
   const riskCandidates = executionSignals.filter((signal) => {
     if (signal.recommendation !== "buy") return false;
 
-    if (openSymbols.has(signal.symbol)) {
+    if (!researchMode && openSymbols.has(signal.symbol)) {
       auditReject(
         signal.symbol,
         "CANDIDATE_FILTER",
@@ -3403,11 +3427,21 @@ export async function executeTrades(opts?: {
       return false;
     }
 
-    if (cooldownSymbols.has(signal.symbol)) {
+    if (!researchMode && cooldownSymbols.has(signal.symbol)) {
       auditReject(
         signal.symbol,
         "CANDIDATE_FILTER",
         "symbol is in cooldown",
+        { signalId: signal.id, confidence: signal.confidence },
+      );
+      return false;
+    }
+
+    if (researchMode && tradedSignalIds.has(signal.id)) {
+      auditReject(
+        signal.symbol,
+        "CANDIDATE_FILTER",
+        "composite signal already executed in paper research mode",
         { signalId: signal.id, confidence: signal.confidence },
       );
       return false;
@@ -3821,7 +3855,12 @@ export async function executeTrades(opts?: {
     if (signal.created_at && !isFresh(signal.created_at, 15 * 60 * 1000)) continue;
 
     const risk = await canOpenTrade(db as any, {
-      symbol: signal.symbol, side, entryPrice: price, stopLoss, currentPrices: prices,
+      symbol: signal.symbol,
+      side,
+      entryPrice: price,
+      stopLoss,
+      currentPrices: prices,
+      researchMode,
     });
 
     if (!risk.allowed) {
