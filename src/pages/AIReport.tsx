@@ -973,7 +973,7 @@ export default function AIReport() {
         narrative_md: "",
 
         ai_context: `
-Trading Command Center diagnostic
+Research Lab diagnostic
 
 Health: ${overall}
 Realized PnL: ${realized.toFixed(2)}
@@ -1179,7 +1179,7 @@ Interpretation rules:
       )}
 
       <header className="space-y-2">
-        <h1 className="text-2xl font-semibold">Trading Command Center</h1>
+        <h1 className="text-2xl font-semibold">Research Lab</h1>
         <h2 className="text-xl font-medium">AI diagnostic report</h2>
         <p className="text-sm text-muted-foreground">
           Operational snapshot with portfolio, variants, errors, and raw JSON.
