@@ -429,21 +429,56 @@ export default function AIReport() {
 
       const runs = (recentRuns ?? []) as Row[];
 
-      const auditedRuns = runs.filter(
-        (run) =>
-          run.result &&
-          typeof run.result === "object" &&
-          (run.result as Record<string, unknown>)["execution_audit"],
-      );
+      // Canonical audit is result.execution_audit. For compatibility with
+      // orchestrator runs that only persisted the executor stage, also inspect
+      // result.stages[].result.execution_audit / stage.execution_audit.
+      const executionAudits = runs
+        .map((run) => {
+          const result =
+            run.result && typeof run.result === "object"
+              ? (run.result as Record<string, unknown>)
+              : {};
 
-      const executionAudits = auditedRuns
-        .map((run) => ({
-          run,
-          audit: (run.result as Record<string, unknown>)["execution_audit"] as
+          let audit = result["execution_audit"] as
             | Record<string, unknown>
-            | undefined,
-        }))
-        .filter((x) => x.audit);
+            | undefined;
+
+          if (!audit && Array.isArray(result["stages"])) {
+            const executorStage = (result["stages"] as unknown[]).find((stage) => {
+              if (!stage || typeof stage !== "object") return false;
+              const row = stage as Record<string, unknown>;
+              return (
+                String(row["name"] ?? row["stage"] ?? "").toLowerCase() ===
+                "trade-executor"
+              );
+            });
+
+            if (executorStage && typeof executorStage === "object") {
+              const stage = executorStage as Record<string, unknown>;
+              const stageResult = stage["result"];
+              if (stageResult && typeof stageResult === "object") {
+                audit = (stageResult as Record<string, unknown>)[
+                  "execution_audit"
+                ] as Record<string, unknown> | undefined;
+              }
+              if (!audit) {
+                audit = stage["execution_audit"] as
+                  | Record<string, unknown>
+                  | undefined;
+              }
+            }
+          }
+
+          return { run, audit };
+        })
+        .filter(
+          (x): x is {
+            run: Row;
+            audit: Record<string, unknown>;
+          } => Boolean(x.audit),
+        );
+
+      const auditedRuns = executionAudits.map(({ run }) => run);
 
       // ── 3. Grace period: latest audit run timestamp ──────────
       const latestAuditStartedAt = auditedRuns.reduce((max, run) => {
@@ -955,7 +990,24 @@ Interpretation rules:
       setReport(reportRecord as unknown as DiagnosticReportLike);
       setLastLoadedAt(new Date());
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      const diagnosticError =
+        cause && typeof cause === "object"
+          ? (() => {
+              const e = cause as Record<string, unknown>;
+              return (
+                (typeof e.message === "string" && e.message) ||
+                (typeof e.error_description === "string" && e.error_description) ||
+                (typeof e.details === "string" && e.details) ||
+                (typeof e.hint === "string" && e.hint) ||
+                (typeof e.code === "string" && e.code) ||
+                "Unknown diagnostic error"
+              );
+            })()
+          : cause instanceof Error
+            ? cause.message
+            : String(cause);
+      console.error("[AIReport] diagnostic load failed:", cause);
+      setError(diagnosticError);
     } finally {
       setLoading(false);
     }
