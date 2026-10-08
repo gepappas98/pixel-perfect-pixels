@@ -71,6 +71,7 @@ async function discoverAssets(db:any){
   if(uerr)throw uerr;
   return universe??[];
 }
+function finiteOrNull(v:any){if(v===null||v===undefined||v==="")return null;const n=Number(v);return Number.isFinite(n)?n:null;}
 async function coinLoreSocialSnapshots(db:any, assets:string[], observedAt:string){
   const catalogResponse=await fetch("https://api.coinlore.net/api/assets/",{headers:{"User-Agent":"TradingCommandCenter/1.0 research-bot"},signal:AbortSignal.timeout(12000)});
   if(!catalogResponse.ok)throw new Error("CoinLore assets HTTP "+catalogResponse.status);
@@ -95,10 +96,10 @@ async function coinLoreSocialSnapshots(db:any, assets:string[], observedAt:strin
       const reddit=j?.reddit??{}; const twitter=j?.twitter??{};
       rows.push({
         asset,coinlore_id:String(coin.id),observed_at:observedAt,source:"coinlore",source_type:"social_activity",
-        reddit_avg_active_users:Number.isFinite(Number(reddit.avg_active_users))?Number(reddit.avg_active_users):null,
-        reddit_subscribers:Number.isFinite(Number(reddit.subscribers))?Number(reddit.subscribers):null,
-        twitter_followers:Number.isFinite(Number(twitter.followers_count))?Number(twitter.followers_count):null,
-        twitter_status_count:Number.isFinite(Number(twitter.status_count))?Number(twitter.status_count):null,
+        reddit_avg_active_users:finiteOrNull(reddit.avg_active_users),
+        reddit_subscribers:finiteOrNull(reddit.subscribers),
+        twitter_followers:finiteOrNull(twitter.followers_count),
+        twitter_status_count:finiteOrNull(twitter.status_count),
         availability:{mapped:true,available:true,reddit:{avg_active_users:reddit.avg_active_users!=null,subscribers:reddit.subscribers!=null},twitter:{followers_count:twitter.followers_count!=null,status_count:twitter.status_count!=null}},
         raw_snapshot:{coin_id:coin.id,symbol:coin.symbol,name:coin.name,reddit,twitter}
       });
