@@ -436,6 +436,8 @@ async function persistEntryContextSnapshot(
   },
 ): Promise<void> {
   const { signal, tradeId } = params;
+  const capturedAt = new Date().toISOString();
+
   try {
     const [
       compositeRes,
@@ -471,9 +473,43 @@ async function persistEntryContextSnapshot(
 
     const globalRisk = await getGlobalRiskState();
 
+    const sourceStatus = {
+      composite_signal: compositeRes.data ? "present" : "missing",
+      whale_flow: signal.whale_alert_id
+        ? whaleRes.data
+          ? "present"
+          : "missing"
+        : "not_applicable",
+      technical_primary: signal.indicator_snapshot_id
+        ? indicatorRes.data
+          ? "present"
+          : "missing"
+        : "not_applicable",
+      technical_mtf: additionalIndicators.error
+        ? "error"
+        : additionalIndicators.data?.length
+          ? "present"
+          : "missing",
+      prediction_market: signal.prediction_snapshot_id
+        ? predictionRes.data
+          ? "present"
+          : "missing"
+        : "not_applicable",
+      ai_council: signal.council_signal_id
+        ? councilRes.data
+          ? "present"
+          : "missing"
+        : "not_applicable",
+      strategy: strategyRes.data ? "present" : "missing",
+      market_regime: currentRegimeLabel ? "present" : "missing",
+      global_risk: globalRisk ? "present" : "missing",
+    };
+
     const snapshot = {
-      schema_version: 1,
-      captured_at: new Date().toISOString(),
+      schema_version: 2,
+      capture_status: "complete",
+      captured_at: capturedAt,
+      source_status: sourceStatus,
       signal: {
         composite: compositeRes.data ?? null,
         execution_signal: signal,
@@ -508,26 +544,29 @@ async function persistEntryContextSnapshot(
       ai_risk: params.aiRisk,
     };
 
-    const { error } = await db.from("entry_context_snapshots").insert({
-      trade_id: tradeId,
-      composite_signal_id: signal.id,
-      symbol: signal.symbol,
-      captured_at: snapshot.captured_at,
-      snapshot,
-    } as never);
+    const { error } = await db
+      .from("entry_context_snapshots")
+      .update({
+        composite_signal_id: signal.id,
+        symbol: signal.symbol,
+        captured_at: capturedAt,
+        snapshot,
+      } as never)
+      .eq("trade_id", tradeId);
 
     if (error) {
-      console.error("[ENTRY_CONTEXT] snapshot insert failed", {
+      console.error("[ENTRY_CONTEXT] snapshot completion update failed", {
         tradeId,
         signalId: signal.id,
         symbol: signal.symbol,
         error,
       });
     } else {
-      console.log("[ENTRY_CONTEXT] snapshot persisted", {
+      console.log("[ENTRY_CONTEXT] snapshot completed", {
         tradeId,
         signalId: signal.id,
         symbol: signal.symbol,
+        sourceStatus,
       });
     }
   } catch (error) {
@@ -539,7 +578,6 @@ async function persistEntryContextSnapshot(
     });
   }
 }
-
 
 /* ───────────── Feed health ───────────── */
 
