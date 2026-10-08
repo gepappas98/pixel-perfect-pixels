@@ -1,6 +1,6 @@
 # Trading Command Center — P0/P1 Stabilization Tracker
 
-Last updated: 2026-10-08 UTC — canonical runtime verification
+Last updated: 2026-10-08 UTC — canonical observability pass
 
 ## Operating rule
 
@@ -131,7 +131,7 @@ Next sequence:
 - Canonical security advisors currently report only the four intentionally retained SECURITY DEFINER read RPC warnings (`get_pipeline_cron_health`, `get_portfolio_summary`, `get_system_resource_stats`, `get_variant_performance`).
 - No blind RLS change is required at this stage.
 
-### P1.4 Observability
+### P1.4 Observability — IN PROGRESS / CODE IMPROVED
 Need one coherent health model showing:
 - latest canonical run
 - duration
@@ -141,6 +141,14 @@ Need one coherent health model showing:
 - consecutive failures
 - stage-level failures
 - manual vs scheduled trigger source
+
+**Implemented in this pass:**
+- Canonical get_pipeline_cron_health() now exposes trigger and source from the orchestrator's persisted pipeline_runs.result metadata for both the latest run and last successful run.
+- nextRunAt is now anchored to the latest scheduled run when available, so a manual dashboard run cannot shift the displayed next scheduler time.
+- CronHealthPanel now displays trigger/source metadata for the current and last successful run.
+- Runtime verification immediately after the DB change returned RUNNING, interval 2 minutes, latest source pg_cron, trigger scheduled, last success at 15:30:27.820Z, next run 15:34:00Z.
+- This is observability only: no pipeline stages, strategy weights, thresholds, risk limits, or historical data were changed.
+- Remaining: publish/verify the frontend artifact and later add stage-level failure detail if the current UI does not already surface it.
 
 ### P1.5 Execution audit
 After pipeline stability:
