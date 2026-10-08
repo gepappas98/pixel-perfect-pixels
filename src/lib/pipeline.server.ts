@@ -3121,6 +3121,7 @@ async function attemptRotation(
 
 export async function executeTrades(opts?: {
   skipNewEntries?: boolean;
+  pipelineRunId?: string;
 }): Promise<{
   opened: number;
   audit: ExecutionAuditEvent[];
@@ -3159,6 +3160,59 @@ export async function executeTrades(opts?: {
     const event = createExecutionAuditEvent(symbol, stage, "ACCEPT", reason, opts);
     audit.push(event);
     console.log(`[EXEC_AUDIT] ACCEPT ${symbol} stage=${stage} reason=${reason}`);
+  };
+
+  const recordCapacityObservation = async (
+    signal: ExecutionSignal,
+    price: number,
+    rejectionReason: string,
+    openTradesSnapshot: OpenTradeForRotation[],
+  ) => {
+    try {
+      const heldPositions = openTradesSnapshot.map((trade) => ({
+        id: trade.id,
+        symbol: trade.symbol,
+        side: trade.side,
+        quantity: trade.quantity,
+        entry_price: trade.entry_price,
+        mode: trade.mode,
+        composite_signal_id: trade.composite_signal_id,
+        created_at: trade.created_at,
+      }));
+      const { error } = await db.from("execution_capacity_observations").insert({
+        pipeline_run_id: opts?.pipelineRunId ?? null,
+        signal_id: signal.id,
+        symbol: signal.symbol,
+        observed_at: new Date().toISOString(),
+        candidate_confidence: signal.confidence,
+        candidate_price: price,
+        candidate_regime: signal.regime_label ?? currentRegimeLabel,
+        candidate_reasoning: String(signal.reasoning ?? "").slice(0, 2000),
+        rejection_reason: rejectionReason,
+        open_position_count: openTradesSnapshot.length,
+        held_positions: heldPositions,
+        candidate_snapshot: {
+          created_at: signal.created_at ?? null,
+          recommendation: signal.recommendation,
+          price_at: signal.price_at ?? null,
+          source_tags: signal.source_tags ?? null,
+        },
+      } as never);
+      if (error) {
+        console.error("[CAPACITY_RESEARCH] observation insert failed", error);
+      } else {
+        console.log(
+          "[CAPACITY_RESEARCH] blocked candidate recorded symbol=" +
+          signal.symbol +
+          " confidence=" +
+          signal.confidence.toFixed(3) +
+          " held=" +
+          openTradesSnapshot.length,
+        );
+      }
+    } catch (error) {
+      console.error("[CAPACITY_RESEARCH] non-fatal observation failure", error);
+    }
   };
 
   await closeTriggeredTrades();
@@ -3314,6 +3368,7 @@ export async function executeTrades(opts?: {
     take_profit_1?: number | null;
     take_profit_2?: number | null;
     position_multiplier?: number | null;
+    source_tags?: string[] | null;
   };
   const executionSignals = (signalsRes.data ?? []) as ExecutionSignal[];
   const parseAIRiskAnnotation = (reasoning: string | null | undefined): AIRiskDecision | null => {
@@ -3770,12 +3825,13 @@ export async function executeTrades(opts?: {
     });
 
     if (!risk.allowed) {
-      console.log(`[RISK_REJECTED] ${signal.symbol} ${side}: ${risk.reason}`);
+      const riskReason = String(risk.reason);
+      console.log(`[RISK_REJECTED] ${signal.symbol} ${side}: ${riskReason}`);
 
       auditReject(
         signal.symbol,
         "RISK_ENGINE",
-        String(risk.reason),
+        riskReason,
         {
           signalId: signal.id,
           confidence: signal.confidence,
@@ -3786,6 +3842,14 @@ export async function executeTrades(opts?: {
           },
         },
       );
+
+      if (
+        side === "buy" &&
+        openTrades.length >= 3 &&
+        /max[_ ]open[_ ]positions/i.test(riskReason)
+      ) {
+        await recordCapacityObservation(signal, price, riskReason, openTrades);
+      }
 
       continue;
     }
@@ -4121,6 +4185,7 @@ export async function runFullPipeline() {
 
     const executionResult = await executeTrades({
       skipNewEntries: circuitBreakerOpen,
+      pipelineRunId: runId,
     });
     trades = executionResult.opened;
     executionAudit = executionResult.audit;
