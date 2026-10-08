@@ -26,7 +26,6 @@ async function getEligibleSignals(supabase: ReturnType<typeof getServiceClient>)
     .from("composite_signals")
     .select("*")
     .gte("created_at", since)
-    .gte("confidence", MIN_CONFIDENCE)
     .eq("recommendation", "buy")
     .order("created_at", { ascending: false })
     .limit(MAX_AUDIT_SIGNALS);
@@ -86,6 +85,20 @@ Deno.serve(async (req) => {
       const symbol = String(signal.symbol);
       const confidence = Number(signal.confidence);
 
+      if (confidence < MIN_CONFIDENCE) {
+        auditEvents.push({
+          ts: new Date().toISOString(), symbol, signal_id: signalId,
+          stage: "QUALITY_GATE", decision: "REJECT",
+          reason: "confidence_below_minimum", confidence,
+          details: { min_confidence: MIN_CONFIDENCE, research_mode: true },
+        });
+        await supabase.from("repeated_buy_research_ledger")
+          .update({ research_decision: "rejected", research_reason: "confidence_below_minimum_0.60" })
+          .eq("composite_signal_id", signalId)
+          .eq("research_decision", "pending_execution_audit");
+        continue;
+      }
+
       if (existingSignalIds.has(signalId)) {
         auditEvents.push({
           ts: new Date().toISOString(),
@@ -101,6 +114,10 @@ Deno.serve(async (req) => {
             research_mode: true,
           },
         });
+        await supabase.from("repeated_buy_research_ledger")
+          .update({ research_decision: "duplicate_signal", research_reason: "duplicate_composite_signal_already_has_trade" })
+          .eq("composite_signal_id", signalId)
+          .eq("research_decision", "pending_execution_audit");
         continue;
       }
 
@@ -152,10 +169,28 @@ Deno.serve(async (req) => {
         if (tradeError) throw new Error(tradeError.message);
 
         opened.push(trade);
+        await supabase.from("repeated_buy_research_ledger")
+          .update({
+            research_decision: "opened",
+            research_reason: "paper trade opened for eligible BUY",
+            trade_id: trade.id,
+            entry_at: trade.created_at ?? new Date().toISOString(),
+            entry_price: trade.entry_price ?? price,
+            entry_quantity: trade.quantity ?? quantity,
+            entry_notional: Number(trade.entry_price ?? price) * Number(trade.quantity ?? quantity),
+            entry_fee: Number(trade.entry_fee ?? 0),
+          })
+          .eq("composite_signal_id", signalId)
+          .in("research_decision", ["pending_execution_audit", "pending"]);
         existingSignalIds.add(signalId);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         errors.push({ signal_id: signalId, symbol, error: message });
+
+        await supabase.from("repeated_buy_research_ledger")
+          .update({ research_decision: "execution_error", research_reason: message })
+          .eq("composite_signal_id", signalId)
+          .eq("research_decision", "pending_execution_audit");
 
         const event = auditEvents[auditEvents.length - 1];
         if (event?.signal_id === signalId) {
@@ -166,6 +201,71 @@ Deno.serve(async (req) => {
             error: message,
           };
         }
+      }
+    }
+
+    // Mirror realized trade accounting into the observational ledger.
+    const { data: ledgerTrades } = await supabase.from("repeated_buy_research_ledger")
+      .select("id,trade_id").not("trade_id", "is", null).limit(1000);
+    for (const item of ledgerTrades ?? []) {
+      const { data: trade } = await supabase.from("trades")
+        .select("id,status,entry_price,quantity,created_at,closed_at,exit_price,gross_pnl,net_pnl,entry_fee,exit_fee,total_fees")
+        .eq("id", item.trade_id).maybeSingle();
+      if (trade) await supabase.from("repeated_buy_research_ledger").update({
+        entry_at: trade.created_at,
+        entry_price: trade.entry_price,
+        entry_quantity: trade.quantity,
+        entry_notional: Number(trade.entry_price ?? 0) * Number(trade.quantity ?? 0),
+        entry_fee: Number(trade.entry_fee ?? 0),
+        exit_at: trade.closed_at,
+        exit_price: trade.exit_price,
+        gross_pnl: trade.gross_pnl,
+        total_fees: trade.total_fees,
+        net_pnl: trade.net_pnl,
+      }).eq("id", item.id);
+    }
+
+    // Fixed-horizon markouts: first executor run at/after each horizon, priced from Binance.
+    const { data: dueRows } = await supabase.from("repeated_buy_research_ledger")
+      .select("id,symbol,signal_price,observed_at,limited_position_decision,markout_15m_at,markout_1h_at,markout_4h_at,markout_24h_at,markout_72h_at")
+      .eq("recommendation", "buy")
+      .lt("observed_at", new Date(Date.now() - 15 * 60 * 1000).toISOString())
+      .limit(500);
+    const priceCache = new Map<string, number>();
+    for (const row of dueRows ?? []) {
+      const age = Date.now() - new Date(row.observed_at).getTime();
+      const horizons = [
+        { ms: 15 * 60 * 1000, col: "15m", done: row.markout_15m_at },
+        { ms: 60 * 60 * 1000, col: "1h", done: row.markout_1h_at },
+        { ms: 4 * 60 * 60 * 1000, col: "4h", done: row.markout_4h_at },
+        { ms: 24 * 60 * 60 * 1000, col: "24h", done: row.markout_24h_at },
+        { ms: 72 * 60 * 60 * 1000, col: "72h", done: row.markout_72h_at },
+      ];
+      const due = horizons.filter((h) => age >= h.ms && !h.done);
+      if (!due.length) continue;
+      try {
+        let price = priceCache.get(String(row.symbol));
+        if (price === undefined) {
+          price = await getCurrentPrice(String(row.symbol));
+          priceCache.set(String(row.symbol), price);
+        }
+        const base = Number(row.signal_price);
+        if (!Number.isFinite(base) || base <= 0) continue;
+        const patch: Record<string, unknown> = {};
+        for (const h of due) {
+          const prefix = h.col === "15m" ? "markout_15m" : h.col === "1h" ? "markout_1h" : h.col === "4h" ? "markout_4h" : h.col === "24h" ? "markout_24h" : "markout_72h";
+          const pct = ((price / base) - 1) * 100;
+          patch[prefix + "_price"] = price;
+          patch[prefix + "_at"] = new Date().toISOString();
+          patch[prefix + "_pct"] = pct;
+          if (row.limited_position_decision === "would_open") {
+            const lp = h.col === "15m" ? "limited_position_markout_15m" : h.col === "1h" ? "limited_position_markout_1h" : h.col === "4h" ? "limited_position_markout_4h" : h.col === "24h" ? "limited_position_markout_24h" : "limited_position_markout_72h";
+            patch[lp + "_pct"] = pct;
+          }
+        }
+        await supabase.from("repeated_buy_research_ledger").update(patch).eq("id", row.id);
+      } catch (err) {
+        console.error("[REPEATED_BUY_LEDGER] markout update failed:", row.symbol, String(err));
       }
     }
 
@@ -190,12 +290,12 @@ Deno.serve(async (req) => {
         status: "completed",
         trades: opened.length,
         summary: {
-          eligible_buy_signals: eligibleSignals.length,
-          audited_eligible_signals: auditEvents.length,
-          uncovered_eligible_signals: Math.max(
-            0,
-            eligibleSignals.length - auditEvents.length,
-          ),
+          buy_signals_seen: eligibleSignals.length,
+          eligible_buy_signals: eligibleSignals.filter((s) => Number(s.confidence) >= MIN_CONFIDENCE).length,
+          audited_eligible_signals: auditEvents.filter((e) => Number(e.confidence) >= MIN_CONFIDENCE).length,
+          uncovered_eligible_signals: Math.max(0,
+            eligibleSignals.filter((s) => Number(s.confidence) >= MIN_CONFIDENCE).length -
+            auditEvents.filter((e) => Number(e.confidence) >= MIN_CONFIDENCE).length),
           opened: opened.length,
           skipped: auditEvents.filter((event) => event.decision === "SKIP").length,
           errors: errors.length,
