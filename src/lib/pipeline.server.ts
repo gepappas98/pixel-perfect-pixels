@@ -4028,7 +4028,32 @@ export async function executeTrades(opts?: {
     if (price == null) { console.error(`no price for ${signal.symbol}`); continue; }
 
     const signalPrice = Number(signal.price_at);
-    if (Number.isFinite(signalPrice) && signalPrice > 0 && Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT) continue;
+    if (
+      Number.isFinite(signalPrice) &&
+      signalPrice > 0 &&
+      Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT
+    ) {
+      const driftPct = Math.abs(price - signalPrice) / signalPrice;
+      if (!researchMode) {
+        continue;
+      }
+      auditAccept(
+        signal.symbol,
+        "ENTRY_GATE",
+        "research mode overrides final entry drift recheck",
+        {
+          signalId: signal.id,
+          confidence: signal.confidence,
+          details: {
+            signal_price: signalPrice,
+            current_price: price,
+            drift_pct: driftPct,
+            max_drift_pct: MAX_ENTRY_DRIFT_PCT,
+            research_mode: true,
+          },
+        },
+      );
+    }
 
   let side = signal.recommendation as "buy" | "sell";
 
