@@ -113,12 +113,30 @@ async function loadAudits(db: ReadOnlyDb, windowMin: number, runId?: string) {
   const { data, error } = await q;
   const runs = (data ?? []) as Row[];
   const audits = runs
-    .map((run) => ({
-      run,
-      audit: (run.result && typeof run.result === "object"
-        ? (run.result as Row)["execution_audit"]
-        : undefined) as Row | undefined,
-    }))
+    .map((run) => {
+      const result = run.result && typeof run.result === "object"
+        ? (run.result as Row)
+        : {};
+      // Canonical storage is result.execution_audit. Some orchestrator
+      // versions may additionally wrap executor output inside result.stages.
+      let audit = result["execution_audit"] as Row | undefined;
+      if (!audit && Array.isArray(result["stages"])) {
+        const stage = (result["stages"] as unknown[]).find((item) => {
+          if (!item || typeof item !== "object") return false;
+          const row = item as Row;
+          return String(row["name"] ?? row["stage"] ?? "").toLowerCase() === "trade-executor";
+        });
+        if (stage && typeof stage === "object") {
+          const stageRow = stage as Row;
+          const stageResult = stageRow["result"];
+          if (stageResult && typeof stageResult === "object") {
+            audit = (stageResult as Row)["execution_audit"] as Row | undefined;
+          }
+          if (!audit) audit = stageRow["execution_audit"] as Row | undefined;
+        }
+      }
+      return { run, audit };
+    })
     .filter((x) => x.audit);
   return { runs, audits, error: error?.message ?? null };
 }
