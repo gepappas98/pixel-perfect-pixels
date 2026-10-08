@@ -3297,7 +3297,7 @@ export async function executeTrades(opts?: {
 
   // ─── Global-risk cooldown gate ───
   const globalRiskState = await getGlobalRiskState();
-  if (globalRiskState.cooldown_until) {
+  if (!researchMode && globalRiskState.cooldown_until) {
     const until = new Date(globalRiskState.cooldown_until).getTime();
     if (Number.isFinite(until) && until > Date.now()) {
       const remaining = Math.ceil((until - Date.now()) / 60_000);
