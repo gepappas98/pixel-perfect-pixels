@@ -267,8 +267,11 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
         else cHold++;
       }
       const totalCouncil = cBuy + cSell + cHold + cAvoid;
+      const directionalCouncil = cBuy + cSell;
+      // HOLD and AVOID are non-directional for regime consensus.
+      // They must not dilute BUY-vs-SELL direction as if they were bearish votes.
       const councilConsensus =
-        totalCouncil > 0 ? (cBuy - cSell) / totalCouncil : 0;
+        directionalCouncil > 0 ? (cBuy - cSell) / directionalCouncil : 0;
 
       // ── Composite regime score ──
       const score =
@@ -327,8 +330,8 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
       if (Math.abs(councilConsensus) > 0.15) {
         reasons.push(
           councilConsensus > 0
-            ? `${cBuy}/${totalCouncil} council verdicts are BUY`
-            : `${cSell}/${totalCouncil} council verdicts are SELL`,
+            ? `${cBuy} BUY / ${cSell} SELL (${directionalCouncil} directional council verdicts)`
+            : `${cSell} SELL / ${cBuy} BUY (${directionalCouncil} directional council verdicts)`,
         );
       }
 
