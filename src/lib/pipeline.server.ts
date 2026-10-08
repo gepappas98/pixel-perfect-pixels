@@ -80,7 +80,8 @@ function resetWhaleSourceHealth() {
   for (const source of Object.keys(whaleSourceHealth) as WhaleSourceName[]) whaleSourceHealth[source] = { state: "empty", requests: 0, qualifying: 0, errors: 0 };
 }
 function whaleSourceSnapshot() { return JSON.parse(JSON.stringify(whaleSourceHealth)) as Record<WhaleSourceName, WhaleSourceHealth>; }
-type Row = Record<string, unknown> | null;\ntype ExecutionSignalForSnapshot = {
+type Row = Record<string, unknown> | null;
+type ExecutionSignalForSnapshot = {
   id: string;
   symbol: string;
   recommendation: string;
