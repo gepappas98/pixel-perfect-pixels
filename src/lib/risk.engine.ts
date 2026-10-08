@@ -18,7 +18,7 @@
 type Admin = Awaited<typeof import("@/integrations/supabase/client.server")["supabaseAdmin"]>;
 
 export const RISK_CONFIG = {
-  MAX_RISK_PER_TRADE_PCT: 0.0015,
+  MAX_RISK_PER_TRADE_PCT: 0.0020,
   MAX_PORTFOLIO_RISK_PCT: 0.012,
   DAILY_LOSS_LIMIT_PCT: 0.012,
   MAX_OPEN_POSITIONS: 10,
