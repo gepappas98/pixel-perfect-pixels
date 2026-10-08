@@ -38,8 +38,8 @@ export function SupportDeveloper() {
             Found Research Lab useful?
           </p>
           <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-            If this tool helped your trading or development workflow, consider
-            tipping the developer. Every sat counts. 🙏
+            If this research tool helped your analysis or development workflow, consider
+            supporting the developer. Every sat counts. 🙏
           </p>
 
           <div className="mt-2.5 flex flex-wrap items-center gap-2">
