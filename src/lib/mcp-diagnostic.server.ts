@@ -97,7 +97,7 @@ export function sourceMetadata() {
   const configuredRef =
     process.env["SUPABASE_PROJECT_ID"] ?? (configuredUrl ? new URL(configuredUrl).hostname.split(".")[0] : null);
   return {
-    app: "Trading Command Center (Pixel Perfect Pixels)",
+    app: "Research Lab (Pixel Perfect Pixels)",
     lovable_project_id: "6d1cd604-982a-4237-98b3-1276c19ca6f7",
     supabase_url: CANONICAL_SUPABASE_URL,
     supabase_project_ref: CANONICAL_SUPABASE_PROJECT_REF,
