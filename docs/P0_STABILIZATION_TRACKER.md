@@ -1,6 +1,6 @@
 # Trading Command Center — P0/P1 Stabilization Tracker
 
-Last updated: 2026-10-06 UTC — manual-trigger diagnostic
+Last updated: 2026-10-08 UTC — canonical runtime verification
 
 ## Operating rule
 
@@ -22,7 +22,7 @@ Hard constraints:
 
 ## P0 — Data plane / source of truth
 
-### P0.1 Canonical DB unification — DONE / VERIFY
+### P0.1 Canonical DB unification — DONE / RUNTIME VERIFIED
 - Canonical DB: `yckewtpfttvwiptmmrfq`.
 - Legacy DB: `gbbrmzstuhdizfvabjvz`.
 - Legacy cron writers were frozen.
@@ -31,14 +31,15 @@ Hard constraints:
 - Repo env/config was switched to canonical.
 - Migration: `20261006090500_unify_council_source_id_text.sql`.
 - Commit: `2df8d7a121981a6030000849c094676a5598e687`.
-- Remaining verification: Dashboard / Shadow / DB must show the same current canonical `pipeline_run_id`, timestamps and counts.
+- Runtime verification 2026-10-08: canonical `trading-pipeline-orchestrator` is writing current `pipeline_runs`; latest observed run `b95945c7-01c5-44e6-8e44-5e3b74439eab` completed successfully at 15:24:21 UTC. Dashboard visual alignment remains a publish/visual verification item.
 
-### P0.2 Freshness / mapping — OPEN / VERIFY (runtime alignment)
+### P0.2 Freshness / mapping — DONE / RUNTIME VERIFIED (2026-10-08)
 - Prediction selection made directional, volume-aware and probability-bounded.
 - Council freshness now uses actual AI/input timestamps.
 - Panel uses `source_created_at`.
 - Commits: `e77c0d0`, `650d3ee`, `b306a51`.
-- Do not retune strategy until clean observations are collected.
+- Clean canonical cycle verified 2026-10-08: latest prediction snapshot `2026-10-08T15:24:12.974Z` and latest council `source_created_at=2026-10-08T15:24:10.520Z` were produced within the same successful canonical run window. Freshness gates remain intact; no stale promotion observed in this cycle.
+- Do not retune strategy until additional clean observations are collected.
 
 ---
 
@@ -64,16 +65,14 @@ Hard constraints:
 5. **Runtime verified:** canonical scheduler continues to produce successful 10-minute runs; latest observed run completed in ~20.3s with all stages HTTP 200.
 6. Continue monitoring manual + cron overlap; no duplicate run pattern observed in the latest scheduled sequence.
 
-### CRITICAL — scheduler path still needs consolidation
+### Scheduler path — CANONICALIZED / VERIFY PUBLISH
 The current canonical pg_cron state was re-checked:
 - active job: `trading-pipeline-orchestrator`, schedule `*/10 * * * *`
 - inactive legacy job: `trading-pipeline-every-15-min`
 - `pipeline_settings.id=1` currently has `interval_minutes=10`
 - the dashboard offers 2/5/10-minute choices, but the canonical DB scheduler is still at 10 minutes.
 
-Separately, the application route `/api/public/cron` still contains the legacy `runFullPipeline()` path. This must still be consolidated so there is no second pipeline implementation.
-
-This is NOT yet considered fixed.
+The application route `/api/public/cron` was disabled in commit `c32d591550375f974ee412ff881134d59f6c87f1` with HTTP 410. The legacy `runFullPipeline()` writer is therefore no longer reachable through that route. Remaining verification is deployment/published-route confirmation.
 
 Target architecture:
 **Manual + Auto → canonical `trading-pipeline-orchestrator` → one canonical `pipeline_runs` source of truth.**
@@ -99,9 +98,9 @@ Previously verified:
 
 Status: the ambiguity logic itself is already correct in the legacy/server implementation: ambiguous 1h candles are inspected 5m first, then 15m; a lower-timeframe candle touching both TP and SL immediately returns `ambiguous`, and `ambiguous` has no PnL/exit price.
 
-**Canonical-path finding (2026-10-06):** the active production orchestrator previously had no variant-resolver stage, and the canonical `signal-combiner` does not currently produce `strategy_variant_signals`. The table currently contains 384 historical `open` rows, with no recent `ambiguous` outcomes. We therefore must NOT mass-resolve those 384 historical rows.
+**Canonical-path finding (updated 2026-10-08):** the canonical `signal-combiner` now produces fresh `strategy_variant_signals` BUY benchmark rows through idempotent `source_fingerprint` upserts. The latest observed fresh row was created at `2026-10-08T15:12:17.060Z`. We therefore must NOT mass-resolve the legacy sample.
 
-A production `variant-resolver` Edge Function was deployed with a hard historical cutoff (`2026-10-06T09:57:00Z`) so it cannot touch the old sample. It was added as a canonical stage after signal-combiner and verified in run `f3131dbe-43db-4ba1-9916-199f2d9b1138`: stage HTTP 200, `resolved=0`, `skipped_historical=true`. This confirms the safety boundary, but P0.4 remains OPEN until a canonical producer creates fresh variant rows and at least one fresh row is resolved/observed.
+A production `variant-resolver` Edge Function is deployed with a hard historical cutoff (`2026-10-06T09:57:00Z`) and is a canonical stage after signal-combiner. Runtime verification 2026-10-08: `fresh_72h_due=0`; `legacy_72h_excluded=342`. This confirms the safety boundary. P0.4 remains OPEN only for the first fresh 72h resolution/forensic candle verification.
 
 Next: wire the variant producer into the canonical path (without mass historical re-resolution), then validate fresh outcomes and the 5m→15m ambiguity rule.
 
@@ -172,11 +171,11 @@ Reason: stabilization and clean data collection come first.
 ## Current execution order
 
 **NOW**
-1. **P0.2 — Fresh Council input:** keep the 30-minute freshness gate intact and verify the external Whale Radar feed produces a genuinely fresh decision. Current canonical `council-sync` safely returns `synced=0` when the external feed is stale.
-2. **P0.4 — Fresh canonical variant observation:** canonical producer is active, but the latest `strategy_variant_signals` row is still old and there were 0 new variant rows in the last 30 minutes. Do not mass-resolve historical rows.
-3. Verify one or more clean canonical cycles after fresh Council/variant data appears. Latest scheduled cycles are completing successfully; Council remains stale upstream.
-4. Verify manual Run Pipeline UI diagnostics in the published frontend if not already visually confirmed.
-5. Verify executor/risk behavior and resolver 5m→15m ambiguity on a fresh row.
+1. **P0.4 — Fresh canonical variant observation:** producer is active; latest fresh variant observed 2026-10-08 15:12 UTC. Wait for first fresh 72h due row, then verify resolver trigger + Binance candle outcome.
+2. Verify manual Run Pipeline UI diagnostics and the disabled `/api/public/cron` route in the published frontend.
+3. Verify Dashboard / Shadow / DB alignment on the same canonical run.
+4. Verify executor/risk behavior and resolver 5m→15m ambiguity on a fresh resolved row.
+5. Then complete P1.4 observability cleanup.
 
 **THEN**
 6. Verify canonical Dashboard/Shadow/DB alignment.
