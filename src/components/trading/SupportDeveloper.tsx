@@ -35,7 +35,7 @@ export function SupportDeveloper() {
         <span className="text-2xl leading-none">☕</span>
         <div className="min-w-0 flex-1">
           <p className="text-xs font-semibold text-accent">
-            Found Trading Command Center useful?
+            Found Research Lab useful?
           </p>
           <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
             If this tool helped your trading or development workflow, consider
