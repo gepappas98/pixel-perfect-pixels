@@ -1002,34 +1002,60 @@ Interpretation rules:
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-6">
-      {/* ───────── Research early-warning banner ───────── */}
+      {/* ───────── Research alerts / data-readiness banner ───────── */}
       {researchAlerts.length > 0 && (
         <div className="sticky top-0 z-50 rounded border-2 border-amber-500 bg-amber-50 p-4 shadow-lg">
           <div className="flex items-start gap-3">
-            <div className="text-2xl leading-none">🚨</div>
+            <div className="text-2xl leading-none">
+              {researchAlerts.some((a) => a.alert_type === "WHALE_WAVE_REGIME_DATA_READY") ? "🧭" : "🚨"}
+            </div>
             <div className="min-w-0 flex-1">
-              <div className="text-lg font-bold text-amber-900">EARLY WARNING — NEWS → WHALE</div>
-              <div className="mt-1 text-xs font-medium text-amber-800">Research trigger · not a trading signal</div>
+              <div className="text-lg font-bold text-amber-900">
+                {researchAlerts.some((a) => a.alert_type === "WHALE_WAVE_REGIME_DATA_READY")
+                  ? "RESEARCH DATA READY — RESUME WHALE-WAVE STUDY"
+                  : "EARLY WARNING — NEWS → WHALE"}
+              </div>
+              <div className="mt-1 text-xs font-medium text-amber-800">
+                {researchAlerts.some((a) => a.alert_type === "WHALE_WAVE_REGIME_DATA_READY")
+                  ? "Research milestone · enough data accumulated · not a trading signal"
+                  : "Research trigger · not a trading signal"}
+              </div>
               <div className="mt-3 space-y-2">
                 {researchAlerts.map((a) => {
                   const e = a.evidence ?? {};
+                  const ready = a.alert_type === "WHALE_WAVE_REGIME_DATA_READY";
+                  const total = Number(e.total_usable_waves);
+                  const bear = Number(e.bear_waves);
+                  const sideways = Number(e.sideways_waves);
+                  const bull = Number(e.bull_waves);
+                  const coverage = Number(e.one_hour_price_coverage_pct);
                   const latency = Number(e.latency_min);
                   const magnitude = Number(e.whale_delta_pp);
                   const shock = Number(e.shock_score);
                   return (
                     <div key={a.id} className="rounded border border-amber-300 bg-white/70 p-3">
                       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-amber-950">
-                        <span className="font-mono font-bold">{a.asset ?? "MARKET"}</span>
+                        <span className="font-mono font-bold">{ready ? "WHALE-WAVE / REGIME" : (a.asset ?? "MARKET")}</span>
                         {a.source && <span>{a.source}</span>}
                         <span className="font-semibold uppercase">{a.severity}</span>
                       </div>
                       <div className="mt-1 text-sm text-amber-950">{a.message}</div>
-                      <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-amber-800">
-                        {Number.isFinite(shock) && <span>Shock: {shock >= 0 ? "+" : ""}{shock.toFixed(3)}</span>}
-                        {Number.isFinite(latency) && <span>Whale latency: {latency.toFixed(1)} min</span>}
-                        {Number.isFinite(magnitude) && <span>Whale change: {magnitude >= 0 ? "+" : ""}{magnitude.toFixed(1)} pp</span>}
-                        <span>Detected: {new Date(a.detected_at).toLocaleTimeString()}</span>
-                      </div>
+                      {ready ? (
+                        <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-amber-800">
+                          {Number.isFinite(total) && <span>Usable waves: {total}</span>}
+                          {Number.isFinite(bear) && <span>Bear: {bear}</span>}
+                          {Number.isFinite(sideways) && <span>Sideways: {sideways}</span>}
+                          {Number.isFinite(bull) && <span>Bull: {bull}</span>}
+                          {Number.isFinite(coverage) && <span>1h price coverage: {coverage.toFixed(1)}%</span>}
+                        </div>
+                      ) : (
+                        <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-amber-800">
+                          {Number.isFinite(shock) && <span>Shock: {shock >= 0 ? "+" : ""}{shock.toFixed(3)}</span>}
+                          {Number.isFinite(latency) && <span>Whale latency: {latency.toFixed(1)} min</span>}
+                          {Number.isFinite(magnitude) && <span>Whale change: {magnitude >= 0 ? "+" : ""}{magnitude.toFixed(1)} pp</span>}
+                          <span>Detected: {new Date(a.detected_at).toLocaleTimeString()}</span>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
