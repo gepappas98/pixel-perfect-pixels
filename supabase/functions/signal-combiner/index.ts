@@ -608,12 +608,17 @@ Deno.serve(async (req) => {
         council ? "council" : null,
         mtf.primary || mtf.fast || mtf.trend ? "mtf" : null,
       ].filter((tag): tag is string => Boolean(tag));
+      // Council rows are refreshed frequently (often every synthesis cycle).
+      // Their row ID is provenance, not a new market event. Including council?.id
+      // here minted a new composite signal and paper trade for unchanged market
+      // evidence whenever the council produced a fresh row. Keep the latest
+      // council_signal_id on the upserted row, but do not let ID churn alone
+      // create a new executable opportunity.
       const signalFingerprint = [
         symbol,
         whale?.id ?? "",
         indicator?.id ?? "",
         prediction?.id ?? "",
-        council?.id ?? "",
         productionRegimeLabel,
         gate.recommendation,
       ].join("|");
