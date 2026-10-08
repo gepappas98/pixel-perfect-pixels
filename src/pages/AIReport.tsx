@@ -705,6 +705,14 @@ export default function AIReport() {
             ? ` Uncovered symbols: ${uncoveredSymbols.join(", ")}.`
             : "");
       } else if (
+        aiRiskAllowed > 0 &&
+        openedTrades === 0 &&
+        openedFromAudit === 0
+      ) {
+        executionStatus = "critical";
+        executionIssue =
+          "AI Risk allowed one or more signals but execution opened zero trades.";
+      } else if (
         eligibleBuySignals.length > 0 &&
         openedTrades === 0 &&
         openedFromAudit === 0
@@ -713,14 +721,6 @@ export default function AIReport() {
         executionIssue =
           "Eligible BUY signals exist but no paper trade was opened. " +
           "Check AI Risk, execution gates and trade INSERT.";
-      } else if (
-        aiRiskAllowed > 0 &&
-        openedTrades === 0 &&
-        openedFromAudit === 0
-      ) {
-        executionStatus = "critical";
-        executionIssue =
-          "AI Risk allowed one or more signals but execution opened zero trades.";
       }
 
       // ── 9. Build execution health object ─────────────────────
