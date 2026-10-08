@@ -116,8 +116,10 @@ export function computeRegimeSnapshot(input: {
     else if (v === "SELL") cSell++;
   }
   const totalCouncil = seenCouncil.size;
+  const directionalCouncil = cBuy + cSell;
+  // HOLD and AVOID are non-directional for regime consensus.
   const councilConsensus =
-    totalCouncil > 0 ? (cBuy - cSell) / totalCouncil : 0;
+    directionalCouncil > 0 ? (cBuy - cSell) / directionalCouncil : 0;
 
   const score =
     whaleNet * 0.3 +
