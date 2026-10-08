@@ -98,7 +98,7 @@ export function CronHealthPanel() {
               </span>
             </div>
             <p className="mt-2 text-[10px] text-muted-foreground">
-              Started at {formatTime(latestRun.started_at)} · {latestRun.job_name}
+              Started at {formatTime(latestRun.started_at)} · {latestRun.trigger ?? "unknown"} · {latestRun.source ?? "unknown"} · {latestRun.job_name}
             </p>
           </div>
         )}
@@ -110,7 +110,7 @@ export function CronHealthPanel() {
               <span className="font-mono text-sm font-semibold text-foreground">{timeAgo(lastSuccess.completed_at)}</span>
             </div>
             <p className="mt-2 text-[10px] text-muted-foreground">
-              Completed at {formatTime(lastSuccess.completed_at)} · duration {formatDuration(lastSuccess.duration_ms)}
+              Completed at {formatTime(lastSuccess.completed_at)} · duration {formatDuration(lastSuccess.duration_ms)} · {lastSuccess.trigger ?? "unknown"} · {lastSuccess.source ?? "unknown"}
             </p>
           </div>
         )}
