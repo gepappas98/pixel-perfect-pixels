@@ -27,6 +27,7 @@ function assetsIn(text:string,assets:string[]){return assets.filter(a=>(ASSET_NA
 async function fetchText(url:string){const r=await fetch(url,{headers:{"User-Agent":"TradingCommandCenter/1.0 research-bot"},signal:AbortSignal.timeout(12000)});if(!r.ok)throw new Error(url+" HTTP "+r.status);return await r.text();}
 function parseFeed(xml:string,source:string){const blocks=[...xml.matchAll(/<(item|entry)(?:\s[^>]*)?>([\s\S]*?)<\/(item|entry)>/gi)].map(m=>m[2]!);return blocks.map(b=>({source,title:tag(b,"title"),url:tag(b,"link")||(b.match(/<link[^>]+href="([^"]+)"/i)?.[1]??""),published:tag(b,"pubDate")||tag(b,"published")||tag(b,"updated"),description:tag(b,"description")||tag(b,"summary")})).filter(x=>x.title);}
 async function redditRecent(){
+  const failures:string[]=[];
   try{
     const raw=await fetchText("https://www.reddit.com/r/CryptoCurrency/new.json?limit=100&raw_json=1");
     const j=JSON.parse(raw);
@@ -35,10 +36,15 @@ async function redditRecent(){
       return {source:"reddit",title:String(d.title??""),description:String(d.selftext??""),url:String(d.url??(d.permalink?"https://www.reddit.com"+d.permalink:"")),published:d.created_utc?new Date(Number(d.created_utc)*1000).toISOString():""};
     }).filter((x:any)=>x.title).slice(0,100);
     if(items.length)return items;
-  }catch{}
+    failures.push("json returned 0 items");
+  }catch(e){failures.push("json: "+(e instanceof Error?e.message:String(e)));}
   try{
-    return parseFeed(await fetchText("https://www.reddit.com/r/CryptoCurrency/new.rss?limit=100"),"reddit").slice(0,100);
-  }catch{return [];}
+    const items=parseFeed(await fetchText("https://www.reddit.com/r/CryptoCurrency/new.rss?limit=100"),"reddit").slice(0,100);
+    if(items.length)return items;
+    failures.push("rss returned 0 items");
+  }catch(e){failures.push("rss: "+(e instanceof Error?e.message:String(e)));}
+  console.warn("[SENTIMENT][REDDIT] unavailable: "+failures.join(" | "));
+  return [];
 }
 function eventType(text:string){const t=text.toLowerCase();if(/etf|sec|regulat|law|senate|congress|mica|ban/.test(t))return"regulation";if(/hack|exploit|breach|stolen|attack/.test(t))return"security";if(/listing|delist|exchange|binance|coinbase/.test(t))return"exchange";if(/upgrade|fork|mainnet|network/.test(t))return"network";if(/partnership|integrat|adoption/.test(t))return"adoption";if(/liquidat|funding|whale|flow/.test(t))return"market";return"other";}
 async function fp(s:string){const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(s));return Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,"0")).join("");}
