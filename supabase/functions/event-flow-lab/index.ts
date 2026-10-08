@@ -28,18 +28,16 @@ async function fetchText(url:string){const r=await fetch(url,{headers:{"User-Age
 function parseFeed(xml:string,source:string){const blocks=[...xml.matchAll(/<(item|entry)(?:\s[^>]*)?>([\s\S]*?)<\/(item|entry)>/gi)].map(m=>m[2]!);return blocks.map(b=>({source,title:tag(b,"title"),url:tag(b,"link")||(b.match(/<link[^>]+href="([^"]+)"/i)?.[1]??""),published:tag(b,"pubDate")||tag(b,"published")||tag(b,"updated"),description:tag(b,"description")||tag(b,"summary")})).filter(x=>x.title);}
 async function redditRecent(){
   try{
-    const raw=await fetchText("https://www.reddit.com/r/CryptoCurrency/new.json?limit=100");
+    const raw=await fetchText("https://www.reddit.com/r/CryptoCurrency/new.json?limit=100&raw_json=1");
     const j=JSON.parse(raw);
-    return (j?.data?.children??[]).map((x:any)=>{
+    const items=(j?.data?.children??[]).map((x:any)=>{
       const d=x?.data??{};
-      return {
-        source:"reddit",
-        title:String(d.title??""),
-        description:String(d.selftext??""),
-        url:String(d.url??(d.permalink?"https://www.reddit.com"+d.permalink:"")),
-        published:d.created_utc?new Date(Number(d.created_utc)*1000).toISOString():""
-      };
+      return {source:"reddit",title:String(d.title??""),description:String(d.selftext??""),url:String(d.url??(d.permalink?"https://www.reddit.com"+d.permalink:"")),published:d.created_utc?new Date(Number(d.created_utc)*1000).toISOString():""};
     }).filter((x:any)=>x.title).slice(0,100);
+    if(items.length)return items;
+  }catch{}
+  try{
+    return parseFeed(await fetchText("https://www.reddit.com/r/CryptoCurrency/new.rss?limit=100"),"reddit").slice(0,100);
   }catch{return [];}
 }
 function eventType(text:string){const t=text.toLowerCase();if(/etf|sec|regulat|law|senate|congress|mica|ban/.test(t))return"regulation";if(/hack|exploit|breach|stolen|attack/.test(t))return"security";if(/listing|delist|exchange|binance|coinbase/.test(t))return"exchange";if(/upgrade|fork|mainnet|network/.test(t))return"network";if(/partnership|integrat|adoption/.test(t))return"adoption";if(/liquidat|funding|whale|flow/.test(t))return"market";return"other";}
@@ -78,12 +76,13 @@ async function collect(db:any){
   const flowRows=await Promise.all(assets.map(async asset=>{const {data,error}=await db.from("whale_alerts").select("direction,usd_value").eq("symbol",asset).gte("created_at",new Date(now.getTime()-900000).toISOString()).limit(500);if(error)return null;let buy=0,sell=0;for(const r of data??[]){const v=Number(r.usd_value)||0;if(r.direction==="accumulation")buy+=v;else if(r.direction==="distribution")sell+=v;}const total=buy+sell,s=total?Math.max(-1,Math.min(1,(buy-sell)/total)):0;return{asset,bucket_at:observedAt,sample_size:(data??[]).length,buy_usd:buy,sell_usd:sell,total_usd:total,flow_score:s,dominant_state:s>.05?"accumulation":s<-.05?"distribution":"neutral",source:"whale_alerts_15m"};}));
 
   const redditItems=await redditRecent();
-  const sentimentRows:any[]=assets.map(asset=>{
+  const sentimentRows:any[]=assets.flatMap(asset=>{
     const items=redditItems.filter(item=>assetsIn(item.title+" "+item.description,[asset]).length>0).slice(0,25);
+    if(!items.length)return [];
     let bull=0,bear=0,neutral=0;
     for(const item of items){const s=score(item.title+" "+item.description);if(s.score>.15)bull++;else if(s.score<-.15)bear++;else neutral++;}
     const total=items.length;
-    return{asset,observed_at:observedAt,source:"reddit-cryptocurrency-rss",mention_count:total,unique_items:total,bullish_count:bull,bearish_count:bear,neutral_count:neutral,sentiment_score:total?(bull-bear)/total:0,raw:{items:items.slice(0,10).map(x=>({title:x.title,url:x.url,published:x.published}))}};
+    return[{asset,observed_at:observedAt,source:"reddit-cryptocurrency-rss",mention_count:total,unique_items:total,bullish_count:bull,bearish_count:bear,neutral_count:neutral,sentiment_score:total?(bull-bear)/total:0,raw:{items:items.slice(0,10).map(x=>({title:x.title,url:x.url,published:x.published}))}}];
   });
 
   const newsRows:any[]=[];
