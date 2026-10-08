@@ -255,7 +255,7 @@ export function WhalePanel() {
 
                 {(lastContext.sentiment_context?.available === false || lastContext.news_context?.available === false) && (
                   <div className="mt-1 text-[8px] font-mono text-muted-foreground">
-                    Sentiment/news history not yet persisted — shown as unavailable, never inferred.
+                    Sentiment/news data is unavailable in the current transition window — shown as unavailable, never inferred.
                   </div>
                 )}
               </div>
