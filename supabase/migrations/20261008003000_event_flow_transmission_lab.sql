@@ -214,55 +214,42 @@ begin
        order by abs(extract(epoch from (p0.observed_at-e.event_at))) limit 1) p0
     from events e
   ),
-  upserted as (
-    insert into public.event_flow_transmissions (
-      asset, source_kind, source_id, event_at, shock_score, event_sentiment,
-      baseline_flow_score, flow_15m, flow_30m, flow_60m,
-      flow_delta_15m, flow_delta_30m, flow_delta_60m,
-      flow_velocity_0_15, flow_velocity_15_30, flow_acceleration,
-      price_return_15m, price_return_30m, price_return_1h,
-      price_return_4h, price_return_24h, transmission_class, data_quality, updated_at
+  insert into public.event_flow_transmissions (
+    asset, source_kind, source_id, event_at, shock_score, event_sentiment,
+    baseline_flow_score, flow_15m, flow_30m, flow_60m,
+    flow_delta_15m, flow_delta_30m, flow_delta_60m,
+    flow_velocity_0_15, flow_velocity_15_30, flow_acceleration,
+    price_return_15m, price_return_30m, price_return_1h,
+    price_return_4h, price_return_24h, transmission_class, data_quality, updated_at
     )
-    select
-      asset, source_kind, source_id, event_at, shock_score, event_sentiment,
-      baseline_flow_score, flow_15m, flow_30m, flow_60m,
-      case when baseline_flow_score is not null and flow_15m is not null then flow_15m-baseline_flow_score end,
-      case when baseline_flow_score is not null and flow_30m is not null then flow_30m-baseline_flow_score end,
-      case when baseline_flow_score is not null and flow_60m is not null then flow_60m-baseline_flow_score end,
-      case when baseline_flow_score is not null and flow_15m is not null then (flow_15m-baseline_flow_score)/0.25 end,
-      case when flow_15m is not null and flow_30m is not null then (flow_30m-flow_15m)/0.25 end,
-      case when baseline_flow_score is not null and flow_15m is not null and flow_30m is not null
-        then ((flow_30m-flow_15m)/0.25)-((flow_15m-baseline_flow_score)/0.25) end,
-      case when p0 is not null and p15 is not null then (p15/p0-1)*100 end,
-      case when p0 is not null and p30 is not null then (p30/p0-1)*100 end,
-      case when p0 is not null and p60 is not null then (p60/p0-1)*100 end,
-      case when p0 is not null and p240 is not null then (p240/p0-1)*100 end,
-      case when p0 is not null and p1440 is not null then (p1440/p0-1)*100 end,
-      case
-        when baseline_flow_score is null or flow_15m is null then 'insufficient_data'
-        when abs(flow_15m-baseline_flow_score) < 0.05 then 'no_flow_response'
-        when (flow_15m-baseline_flow_score) * event_sentiment > 0 then 'flow_followed'
-        else 'flow_diverged'
-      end,
-      case
-        when p0 is null or baseline_flow_score is null then 'partial'
-        when p1440 is null then 'developing'
-        else 'complete'
-      end,
-      now()
+  select
+    asset, source_kind, source_id, event_at, shock_score, event_sentiment,
+    baseline_flow_score, flow_15m, flow_30m, flow_60m,
+    case when baseline_flow_score is not null and flow_15m is not null then flow_15m-baseline_flow_score end,
+    case when baseline_flow_score is not null and flow_30m is not null then flow_30m-baseline_flow_score end,
+    case when baseline_flow_score is not null and flow_60m is not null then flow_60m-baseline_flow_score end,
+    case when baseline_flow_score is not null and flow_15m is not null then (flow_15m-baseline_flow_score)/0.25 end,
+    case when flow_15m is not null and flow_30m is not null then (flow_30m-flow_15m)/0.25 end,
+    case when baseline_flow_score is not null and flow_15m is not null and flow_30m is not null
+      then ((flow_30m-flow_15m)/0.25)-((flow_15m-baseline_flow_score)/0.25) end,
+    case when p0 is not null and p15 is not null then (p15/p0-1)*100 end,
+    case when p0 is not null and p30 is not null then (p30/p0-1)*100 end,
+    case when p0 is not null and p60 is not null then (p60/p0-1)*100 end,
+    case when p0 is not null and p240 is not null then (p240/p0-1)*100 end,
+    case when p0 is not null and p1440 is not null then (p1440/p0-1)*100 end,
+    case
+      when baseline_flow_score is null or flow_15m is null then 'insufficient_data'
+      when abs(flow_15m-baseline_flow_score) < 0.05 then 'no_flow_response'
+      when (flow_15m-baseline_flow_score) * event_sentiment > 0 then 'flow_followed'
+      else 'flow_diverged'
+    end,
+    case
+      when p0 is null or baseline_flow_score is null then 'partial'
+      when p1440 is null then 'developing'
+      else 'complete'
+    end,
+    now()
     from calc
-    on conflict (source_kind, source_id) do update set
-      baseline_flow_score=excluded.baseline_flow_score,
-      flow_15m=excluded.flow_15m, flow_30m=excluded.flow_30m, flow_60m=excluded.flow_60m,
-      flow_delta_15m=excluded.flow_delta_15m, flow_delta_30m=excluded.flow_delta_30m, flow_delta_60m=excluded.flow_delta_60m,
-      flow_velocity_0_15=excluded.flow_velocity_0_15, flow_velocity_15_30=excluded.flow_velocity_15_30,
-      flow_acceleration=excluded.flow_acceleration,
-      price_return_15m=excluded.price_return_15m, price_return_30m=excluded.price_return_30m,
-      price_return_1h=excluded.price_return_1h, price_return_4h=excluded.price_return_4h,
-      price_return_24h=excluded.price_return_24h,
-      transmission_class=excluded.transmission_class, data_quality=excluded.data_quality, updated_at=now()
-    returning 1
-  )
   select count(*) into v_count from upserted;
 
   return v_count;
