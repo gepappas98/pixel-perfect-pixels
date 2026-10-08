@@ -80,7 +80,29 @@ function resetWhaleSourceHealth() {
   for (const source of Object.keys(whaleSourceHealth) as WhaleSourceName[]) whaleSourceHealth[source] = { state: "empty", requests: 0, qualifying: 0, errors: 0 };
 }
 function whaleSourceSnapshot() { return JSON.parse(JSON.stringify(whaleSourceHealth)) as Record<WhaleSourceName, WhaleSourceHealth>; }
-type Row = Record<string, unknown> | null;
+type Row = Record<string, unknown> | null;\ntype ExecutionSignalForSnapshot = {
+  id: string;
+  symbol: string;
+  recommendation: string;
+  confidence: number;
+  price_at?: number | null;
+  created_at?: string | null;
+  reasoning?: string | null;
+  regime_label?: string | null;
+  entry_state?: "WATCH" | "ENTRY_READY" | "INVALIDATED" | null;
+  entry_trigger?: string | null;
+  entry_min?: number | null;
+  entry_max?: number | null;
+  stop_loss?: number | null;
+  take_profit_1?: number | null;
+  take_profit_2?: number | null;
+  position_multiplier?: number | null;
+  source_tags?: string[] | null;
+  whale_alert_id?: string | null;
+  indicator_snapshot_id?: string | null;
+  prediction_snapshot_id?: string | null;
+  council_signal_id?: string | null;
+};
 type CouncilVerdict = "BUY" | "SELL" | "HOLD" | "AVOID";
 type SignalDir = "bullish" | "bearish" | "neutral";
 
@@ -393,6 +415,131 @@ async function admin(): Promise<Admin> {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   return supabaseAdmin;
 }
+
+async function persistEntryContextSnapshot(
+  db: Admin,
+  params: {
+    tradeId: string;
+    signal: ExecutionSignalForSnapshot;
+    entryPrice: number;
+    quantity: number;
+    stopLoss: number;
+    takeProfit: number;
+    mode: string;
+    tradeSession: MarketSession;
+    risk: Record<string, unknown>;
+    aiRisk: AIRiskDecision;
+    execCtx: unknown;
+    hotSymbols: string[];
+    prices: Map<string, number>;
+    openTradesBefore: OpenTradeForRotation[];
+  },
+): Promise<void> {
+  const { signal, tradeId } = params;
+  try {
+    const [
+      compositeRes,
+      whaleRes,
+      indicatorRes,
+      predictionRes,
+      councilRes,
+      strategyRes,
+    ] = await Promise.all([
+      db.from("composite_signals").select("*").eq("id", signal.id).maybeSingle(),
+      signal.whale_alert_id
+        ? db.from("whale_alerts").select("*").eq("id", signal.whale_alert_id).maybeSingle()
+        : Promise.resolve({ data: null, error: null }),
+      signal.indicator_snapshot_id
+        ? db.from("indicator_snapshots").select("*").eq("id", signal.indicator_snapshot_id).maybeSingle()
+        : Promise.resolve({ data: null, error: null }),
+      signal.prediction_snapshot_id
+        ? db.from("prediction_snapshots").select("*").eq("id", signal.prediction_snapshot_id).maybeSingle()
+        : Promise.resolve({ data: null, error: null }),
+      signal.council_signal_id
+        ? db.from("council_signals").select("*").eq("id", signal.council_signal_id).maybeSingle()
+        : Promise.resolve({ data: null, error: null }),
+      db.from("strategy_config").select("*").eq("id", 1).maybeSingle(),
+    ]);
+
+    const additionalIndicators = await db
+      .from("indicator_snapshots")
+      .select("*")
+      .eq("symbol", signal.symbol)
+      .in("timeframe", ["4h", "1h", "1d"])
+      .order("created_at", { ascending: false })
+      .limit(12);
+
+    const globalRisk = await getGlobalRiskState();
+
+    const snapshot = {
+      schema_version: 1,
+      captured_at: new Date().toISOString(),
+      signal: {
+        composite: compositeRes.data ?? null,
+        execution_signal: signal,
+      },
+      upstream: {
+        whale_flow: whaleRes.data ?? null,
+        technicals: {
+          primary: indicatorRes.data ?? null,
+          recent_mtf: additionalIndicators.data ?? [],
+        },
+        prediction_market: predictionRes.data ?? null,
+        ai_council: councilRes.data ?? null,
+        market_regime: {
+          label: currentRegimeLabel,
+        },
+        strategy: strategyRes.data ?? null,
+      },
+      execution_context: {
+        mode: params.mode,
+        entry_price: params.entryPrice,
+        quantity: params.quantity,
+        stop_loss: params.stopLoss,
+        take_profit: params.takeProfit,
+        market_session: params.tradeSession,
+        watchlist_context: params.execCtx,
+        hot_whale_symbols: params.hotSymbols,
+        price_at_open: params.prices.get(binanceSymbol(signal.symbol)) ?? null,
+        open_trades_before: params.openTradesBefore,
+        global_risk_state: globalRisk,
+      },
+      risk: params.risk,
+      ai_risk: params.aiRisk,
+    };
+
+    const { error } = await db.from("entry_context_snapshots").insert({
+      trade_id: tradeId,
+      composite_signal_id: signal.id,
+      symbol: signal.symbol,
+      captured_at: snapshot.captured_at,
+      snapshot,
+    } as never);
+
+    if (error) {
+      console.error("[ENTRY_CONTEXT] snapshot insert failed", {
+        tradeId,
+        signalId: signal.id,
+        symbol: signal.symbol,
+        error,
+      });
+    } else {
+      console.log("[ENTRY_CONTEXT] snapshot persisted", {
+        tradeId,
+        signalId: signal.id,
+        symbol: signal.symbol,
+      });
+    }
+  } catch (error) {
+    console.error("[ENTRY_CONTEXT] snapshot capture failed", {
+      tradeId,
+      signalId: signal.id,
+      symbol: signal.symbol,
+      error,
+    });
+  }
+}
+
 
 /* ───────────── Feed health ───────────── */
 
@@ -3393,6 +3540,10 @@ export async function executeTrades(opts?: {
     take_profit_2?: number | null;
     position_multiplier?: number | null;
     source_tags?: string[] | null;
+    whale_alert_id?: string | null;
+    indicator_snapshot_id?: string | null;
+    prediction_snapshot_id?: string | null;
+    council_signal_id?: string | null;
   };
   const executionSignals = (signalsRes.data ?? []) as ExecutionSignal[];
   const parseAIRiskAnnotation = (reasoning: string | null | undefined): AIRiskDecision | null => {
@@ -3695,8 +3846,8 @@ export async function executeTrades(opts?: {
   let opened = 0;
 
   for (const signal of executionSignals) {
-    if (openSymbols.has(signal.symbol)) continue;
-    if (cooldownSymbols.has(signal.symbol)) continue;
+    if (!researchMode && openSymbols.has(signal.symbol)) continue;
+    if (!researchMode && cooldownSymbols.has(signal.symbol)) continue;
 
     const { data: existing } = await db.from("trades").select("id").eq("composite_signal_id", signal.id).limit(1);
     if (existing && existing.length > 0) continue;
@@ -3948,7 +4099,7 @@ export async function executeTrades(opts?: {
     const entryFee = price * quantity * TRADING_FEE_RATE;
     const tradeSession = classifyMarketSession(new Date());
 
-    const { error: tradeErr } = await db.from("trades").insert({
+    const { data: insertedTrade, error: tradeErr } = await db.from("trades").insert({
       composite_signal_id: signal.id, symbol: signal.symbol, side,
       quantity, entry_price: price, stop_loss: stopLoss, take_profit: takeProfit,
       mode, status: "open", exchange_order_id: exchangeOrderId, entry_fee: entryFee,
@@ -3959,7 +4110,7 @@ export async function executeTrades(opts?: {
         execCtx,
         hotSymbolSet.has(signal.symbol) ? ["hot-whale"] : undefined,
       ),
-    } as never);
+    } as never).select("id").single();
 
     if (tradeErr) {
       const errorCode = (tradeErr as { code?: string }).code ?? "UNKNOWN";
@@ -4007,6 +4158,31 @@ export async function executeTrades(opts?: {
 
       throw tradeErr;
     }
+    const tradeId = String((insertedTrade as { id?: string } | null)?.id ?? "");
+    if (tradeId) {
+      await persistEntryContextSnapshot(db, {
+        tradeId,
+        signal: signal as ExecutionSignalForSnapshot,
+        entryPrice: price,
+        quantity,
+        stopLoss,
+        takeProfit,
+        mode,
+        tradeSession,
+        risk: risk as unknown as Record<string, unknown>,
+        aiRisk,
+        execCtx,
+        hotSymbols: hotSymbolsNow,
+        prices,
+        openTradesBefore: openTrades,
+      });
+    } else {
+      console.error("[ENTRY_CONTEXT] trade insert returned no id", {
+        signalId: signal.id,
+        symbol: signal.symbol,
+      });
+    }
+
     openSymbols.add(signal.symbol);
     opened += 1;
 
