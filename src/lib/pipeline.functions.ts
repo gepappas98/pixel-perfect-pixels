@@ -140,6 +140,8 @@ export const getCronHealth = createServerFn({ method: "GET" }).handler(async () 
         completed_at: string | null;
         duration_ms: number | null;
         error_message: string | null;
+        trigger?: string;
+        source?: string;
       } | null;
       lastSuccess?: {
         id: string;
@@ -148,6 +150,8 @@ export const getCronHealth = createServerFn({ method: "GET" }).handler(async () 
         started_at: string | null;
         completed_at: string | null;
         duration_ms: number | null;
+        trigger?: string;
+        source?: string;
       } | null;
       lastSuccessAt?: string | null;
       nextRunAt?: string | null;
