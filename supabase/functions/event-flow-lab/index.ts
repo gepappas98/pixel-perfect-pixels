@@ -35,7 +35,7 @@ async function redditRecent(){
       const d=x?.data??{};
       return {source:"reddit",title:String(d.title??""),description:String(d.selftext??""),url:String(d.url??(d.permalink?"https://www.reddit.com"+d.permalink:"")),published:d.created_utc?new Date(Number(d.created_utc)*1000).toISOString():""};
     }).filter((x:any)=>x.title).slice(0,100);
-    if(items.length)return items;
+    if(items.length)return {items,failures};
     failures.push("json returned 0 items");
   }catch(e){failures.push("json: "+(e instanceof Error?e.message:String(e)));}
   try{
@@ -44,7 +44,7 @@ async function redditRecent(){
     failures.push("rss returned 0 items");
   }catch(e){failures.push("rss: "+(e instanceof Error?e.message:String(e)));}
   console.warn("[SENTIMENT][REDDIT] unavailable: "+failures.join(" | "));
-  return [];
+  return {items:[],failures};
 }
 function eventType(text:string){const t=text.toLowerCase();if(/etf|sec|regulat|law|senate|congress|mica|ban/.test(t))return"regulation";if(/hack|exploit|breach|stolen|attack/.test(t))return"security";if(/listing|delist|exchange|binance|coinbase/.test(t))return"exchange";if(/upgrade|fork|mainnet|network/.test(t))return"network";if(/partnership|integrat|adoption/.test(t))return"adoption";if(/liquidat|funding|whale|flow/.test(t))return"market";return"other";}
 async function fp(s:string){const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(s));return Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,"0")).join("");}
@@ -81,7 +81,8 @@ async function collect(db:any){
   const prices=await Promise.all((universe??[]).map(async(x:any)=>{try{const r=await fetch("https://api.binance.com/api/v3/ticker/price?symbol="+encodeURIComponent(x.binance_symbol),{signal:AbortSignal.timeout(8000)});if(!r.ok)return null;const j=await r.json();const p=Number(j.price);return Number.isFinite(p)&&p>0?{asset:x.asset,observed_at:observedAt,price:p,source:"binance-spot"}:null;}catch{return null;}}));
   const flowRows=await Promise.all(assets.map(async asset=>{const {data,error}=await db.from("whale_alerts").select("direction,usd_value").eq("symbol",asset).gte("created_at",new Date(now.getTime()-900000).toISOString()).limit(500);if(error)return null;let buy=0,sell=0;for(const r of data??[]){const v=Number(r.usd_value)||0;if(r.direction==="accumulation")buy+=v;else if(r.direction==="distribution")sell+=v;}const total=buy+sell,s=total?Math.max(-1,Math.min(1,(buy-sell)/total)):0;return{asset,bucket_at:observedAt,sample_size:(data??[]).length,buy_usd:buy,sell_usd:sell,total_usd:total,flow_score:s,dominant_state:s>.05?"accumulation":s<-.05?"distribution":"neutral",source:"whale_alerts_15m"};}));
 
-  const redditItems=await redditRecent();
+  const redditResult=await redditRecent();
+  const redditItems=redditResult.items;
   const sentimentRows:any[]=assets.flatMap(asset=>{
     const items=redditItems.filter(item=>assetsIn(item.title+" "+item.description,[asset]).length>0).slice(0,25);
     if(!items.length)return [];
@@ -108,6 +109,6 @@ async function collect(db:any){
   const {data:socialRefresh,error:socialRefreshErr}=await db.rpc("refresh_mature_influential_social_transmissions",{p_lookback_hours:168});if(socialRefreshErr)console.warn("[SOCIAL_CHAIN_REFRESH]",socialRefreshErr);
   const {data:shock,error:shockErr}=await db.rpc("refresh_whale_flow_shock_followups",{p_lookback_hours:48});if(shockErr)console.warn("[FLOW_SHOCK]",shockErr);
   const {data:classification,error:classificationErr}=await db.rpc("refresh_whale_flow_transition_classification",{p_lookback_hours:168});if(classificationErr)console.warn("[FLOW_CLASSIFICATION]",classificationErr);
-  return{ok:true,assets:assets.length,prices:prices.filter(Boolean).length,flows:flowRows.filter(Boolean).length,sentiment:sentimentRows.length,news:newsRows.length,transmissions_refreshed:tx??0,flow_shock_followups_refreshed:shock??0,flow_transition_classification_refreshed:classification??0,event_flow_study_snapshots_captured:study??0,social_chain_maturation:socialRefresh??{examined:0,processed:0,failed:0,research_only:true},observed_at:observedAt};
+  return{ok:true,assets:assets.length,prices:prices.filter(Boolean).length,flows:flowRows.filter(Boolean).length,sentiment:sentimentRows.length,news:newsRows.length,reddit:{available:redditItems.length>0,items:redditItems.length,failures:redditResult.failures},transmissions_refreshed:tx??0,flow_shock_followups_refreshed:shock??0,flow_transition_classification_refreshed:classification??0,event_flow_study_snapshots_captured:study??0,social_chain_maturation:socialRefresh??{examined:0,processed:0,failed:0,research_only:true},observed_at:observedAt};
 }
 Deno.serve(async req=>{const pre=handleOptions(req);if(pre)return pre;try{const db=getServiceClient();const body=await req.json().catch(()=>({}));if(body?.action==="discover"){const universe=await discoverAssets(db);return new Response(JSON.stringify({ok:true,selected:universe.length,assets:universe.map((x:any)=>x.asset)}),{headers:{...corsHeaders,"Content-Type":"application/json"}});}if(body?.action==="analyze"){const {data,error}=await db.from("event_flow_transmissions").select("*").order("event_at",{ascending:false}).limit(100);if(error)throw error;return new Response(JSON.stringify({ok:true,rows:data??[]}),{headers:{...corsHeaders,"Content-Type":"application/json"}});}const result=await collect(db);return new Response(JSON.stringify(result),{headers:{...corsHeaders,"Content-Type":"application/json"}});}catch(e){console.error("[EVENT_FLOW_LAB]",e);return new Response(JSON.stringify({ok:false,error:e instanceof Error?e.message:String(e)}),{status:500,headers:{...corsHeaders,"Content-Type":"application/json"}});}});
