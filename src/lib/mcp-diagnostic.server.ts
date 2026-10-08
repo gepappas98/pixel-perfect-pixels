@@ -7,6 +7,14 @@
 
 export const MCP_PROTOCOL_VERSION = "2025-03-26";
 export const EXECUTION_CONFIDENCE_THRESHOLD = 0.6;
+
+// The Lovable Cloud binding is currently a different Supabase project than the
+// canonical production database. The diagnostic tunnel must never silently read
+// that foreign database, so it uses the same canonical read-only publishable
+// client already used by the browser client.
+export const CANONICAL_SUPABASE_URL = "https://yckewtpfttvwiptmmrfq.supabase.co";
+export const CANONICAL_SUPABASE_PROJECT_REF = "yckewtpfttvwiptmmrfq";
+export const CANONICAL_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_v0BSD7Eg6ze85nuYPRMJ6w_M_lwwXjx";
 export const READ_ONLY_TABLES = [
   "pipeline_runs",
   "composite_signals",
@@ -21,6 +29,21 @@ export const READ_ONLY_RPCS = ["get_portfolio_summary", "get_variant_performance
 type Row = Record<string, unknown>;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyClient = { from: (t: string) => any; rpc: (fn: string, args?: Row) => any };
+
+/**
+ * Read-only diagnostic client pinned to the canonical production Supabase.
+ * Uses a publishable key only; the MCP layer exposes SELECT + whitelisted RPCs
+ * and has no mutation methods. This deliberately bypasses Lovable Cloud's
+ * separate server-side Supabase binding so diagnostics inspect the same DB as
+ * the production browser client and Edge Functions.
+ */
+export function createCanonicalDiagnosticClient(): AnyClient {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { createClient } = require("@supabase/supabase-js") as typeof import("@supabase/supabase-js");
+  return createClient(CANONICAL_SUPABASE_URL, CANONICAL_SUPABASE_PUBLISHABLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  }) as AnyClient;
+}
 
 /* ───────────── Read-only guard ───────────── */
 
@@ -70,13 +93,16 @@ const str = (v: unknown, max = 64) =>
 const sinceIso = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
 
 export function sourceMetadata() {
-  const url = process.env["SUPABASE_URL"] ?? null;
+  const configuredUrl = process.env["SUPABASE_URL"] ?? null;
+  const configuredRef =
+    process.env["SUPABASE_PROJECT_ID"] ?? (configuredUrl ? new URL(configuredUrl).hostname.split(".")[0] : null);
   return {
     app: "Trading Command Center (Pixel Perfect Pixels)",
     lovable_project_id: "6d1cd604-982a-4237-98b3-1276c19ca6f7",
-    supabase_url: url,
-    supabase_project_ref:
-      process.env["SUPABASE_PROJECT_ID"] ?? (url ? new URL(url).hostname.split(".")[0] : null),
+    supabase_url: CANONICAL_SUPABASE_URL,
+    supabase_project_ref: CANONICAL_SUPABASE_PROJECT_REF,
+    server_binding_project_ref: configuredRef,
+    canonical_backend: true,
     read_only: true,
     generated_at: new Date().toISOString(),
   };
