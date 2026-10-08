@@ -209,6 +209,16 @@ Before every new fix:
 **Never declare the project "fixed" while an earlier P0 remains OPEN/VERIFY.**
 
 
+## 2026-10-08 — Canonical Dashboard / Shadow / DB alignment audit
+
+- Canonical runtime verified against pipeline_runs, composite_signals, prediction_snapshots, council_signals, and strategy_variant_signals.
+- Latest scheduled run observed: completed canonical trading-pipeline-orchestrator, source pg_cron, 2026-10-08 16:00:00–16:00:26 UTC.
+- Same fresh window contains current composite signals, fresh prediction snapshots, fresh council signals, and fresh canonical shadow variants; no trade was created because execution correctly had no available BUY slot / no eligible BUY in that execution window.
+- get_variant_performance(7) is still the canonical long-only benchmark RPC: resolved historical outcomes plus current open canonical observations. SELL variants remain excluded from performance.
+- DB benchmark settings verified: TP +4%, SL −3%, expiry 72h.
+- UI semantic mismatch found and corrected: VariantComparisonPanel previously called the benchmark “Legacy Variant Performance” even though its open rows now include current canonical observations. Commit: 9b2e4cacbc136996de0066278f7676b4f5e77517.
+- No strategy/risk/execution logic or historical data changed. Frontend publish verification remains required.
+
 ## 2026-10-07 — Whale Radar Council telemetry deployment
 
 - Whale Radar telemetry was still showing **0 runtime events** while `council_decisions` remained stale (latest observed 2026-08-28).
