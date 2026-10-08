@@ -14,6 +14,7 @@ export const READ_ONLY_TABLES = [
   "strategy_variant_signals",
   "strategy_config",
   "trade_alerts",
+  "asset_price_snapshots",
 ] as const;
 export const READ_ONLY_RPCS = ["get_portfolio_summary", "get_variant_performance"] as const;
 
@@ -231,13 +232,34 @@ export async function getTradeState(db: ReadOnlyDb, a: Row) {
   let openQ = db.select("trades").eq("status", "open").order("created_at", { ascending: false }).limit(200);
   let closedQ = db.select("trades").eq("status", "closed").order("closed_at", { ascending: false }).limit(50);
   if (sym) { openQ = openQ.eq("symbol", sym); closedQ = closedQ.eq("symbol", sym); }
-  const [open, closed, portfolio] = await Promise.all([openQ, closedQ, db.rpc("get_portfolio_summary", { p_mark_prices: {} })]);
+  const [open, closed] = await Promise.all([openQ, closedQ]);
+  const openRows = (open.data ?? []) as Row[];
+  const openSymbols = [...new Set(openRows.map((r) => String(r.symbol ?? "")).filter(Boolean))];
+
+  // Use the latest stored price snapshot for each open symbol so the diagnostic
+  // portfolio RPC can reproduce the dashboard's marked-open PnL instead of
+  // silently reporting entry-price marks as zero unrealized PnL.
+  let markQ = db
+    .select("asset_price_snapshots", "asset,price,observed_at")
+    .order("observed_at", { ascending: false })
+    .limit(1000);
+  if (openSymbols.length > 0) markQ = markQ.in("asset", openSymbols);
+  const marks = await markQ;
+  const markPrices: Record<string, number> = {};
+  for (const row of (marks.data ?? []) as Row[]) {
+    const asset = String(row.asset ?? "");
+    const price = Number(row.price);
+    if (asset && Number.isFinite(price) && markPrices[asset] === undefined) markPrices[asset] = price;
+  }
+
+  const portfolio = await db.rpc("get_portfolio_summary", { p_mark_prices: markPrices });
   return {
     open_trades: open.data ?? [],
     recent_closed_trades: closed.data ?? [],
     portfolio: portfolio.data ?? null,
-    portfolio_note: "Portfolio computed without live mark prices (entry-price marks).",
-    errors: [open.error?.message, closed.error?.message, portfolio.error?.message].filter(Boolean),
+    mark_prices: markPrices,
+    portfolio_note: "Portfolio computed with latest stored asset_price_snapshots marks for open symbols.",
+    errors: [open.error?.message, closed.error?.message, marks.error?.message, portfolio.error?.message].filter(Boolean),
   };
 }
 
