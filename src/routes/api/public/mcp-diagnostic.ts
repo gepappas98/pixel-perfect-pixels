@@ -20,9 +20,10 @@ export const Route = createFileRoute("/api/public/mcp-diagnostic")({
         } catch {
           return Response.json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }, { status: 400 });
         }
-        const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const db = m.readOnlyDb(supabaseAdmin as any);
+        // The MCP diagnostic tunnel is pinned to the canonical production
+        // Supabase project. Do not use Lovable Cloud's separate service-role
+        // binding here; that binding currently points at a different project.
+        const db = m.readOnlyDb(m.createCanonicalDiagnosticClient());
         const msgs = Array.isArray(body) ? body.slice(0, 20) : [body];
         const out = (await Promise.all(msgs.map((x) => m.handleRpc(x as never, db)))).filter(Boolean);
         if (out.length === 0) return new Response(null, { status: 202 });
