@@ -30,6 +30,7 @@ export interface MarketRegime {
     neutral: number;
     consensus: number;
     sample_size: number;
+    excluded_long_horizon: number;
   };
   council: {
     buy: number;
@@ -48,6 +49,8 @@ export interface MarketRegime {
 }
 
 /* ───────────── Prediction direction helper ───────────── */
+
+const PREDICTION_NEAR_TERM_MS = 7 * 24 * 60 * 60 * 1000;
 
 const BULLISH_QUESTION =
   /\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\b/i;
@@ -171,7 +174,7 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
           .limit(5000),
         db
           .from("prediction_snapshots")
-          .select("market_slug, question, yes_price, created_at")
+          .select("market_slug, question, yes_price, created_at, raw")
           .gte("created_at", thirtyMinAgo)
           .order("created_at", { ascending: false })
           .limit(2000),
@@ -233,13 +236,31 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
       let predBull = 0;
       let predBear = 0;
       let predNeu = 0;
+      let predExcludedLongHorizon = 0;
       for (const p of (predsRes.data ?? []) as {
         market_slug: string;
         question: string | null;
         yes_price: number | null;
+        raw: Record<string, unknown> | null;
       }[]) {
         if (seenPred.has(p.market_slug)) continue;
         seenPred.add(p.market_slug);
+
+        // Spot regime uses only near-term prediction markets.
+        // Long-horizon markets remain informational and do not affect the
+        // immediate market-regime score.
+        const endDateRaw = p.raw?.endDate;
+        const endDateMs =
+          typeof endDateRaw === "string" ? Date.parse(endDateRaw) : NaN;
+        const nearTerm =
+          Number.isFinite(endDateMs) &&
+          endDateMs >= now &&
+          endDateMs <= now + PREDICTION_NEAR_TERM_MS;
+        if (!nearTerm) {
+          predExcludedLongHorizon++;
+          continue;
+        }
+
         const dir = predictionDirectionFromSnapshot(p.question, p.yes_price);
         if (dir === "bullish") predBull++;
         else if (dir === "bearish") predBear++;
@@ -376,6 +397,7 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
           neutral: predNeu,
           consensus: predConsensus,
           sample_size: totalPred,
+          excluded_long_horizon: predExcludedLongHorizon,
         },
         council: {
           buy: cBuy,
@@ -412,6 +434,7 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
           neutral: 0,
           consensus: 0,
           sample_size: 0,
+          excluded_long_horizon: 0,
         },
         council: {
           buy: 0,
