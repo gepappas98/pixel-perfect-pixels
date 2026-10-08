@@ -54,6 +54,53 @@ Deno.serve(async (req) => {
     if (countError) throw countError;
     const remainingSlots = Math.max(0, MAX_OPEN_POSITIONS - (openCount ?? 0));
 
+    // SAFETY HOLD: restore the full execution/risk-gate implementation before
+    // allowing any new entry. This fail-closed guard prevents the temporary
+    // audit-only executor from bypassing AI risk and risk-engine controls.
+    if (remainingSlots > 0) {
+      const { data: signals, error } = await getEligibleSignals(supabase);
+      const auditEvents = (signals ?? []).map((signal) => ({
+        ts: new Date().toISOString(),
+        symbol: String(signal.symbol),
+        signal_id: String(signal.id),
+        stage: "CANDIDATE_FILTER",
+        decision: "REJECT",
+        reason: "execution_risk_gate_restore_required",
+        confidence: Number(signal.confidence),
+        details: {
+          min_confidence: MIN_CONFIDENCE,
+          window_minutes: 15,
+          remaining_slots: remainingSlots,
+          fail_closed: true,
+        },
+      }));
+      return new Response(JSON.stringify({
+        mode: tradingMode,
+        opened: 0,
+        skipped: (signals ?? []).length,
+        errors: error ? [{ signal_id: "", symbol: "", error: error.message }] : [],
+        reason: "execution_risk_gate_restore_required",
+        execution_audit: {
+          version: 1,
+          started_at: auditStartedAt,
+          completed_at: new Date().toISOString(),
+          status: "completed",
+          trades: 0,
+          summary: {
+            eligible_buy_signals: (signals ?? []).length,
+            audited_eligible_signals: auditEvents.length,
+            uncovered_eligible_signals: 0,
+            opened: 0,
+            skipped: (signals ?? []).length,
+            errors: error ? 1 : 0,
+          },
+          events: auditEvents,
+        },
+      }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     // Observability-only path: when the portfolio cap is already full, still
     // inspect the eligible BUY signals and emit explicit audit REJECT events.
     if (remainingSlots === 0) {
