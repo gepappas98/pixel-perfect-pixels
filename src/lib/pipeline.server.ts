@@ -3513,7 +3513,7 @@ export async function executeTrades(opts?: {
     );
   }
 
-  if (opts?.skipNewEntries && !researchMode) {
+  if (opts?.skipNewEntries) {
     console.warn("[CIRCUIT_BREAKER] skipNewEntries=true — closed-only mode");
 
     audit.push(
@@ -3522,7 +3522,6 @@ export async function executeTrades(opts?: {
         "CIRCUIT_BREAKER",
         "SKIP",
         "new entries disabled",
-        { details: { research_mode: false } },
       ),
     );
 
@@ -3530,21 +3529,6 @@ export async function executeTrades(opts?: {
       opened: 0,
       audit,
     };
-  }
-
-  if (opts?.skipNewEntries && researchMode) {
-    console.warn(
-      "[CIRCUIT_BREAKER] override in paper research mode — entries remain measurable",
-    );
-    audit.push(
-      createExecutionAuditEvent(
-        "SYSTEM",
-        "CIRCUIT_BREAKER",
-        "ACCEPT",
-        "research mode overrides entry-blocking circuit breaker",
-        { details: { research_mode: true } },
-      ),
-    );
   }
 
   // ─── Global-risk cooldown gate ───
@@ -3739,34 +3723,10 @@ export async function executeTrades(opts?: {
       signalPrice > 0 &&
       Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT
     ) {
-      const driftPct = Math.abs(price - signalPrice) / signalPrice;
-      if (!researchMode) {
-        auditReject(
-          signal.symbol,
-          "CANDIDATE_FILTER",
-          "entry price drift exceeded limit",
-          {
-            signalId: signal.id,
-            confidence: signal.confidence,
-            details: {
-              signal_price: signalPrice,
-              current_price: price,
-              drift_pct: driftPct,
-              max_drift_pct: MAX_ENTRY_DRIFT_PCT,
-            },
-          },
-        );
-        console.log(
-          `[AI_RISK_CANDIDATE] skip ${signal.symbol}: entry drift exceeded ` +
-            `signal=${signalPrice} current=${price}`,
-        );
-        return false;
-      }
-
-      auditAccept(
+      auditReject(
         signal.symbol,
         "CANDIDATE_FILTER",
-        "research mode overrides entry drift filter",
+        "entry price drift exceeded limit",
         {
           signalId: signal.id,
           confidence: signal.confidence,
@@ -3775,50 +3735,37 @@ export async function executeTrades(opts?: {
             current_price: price,
             drift_pct: driftPct,
             max_drift_pct: MAX_ENTRY_DRIFT_PCT,
-            research_mode: true,
           },
         },
       );
+      console.log(
+        `[AI_RISK_CANDIDATE] skip ${signal.symbol}: entry drift exceeded ` +
+          `signal=${signalPrice} current=${price}`,
+      );
+      return false;
     }
 
     if (
       signal.created_at &&
       !isFresh(signal.created_at, 15 * 60 * 1000)
     ) {
-      if (!researchMode) {
-        auditReject(
-          signal.symbol,
-          "CANDIDATE_FILTER",
-          "signal stale",
-          {
-            signalId: signal.id,
-            confidence: signal.confidence,
-            details: {
-              created_at: signal.created_at,
-              max_age_minutes: 15,
-            },
-          },
-        );
-        console.log(
-          `[AI_RISK_CANDIDATE] skip ${signal.symbol}: signal stale`,
-        );
-        return false;
-      }
-
-      auditAccept(
+      auditReject(
         signal.symbol,
         "CANDIDATE_FILTER",
-        "research mode overrides stale recheck",
+        "signal stale",
         {
           signalId: signal.id,
           confidence: signal.confidence,
           details: {
             created_at: signal.created_at,
             max_age_minutes: 15,
-            research_mode: true,
           },
         },
       );
+      console.log(
+        `[AI_RISK_CANDIDATE] skip ${signal.symbol}: signal stale`,
+      );
+      return false;
     }
 
     const regime = String(
@@ -3826,34 +3773,21 @@ export async function executeTrades(opts?: {
     ).toLowerCase();
 
     if (regime === "bear" || regime === "strong_bear") {
-      if (!researchMode) {
-        auditReject(
-          signal.symbol,
-          "CANDIDATE_FILTER",
-          "hard bearish market regime",
-          {
-            signalId: signal.id,
-            confidence: signal.confidence,
-            details: { regime },
-          },
-        );
-        console.log(
-          `[AI_RISK_CANDIDATE] skip ${signal.symbol}: ` +
-            `hard bearish regime=${regime}`,
-        );
-        return false;
-      }
-
-      auditAccept(
+      auditReject(
         signal.symbol,
         "CANDIDATE_FILTER",
-        "research mode overrides bearish regime filter",
+        "hard bearish market regime",
         {
           signalId: signal.id,
           confidence: signal.confidence,
-          details: { regime, research_mode: true },
+          details: { regime },
         },
       );
+      console.log(
+        `[AI_RISK_CANDIDATE] skip ${signal.symbol}: ` +
+          `hard bearish regime=${regime}`,
+      );
+      return false;
     }
 
     /*
@@ -3872,7 +3806,7 @@ export async function executeTrades(opts?: {
 
     const existingAIRisk = parseAIRiskAnnotation(signal.reasoning);
 
-    if (existingAIRisk && !researchMode) {
+    if (existingAIRisk) {
       auditReject(
         signal.symbol,
         "CANDIDATE_FILTER",
@@ -3883,24 +3817,6 @@ export async function executeTrades(opts?: {
         `[AI_RISK_CANDIDATE] ${signal.symbol}: existing AI risk annotation`,
       );
       return false;
-    }
-
-    if (existingAIRisk && researchMode) {
-      auditAccept(
-        signal.symbol,
-        "CANDIDATE_FILTER",
-        "research mode preserves candidate despite prior AI risk annotation",
-        {
-          signalId: signal.id,
-          confidence: signal.confidence,
-          details: {
-            prior_trade_allowed: existingAIRisk.trade_allowed,
-            prior_risk_level: existingAIRisk.risk_level,
-            prior_data_quality: existingAIRisk.data_quality,
-            research_mode: true,
-          },
-        },
-      );
     }
 
     auditAccept(
@@ -4028,32 +3944,7 @@ export async function executeTrades(opts?: {
     if (price == null) { console.error(`no price for ${signal.symbol}`); continue; }
 
     const signalPrice = Number(signal.price_at);
-    if (
-      Number.isFinite(signalPrice) &&
-      signalPrice > 0 &&
-      Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT
-    ) {
-      const driftPct = Math.abs(price - signalPrice) / signalPrice;
-      if (!researchMode) {
-        continue;
-      }
-      auditAccept(
-        signal.symbol,
-        "ENTRY_GATE",
-        "research mode overrides final entry drift recheck",
-        {
-          signalId: signal.id,
-          confidence: signal.confidence,
-          details: {
-            signal_price: signalPrice,
-            current_price: price,
-            drift_pct: driftPct,
-            max_drift_pct: MAX_ENTRY_DRIFT_PCT,
-            research_mode: true,
-          },
-        },
-      );
-    }
+    if (Number.isFinite(signalPrice) && signalPrice > 0 && Math.abs(price - signalPrice) / signalPrice > MAX_ENTRY_DRIFT_PCT) continue;
 
   let side = signal.recommendation as "buy" | "sell";
 
@@ -4091,37 +3982,16 @@ export async function executeTrades(opts?: {
     );
     continue;
   }
-  let aiRisk = aiRiskBySignalId.get(signal.id);
+  const aiRisk = aiRiskBySignalId.get(signal.id);
   if (!aiRisk) {
-    console.warn(`[AI_RISK_GATE] no decision for ${signal.symbol} — research=${researchMode}`);
-    if (!researchMode) {
-      auditReject(
-        signal.symbol,
-        "AI_RISK",
-        "no AI risk decision (fail-closed)",
-        { signalId: signal.id, confidence: signal.confidence },
-      );
-      continue;
-    }
-
-    aiRisk = {
-      symbol: signal.symbol,
-      risk_level: "high",
-      trade_allowed: true,
-      data_quality: "insufficient",
-      reasons: ["AI risk decision missing; research mode does not veto the opportunity"],
-    };
-
-    auditAccept(
+    console.warn(`[AI_RISK_GATE] no decision for ${signal.symbol} — fail-closed`);
+    auditReject(
       signal.symbol,
       "AI_RISK",
-      "research mode continues without AI risk decision",
-      {
-        signalId: signal.id,
-        confidence: signal.confidence,
-        details: { research_mode: true, fallback: true },
-      },
+      "no AI risk decision (fail-closed)",
+      { signalId: signal.id, confidence: signal.confidence },
     );
+    continue;
   }
   const aiRiskNote = `[AI_RISK_GATE: ${aiRisk.trade_allowed ? "ALLOW" : "BLOCK"} ${aiRisk.risk_level}/${aiRisk.data_quality} — ${aiRisk.reasons.join("; ")}]`;
   const { error: riskAnnotationError } = await db
@@ -4130,59 +4000,15 @@ export async function executeTrades(opts?: {
     .eq("id", signal.id);
   if (riskAnnotationError) {
     console.error(`[AI_RISK_GATE] annotation failed for ${signal.symbol}`, riskAnnotationError);
-    if (!researchMode) {
-      auditReject(
-        signal.symbol,
-        "AI_RISK",
-        "AI risk annotation persistence failed",
-        {
-          signalId: signal.id,
-          confidence: signal.confidence,
-          details: { error: riskAnnotationError.message },
-        },
-      );
-      continue;
-    }
-
-    auditAccept(
-      signal.symbol,
-      "AI_RISK",
-      "research mode ignores AI annotation persistence failure",
-      {
-        signalId: signal.id,
-        confidence: signal.confidence,
-        details: {
-          research_mode: true,
-          persistence_error: riskAnnotationError.message,
-        },
-      },
-    );
+    continue;
   }
   if (!aiRisk.trade_allowed) {
     console.log(`[AI_RISK_GATE] blocked ${signal.symbol}: ${aiRiskNote}`);
 
-    if (!researchMode) {
-      auditReject(
-        signal.symbol,
-        "AI_RISK",
-        "AI risk veto",
-        {
-          signalId: signal.id,
-          confidence: signal.confidence,
-          details: {
-            risk_level: aiRisk.risk_level,
-            data_quality: aiRisk.data_quality,
-            reasons: aiRisk.reasons,
-          },
-        },
-      );
-      continue;
-    }
-
-    auditAccept(
+    auditReject(
       signal.symbol,
       "AI_RISK",
-      "research mode records but does not veto AI risk",
+      "AI risk veto",
       {
         signalId: signal.id,
         confidence: signal.confidence,
@@ -4190,10 +4016,10 @@ export async function executeTrades(opts?: {
           risk_level: aiRisk.risk_level,
           data_quality: aiRisk.data_quality,
           reasons: aiRisk.reasons,
-          research_mode: true,
         },
       },
     );
+    continue;
   }
   const reasoning = String((signal as { reasoning?: string }).reasoning ?? "");
 
@@ -4201,7 +4027,7 @@ export async function executeTrades(opts?: {
   if (/1d bear\s*·\s*conflict/i.test(reasoning)) {
     const hasWhaleAcc = /whale accumulation/i.test(reasoning);
     const hasPredBull = /prediction market bullish/i.test(reasoning);
-    if (!hasWhaleAcc && !hasPredBull && !researchMode) {
+    if (!hasWhaleAcc && !hasPredBull) {
       console.log(
         `[QUALITY] skip ${signal.symbol}: 1d conflict without whale/pred support`,
       );
@@ -4245,50 +4071,26 @@ export async function executeTrades(opts?: {
     continue;
   }
   if (isBear && side === "buy") {
-    console.log(`[REGIME_FILTER] BUY in bearish regime — research=${researchMode}`);
+    console.log(`[REGIME_FILTER] skip BUY ${signal.symbol} — regime=${currentRegimeLabel}`);
 
-    if (!researchMode) {
-      auditReject(
-        signal.symbol,
-        "REGIME",
-        "BUY rejected by bearish regime",
-        {
-          signalId: signal.id,
-          confidence: signal.confidence,
-          details: { regime: currentRegimeLabel },
-        },
-      );
-      continue;
-    }
-
-    auditAccept(
+    auditReject(
       signal.symbol,
       "REGIME",
-      "research mode records BUY despite bearish regime",
+      "BUY rejected by bearish regime",
       {
         signalId: signal.id,
         confidence: signal.confidence,
-        details: { regime: currentRegimeLabel, research_mode: true },
+        details: { regime: currentRegimeLabel },
       },
     );
+
+    continue;
   }
 
   const stopLoss = side === "buy" ? price * (1 - settings.real_sl_pct) : price * (1 + settings.real_sl_pct);
     const takeProfit = side === "buy" ? price * (1 + settings.real_tp_pct) : price * (1 - settings.real_tp_pct);
 
-    if (signal.created_at && !isFresh(signal.created_at, 15 * 60 * 1000)) {
-      if (!researchMode) continue;
-      auditAccept(
-        signal.symbol,
-        "ENTRY_GATE",
-        "research mode overrides final stale recheck",
-        {
-          signalId: signal.id,
-          confidence: signal.confidence,
-          details: { max_age_minutes: 15, research_mode: true },
-        },
-      );
-    }
+    if (signal.created_at && !isFresh(signal.created_at, 15 * 60 * 1000)) continue;
 
     const risk = await canOpenTrade(db as any, {
       symbol: signal.symbol,
