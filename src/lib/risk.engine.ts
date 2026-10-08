@@ -33,6 +33,12 @@ export interface TradeRequest {
   stopLoss: number;
   /** Current Binance prices keyed by Binance symbol, e.g. BTCUSDT. */
   currentPrices?: Map<string, number>;
+  /**
+   * Paper research mode deliberately removes portfolio-capacity/economic
+   * brakes so eligible BUY signals are not discarded before measurement.
+   * Live mode never enables this.
+   */
+  researchMode?: boolean;
 }
 
 export interface RiskDecision {
@@ -191,6 +197,7 @@ export async function canOpenTrade(db: Admin, req: TradeRequest): Promise<RiskDe
 
   try {
     const { entryPrice, stopLoss, side } = req;
+    const researchMode = req.researchMode === true;
     if (side !== "buy") return reject("long_only", `${req.symbol} SELL: short execution is disabled; SELL remains a market signal, not an executable position.`);
     if (entryPrice <= 0 || stopLoss <= 0) return reject("invalid_stop", `${req.symbol} ${side}: entryPrice or stopLoss <= 0`);
     const stopDistance = Math.abs(entryPrice - stopLoss);
@@ -227,10 +234,13 @@ export async function canOpenTrade(db: Admin, req: TradeRequest): Promise<RiskDe
       estimatedEntryFee, estimatedStopFee, estimatedRoundTripFees,
     });
 
-    if (openPositions >= RISK_CONFIG.MAX_OPEN_POSITIONS) {
+    // Paper research mode is intentionally capacity-unbounded. We still
+    // calculate and persist the normal risk metrics for later analysis, but
+    // do not discard opportunities because the research portfolio is full.
+    if (!researchMode && openPositions >= RISK_CONFIG.MAX_OPEN_POSITIONS) {
       return { ...base, allowed: false, reason: "max_positions", message: `${req.symbol} ${side}: max open positions reached (${openPositions}/${RISK_CONFIG.MAX_OPEN_POSITIONS})` };
     }
-    if (dailyPnL <= dailyLossLimit) {
+    if (!researchMode && dailyPnL <= dailyLossLimit) {
       return { ...base, allowed: false, reason: "daily_loss_limit", message: `${req.symbol} ${side}: daily economic loss limit hit (${dailyPnL.toFixed(2)} <= ${dailyLossLimit.toFixed(2)})` };
     }
 
@@ -251,7 +261,7 @@ export async function canOpenTrade(db: Admin, req: TradeRequest): Promise<RiskDe
           if (Number(t.pnl) < 0) streak += 1;
           else break;
         }
-        if (streak >= RISK_CONFIG.LOSS_STREAK_HALT) {
+        if (!researchMode && streak >= RISK_CONFIG.LOSS_STREAK_HALT) {
           return {
             ...base,
             allowed: false,
@@ -263,7 +273,7 @@ export async function canOpenTrade(db: Admin, req: TradeRequest): Promise<RiskDe
     }
     // ───────────────────────────────────────────────────────────────
 
-    if (currentPortfolioRisk + requestedRisk > maxPortfolioRisk) {
+    if (!researchMode && currentPortfolioRisk + requestedRisk > maxPortfolioRisk) {
       return { ...base, allowed: false, reason: "portfolio_risk_limit", message: `${req.symbol} ${side}: portfolio economic risk full (${(currentPortfolioRisk + requestedRisk).toFixed(2)} > ${maxPortfolioRisk.toFixed(2)})` };
     }
 
