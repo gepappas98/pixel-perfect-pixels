@@ -5,11 +5,11 @@ import { SupportDeveloper } from "@/components/trading/SupportDeveloper";
 export const Route = createFileRoute("/about")({
   head: () => ({
     meta: [
-      { title: "About — Trading Command Center" },
+      { title: "About — Research Lab" },
       {
         name: "description",
         content:
-          "A complete guide to the Trading Command Center: what it does, how it works, and the technology behind it. Written for both newcomers and experienced traders.",
+          "A complete guide to the Research Lab: what it does, how it works, and the technology behind it. Written for both newcomers and experienced traders.",
       },
     ],
   }),
@@ -1314,7 +1314,7 @@ function AboutPage() {
         <SupportDeveloper />
 
         <p className="pb-4 text-center text-[11px] text-muted-foreground">
-          Made with 🤖 + ❤️ · Trading Command Center · v2.2
+          Made with 🤖 + ❤️ · Research Lab · v2.2
         </p>
 
         <div className="flex justify-center pt-2">
