@@ -3,29 +3,19 @@ create table if not exists public.influential_social_market_observations (
   event_id uuid not null references public.influential_social_events(id) on delete cascade,
   asset text not null,
   horizon text not null check (horizon in ('15m','30m','1h','4h','24h')),
-  sentiment_before numeric,
-  sentiment_after numeric,
-  sentiment_delta numeric,
-  sentiment_shock numeric,
-  price_before numeric,
-  price_after numeric,
-  price_return numeric,
-  flow_before numeric,
-  flow_after numeric,
-  flow_delta numeric,
+  sentiment_before numeric, sentiment_after numeric, sentiment_delta numeric, sentiment_shock numeric,
+  price_before numeric, price_after numeric, price_return numeric,
+  flow_before numeric, flow_after numeric, flow_delta numeric,
   observed_at timestamptz not null default now(),
   evidence_class text not null default 'insufficient'
     check (evidence_class in ('insufficient','weak_response','notable_response','major_response','market_moving')),
   evidence_score numeric check (evidence_score between 0 and 1),
-  evidence_reason text,
-  created_at timestamptz not null default now(),
+  evidence_reason text, created_at timestamptz not null default now(),
   unique(event_id, asset, horizon)
 );
 
-create index if not exists idx_social_market_obs_event
-  on public.influential_social_market_observations(event_id, horizon);
-create index if not exists idx_social_market_obs_asset_time
-  on public.influential_social_market_observations(asset, observed_at desc);
+create index if not exists idx_social_market_obs_event on public.influential_social_market_observations(event_id, horizon);
+create index if not exists idx_social_market_obs_asset_time on public.influential_social_market_observations(asset, observed_at desc);
 
 alter table public.influential_social_market_observations enable row level security;
 revoke all on public.influential_social_market_observations from anon, authenticated;
@@ -34,24 +24,20 @@ grant select, insert, update, delete on public.influential_social_market_observa
 create or replace function public.observe_influential_social_market_response(p_event_id uuid)
 returns jsonb language plpgsql security definer set search_path=public as $$
 declare
- e public.influential_social_events%rowtype;
- a text; h text; v_event_at timestamptz;
+ e public.influential_social_events%rowtype; a text; h text; v_event_at timestamptz;
  v_pre_sent numeric; v_post_sent numeric; v_pre_price numeric; v_post_price numeric;
  v_pre_flow numeric; v_post_flow numeric; v_sd numeric; v_ps numeric; v_fd numeric;
  v_score numeric; v_class text; v_reason text; v_count integer:=0;
 begin
  select * into e from public.influential_social_events where id=p_event_id;
  if not found then raise exception 'influential social event % not found',p_event_id; end if;
-
- if e.classification_status <> 'classified'
-    or e.crypto_relevance not in ('high','medium')
+ if e.classification_status <> 'classified' or e.crypto_relevance not in ('high','medium')
     or cardinality(coalesce(e.affected_assets,array[]::text[]))=0 then
    update public.influential_social_events set market_link_status='insufficient',updated_at=now() where id=p_event_id;
    return jsonb_build_object('event_id',p_event_id,'status','insufficient','reason','event_not_crypto_classified');
  end if;
 
  v_event_at:=e.published_at;
-
  foreach a in array e.affected_assets loop
   foreach h in array array['15m','30m','1h','4h','24h'] loop
    v_pre_sent:=null; v_post_sent:=null; v_pre_price:=null; v_post_price:=null; v_pre_flow:=null; v_post_flow:=null;
@@ -76,7 +62,7 @@ begin
     select t.flow_30m into v_post_flow from public.event_flow_transmissions t where upper(t.asset)=upper(a) and abs(extract(epoch from(t.event_at-v_event_at)))<=60 limit 1;
    elsif h='1h' then
     select s.sentiment_score into v_post_sent from public.asset_sentiment_snapshots s where upper(s.asset)=upper(a) and s.observed_at between v_event_at+interval '55 minutes' and v_event_at+interval '65 minutes' order by abs(extract(epoch from(s.observed_at-(v_event_at+interval '1 hour')))) limit 1;
-    select p.price into v_post_price from public.asset_price_snapshots p where upper(p.asset)=upper(a) and p.observed_at between v_event_at+interval '55 minutes' and v_event_at+interval '65 minutes' order by abs(extract(epoch from(s.observed_at-(v_event_at+interval '1 hour')))) limit 1;
+    select p.price into v_post_price from public.asset_price_snapshots p where upper(p.asset)=upper(a) and p.observed_at between v_event_at+interval '55 minutes' and v_event_at+interval '65 minutes' order by abs(extract(epoch from(p.observed_at-(v_event_at+interval '1 hour')))) limit 1;
     select t.flow_60m into v_post_flow from public.event_flow_transmissions t where upper(t.asset)=upper(a) and abs(extract(epoch from(t.event_at-v_event_at)))<=60 limit 1;
    elsif h='4h' then
     select s.sentiment_score into v_post_sent from public.asset_sentiment_snapshots s where upper(s.asset)=upper(a) and s.observed_at between v_event_at+interval '235 minutes' and v_event_at+interval '245 minutes' order by abs(extract(epoch from(s.observed_at-(v_event_at+interval '4 hours')))) limit 1;
