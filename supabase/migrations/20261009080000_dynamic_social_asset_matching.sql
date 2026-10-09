@@ -70,7 +70,7 @@ begin
     from public.tracked_assets ta
     where ta.enabled = true
       and (
-        upper(e.text_content) ~ ('(^|[^A-Z0-9])' || upper(ta.asset) || '([^A-Z0-9]|$)')
+        e.text_content ~ ('(^|[^A-Z0-9])' || upper(ta.asset) || '([^A-Z0-9]|$)')
         or exists (
           select 1
           from public.tracked_asset_social_aliases a
@@ -154,11 +154,13 @@ begin
       classification_reason = array_to_string(v_reasons,';'),
       research_eligibility = case
         when v_relevance = 'none' then 'irrelevant'
+        when e.ingested_at < e.published_at then 'historical_only'
         when e.ingested_at - e.published_at > interval '15 minutes' then 'historical_only'
         else 'live_eligible'
       end,
       eligibility_reason = case
         when v_relevance = 'none' then 'no_crypto_relevance'
+        when e.ingested_at < e.published_at then 'published_at_after_first_ingestion_timestamp'
         when e.ingested_at - e.published_at > interval '15 minutes' then 'late_ingestion_not_live_eligible'
         else 'first_observation_within_15m_of_publication'
       end,
