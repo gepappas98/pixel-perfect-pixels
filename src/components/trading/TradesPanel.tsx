@@ -131,6 +131,12 @@ export function TradesPanel() {
         <p className="text-sm text-destructive">Failed to load positions: {loadError}</p>
       )}
 
+      {openTrades.length > 0 && prices.data && openTrades.some((trade) => prices.data?.[trade.symbol] == null) && (
+        <p role="status" className="mb-2 text-[10px] text-warn">
+          Some live prices are unavailable. PnL is shown only for symbols with a valid current price.
+        </p>
+      )}
+
       <div className="overflow-x-auto">
         <table className="w-full min-w-[760px] text-sm">
           <thead>
