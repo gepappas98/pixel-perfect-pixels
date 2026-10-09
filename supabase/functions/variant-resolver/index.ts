@@ -33,8 +33,22 @@ type Variant = {
 
 type Outcome = "win" | "loss" | "expired" | "ambiguous";
 
+function toBinanceSpotSymbol(symbol: string): string {
+  const normalized = symbol.trim().toUpperCase().replace(/[\\/_-]/g, "");
+  if (!normalized) throw new Error("empty symbol for Binance klines");
+  // Research rows usually store the base asset (e.g. BTC); Binance Spot
+  // klines requires the trading pair (e.g. BTCUSDT). Preserve an explicit
+  // quote asset if the caller already supplied a pair.
+  if (/(USDT|USDC|BUSD|FDUSD|TUSD|USDP|DAI|EUR|TRY|BRL|GBP|AUD|JPY)$/.test(normalized)
+      && normalized.length > normalized.match(/(USDT|USDC|BUSD|FDUSD|TUSD|USDP|DAI|EUR|TRY|BRL|GBP|AUD|JPY)$/)![0].length) {
+    return normalized;
+  }
+  return `${normalized}USDT`;
+}
+
 async function fetchKlines(symbol: string, interval: string): Promise<Candle[]> {
-  const url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${CANDLE_LIMIT}`;
+  const pair = toBinanceSpotSymbol(symbol);
+  const url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(pair)}&interval=${interval}&limit=${CANDLE_LIMIT}`;
   const response = await fetch(url, { signal: AbortSignal.timeout(12000) });
   if (!response.ok) throw new Error(`Binance klines HTTP ${response.status}`);
   const rows = await response.json() as unknown[][];
