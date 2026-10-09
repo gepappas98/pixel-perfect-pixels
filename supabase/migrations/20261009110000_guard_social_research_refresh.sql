@@ -123,11 +123,15 @@ begin
   select count(*) into evts
   from public.influential_social_transmission_links where event_id=p_event_id;
 
+  -- A stored post-only row is not evidence of a market/transmission link.
   update public.influential_social_events
   set market_link_status = case
-    when exists(select 1 from public.influential_social_transmission_links l
-                where l.event_id=p_event_id and l.transmission_class='full_chain') then 'linked'
-    when evts>0 then 'linked'
+    when exists(
+      select 1 from public.influential_social_transmission_links l
+      where l.event_id=p_event_id
+        and l.transmission_class in ('sentiment_only','sentiment_to_flow','flow_to_price','full_chain','mixed')
+    ) then 'linked'
+    when evts>0 then 'insufficient_data'
     else 'insufficient_data'
   end,
   updated_at=now()
