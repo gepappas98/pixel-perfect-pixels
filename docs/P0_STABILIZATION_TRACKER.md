@@ -500,3 +500,37 @@ The following read-only website paths were moved off the legacy server-side Supa
   - `partial`: 457 rows remain partial where the paired horizon is not fully available.
 - The former false `complete_24h` count of 546 is now 144; this is a correction to completeness labels, not deletion of source data.
 - No trading strategy, live/paper execution, risk limits, or scheduler were changed. Repeated BUY ledger remains **WAITING_FOR_MATURITY**.
+
+
+## 2026-10-09 — P0 paper book / MTM forensic pass (draft branch)
+
+- Canonical DB confirmed: `yckewtpfttvwiptmmrfq`; no SQL writes or historical data changes were made during this audit.
+- Read-only snapshot: 46 open paper rows total = 43 BUY + 3 legacy SELL; BUY exposure is $43,000 across 8 symbols, all-side open entry notional is $46,000. Concentration: ONDO 17 rows / $17,000; TIA 15 / $15,000; DOT 5 / $5,000. All sampled open rows have entry price, quantity, SL and TP.
+- Confirmed code issue in `TradesPanel.tsx`: one rejected Binance ticker request could reject the whole `Promise.all`, causing all current prices to disappear. Draft fix isolates failures per symbol, adds a timeout and explicitly warns when some prices are unavailable.
+- Confirmed code issue in `RiskPanel.tsx`: any server-side query failure returned default `0 / 17` with an apparently ACTIVE status. Draft fix marks fallback metrics as DATA UNAVAILABLE and partial price coverage as PARTIAL DATA.
+- Confirmed canonical orchestrator calls the `trade-executor` Edge Function. The repository implementation previously bypassed capacity in research mode, only deduplicated the exact same signal, and did not manage TP/SL exits in that function. Draft fix adds current-ticker TP/SL close handling with fee-aware realized PnL, a hard cap of 3 open paper BUY positions, and one open BUY per symbol. Signal-level observations remain in the research ledger; SELL rows are not deleted or rewritten. Risk-engine defaults are aligned to 3 max open positions and $30 max risk/trade at $20,000 equity (0.15%); portfolio/daily caps remain 1.2%. Strategy weights and confidence thresholds are unchanged.
+- Branch: `fix/p0-paper-book-mtm-observability`. Changes are code-only and are NOT deployed to Supabase or production. Build/typecheck/runtime verification is still required before merge/deploy.
+- Important limitation: ticker-based exit checks can miss an intrabar TP/SL touch between polling runs; this draft does not claim candle-level ambiguity resolution. Existing open rows will only close when a current ticker price meets their stored TP/SL; no bulk close/reset was performed.
+
+
+- Follow-up read-only snapshot during review: the existing deployed pipeline continued changing the book while this PR remained undeployed. Latest query returned 45 open paper BUY rows ($45,000 entry notional) across 8 symbols plus 3 legacy SELL rows ($48,000 total all-side notional). This confirms the old deployed executor is still adding positions; code changes on the draft branch have not affected production. Counts are time-sensitive and must be re-queried before deployment.
+- UI follow-up: risk percentage formatting now shows two decimal places for per-trade risk so 0.15% is not rounded misleadingly to 0.1%.
+
+## 2026-10-09 — Research paper wallet scope correction (DRAFT / NOT DEPLOYED)
+
+The owner confirmed that the open-ended paper book is intentional research design: repeated BUY triggers should be observed across entries, exits, TP/SL and net outcomes. A portfolio cap or one-position-per-symbol gate would bias that sample and must not be applied to the research executor.
+
+Changes on `fix/p0-paper-book-mtm-observability`:
+- Kept the existing research executor unchanged: the main-branch behavior already allows distinct eligible BUY signals to open concurrent positions, including repeated positions for the same symbol; duplicate protection remains per composite signal. No executor behavior change is included in this wallet-focused correction.
+- Renamed the Positions table's `Value` column to `Entry Notional`.
+- Reworked the wallet panel to distinguish $20,000 starting equity (reference only), all-time realized PnL, net unrealized MTM, current marked equity, open entry notional, current market value, open BUY count, and open stop-risk reference.
+- Open MTM now subtracts both the recorded entry fee (or estimated fallback) and estimated exit fee.
+- Paper equity now uses net_pnl when available, falls back to pnl for historical rows, and no longer floors the displayed realized-equity basis at $1.
+- Legacy compatibility detail: the fee migration added `net_pnl DEFAULT 0`; wallet aggregation now falls back to a non-zero legacy `pnl` when `net_pnl` is still that default zero, avoiding silent omission of older closed rows.
+- Missing ticker coverage is surfaced as partial MTM; live ticker marks are explicitly not represented as guaranteed intrabar exit fills.
+
+Constraints:
+- No Supabase writes/migrations, no production deploy, no historical resets/deletes.
+- Strategy thresholds, weights, SL/TP constants and $1,000 research entry sizing were not changed.
+- Existing paper positions are preserved. Executor's ticker-based TP/SL close logic remains approximate and does not model intrabar candle touches or a 72h expiry.
+- Build/typecheck/runtime verification remains required before merging or deploying.

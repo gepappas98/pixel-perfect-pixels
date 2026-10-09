@@ -18,10 +18,10 @@
 type Admin = Awaited<typeof import("@/integrations/supabase/client.server")["supabaseAdmin"]>;
 
 export const RISK_CONFIG = {
-  MAX_RISK_PER_TRADE_PCT: 0.0020,
+  MAX_RISK_PER_TRADE_PCT: 0.0015,
   MAX_PORTFOLIO_RISK_PCT: 0.012,
   DAILY_LOSS_LIMIT_PCT: 0.012,
-  MAX_OPEN_POSITIONS: 17,
+  MAX_OPEN_POSITIONS: 3,
   TIMEZONE: "Europe/Athens",
   FEE_RATE: 0.0005,
   LOSS_STREAK_HALT: 3,
@@ -89,16 +89,27 @@ function athensStartOfDay(): string {
   return new Date(Date.UTC(y, m - 1, d, 0, 0, 0) - offsetMs).toISOString();
 }
 
+/** Prefer fee-aware net PnL, but recover legacy rows where the fee migration
+ * populated net_pnl with its DEFAULT 0 without a valid closed-trade backfill. */
+function realizedPnlValue(t: { pnl: number | null; net_pnl: number | null }): number {
+  const legacyPnl = Number(t.pnl);
+  const netPnl = t.net_pnl == null ? null : Number(t.net_pnl);
+  if (netPnl == null || (netPnl === 0 && legacyPnl !== 0)) {
+    return Number.isFinite(legacyPnl) ? legacyPnl : 0;
+  }
+  return Number.isFinite(netPnl) ? netPnl : 0;
+}
+
 export async function getPaperEquity(db: Admin): Promise<number> {
   const { data, error } = await (db.from as any)("trades")
-    .select("pnl")
+    .select("pnl, net_pnl")
     .eq("mode", "paper")
     .eq("status", "closed")
     .eq("side", "buy");
   if (error) throw new Error(`getPaperEquity: ${error.message}`);
-  const realized = ((data ?? []) as { pnl: number | null }[])
-    .reduce((sum, t) => sum + (Number(t.pnl) || 0), 0);
-  return Math.max(PAPER_STARTING_EQUITY + realized, 1);
+  const realized = ((data ?? []) as { pnl: number | null; net_pnl: number | null }[])
+    .reduce((sum, t) => sum + (realizedPnlValue(t)), 0);
+  return PAPER_STARTING_EQUITY + realized;
 }
 
 /** Open stop-risk including estimated fees if every open trade hits its stop. */
@@ -126,14 +137,14 @@ export async function getOpenPortfolioRisk(db: Admin): Promise<number> {
 export async function getDailyRealizedPnL(db: Admin): Promise<number> {
   const dayStart = athensStartOfDay();
   const { data, error } = await (db.from as any)("trades")
-    .select("pnl")
+    .select("pnl, net_pnl")
     .eq("mode", "paper")
     .eq("status", "closed")
     .eq("side", "buy")
     .gte("closed_at", dayStart);
   if (error) throw new Error(`getDailyRealizedPnL: ${error.message}`);
-  return ((data ?? []) as { pnl: number | null }[])
-    .reduce((sum, t) => sum + (Number(t.pnl) || 0), 0);
+  return ((data ?? []) as { pnl: number | null; net_pnl: number | null }[])
+    .reduce((sum, t) => sum + (realizedPnlValue(t)), 0);
 }
 
 export async function getOpenUnrealizedPnL(
@@ -141,21 +152,22 @@ export async function getOpenUnrealizedPnL(
   currentPrices: Map<string, number>,
 ): Promise<number> {
   const { data, error } = await (db.from as any)("trades")
-    .select("symbol, side, entry_price, quantity")
+    .select("symbol, side, entry_price, quantity, entry_fee")
     .eq("mode", "paper")
     .eq("status", "open")
     .eq("side", "buy");
   if (error) throw new Error(`getOpenUnrealizedPnL: ${error.message}`);
 
-  return ((data ?? []) as { symbol: string; side: "buy" | "sell"; entry_price: number; quantity: number }[])
+  return ((data ?? []) as { symbol: string; side: "buy" | "sell"; entry_price: number; quantity: number; entry_fee: number | null }[])
     .reduce((sum, t) => {
       const current = currentPrices.get(`${t.symbol === "MATIC" ? "POL" : t.symbol === "RNDR" ? "RENDER" : t.symbol}USDT`);
       const entry = Number(t.entry_price);
       const qty = Number(t.quantity);
       if (current == null || !Number.isFinite(current) || !Number.isFinite(entry) || !Number.isFinite(qty) || qty <= 0) return sum;
       const gross = (t.side === "buy" ? current - entry : entry - current) * qty;
+      const entryFee = Number(t.entry_fee ?? entry * qty * RISK_CONFIG.FEE_RATE);
       const estimatedExitFee = current * qty * RISK_CONFIG.FEE_RATE;
-      return sum + gross - estimatedExitFee;
+      return sum + gross - entryFee - estimatedExitFee;
     }, 0);
 }
 

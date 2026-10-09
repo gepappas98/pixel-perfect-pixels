@@ -13,17 +13,25 @@ const BINANCE_SYMBOL_MAP: Record<string, string> = {
 };
 
 async function getPrices(symbols: string[]) {
+  // Price lookup is best-effort per symbol: one Binance/network failure must
+  // not erase valid prices for every other open position.
   const prices = await Promise.all(
     symbols.map(async (symbol) => {
-      const normalizedSymbol = symbol.replace(/[^A-Z0-9]/gi, "").toUpperCase();
-      const binanceSymbol = BINANCE_SYMBOL_MAP[normalizedSymbol] ?? normalizedSymbol;
-      const response = await fetch(
-        `https://api.binance.com/api/v3/ticker/price?symbol=${encodeURIComponent(binanceSymbol)}USDT`,
-      );
-      if (!response.ok) return [symbol, null] as const;
-      const data = (await response.json()) as { price?: string };
-      const price = Number(data.price);
-      return [symbol, Number.isFinite(price) ? price : null] as const;
+      try {
+        const normalizedSymbol = symbol.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+        const mappedSymbol = BINANCE_SYMBOL_MAP[normalizedSymbol] ?? normalizedSymbol;
+        const pair = mappedSymbol.endsWith("USDT") ? mappedSymbol : `${mappedSymbol}USDT`;
+        const response = await fetch(
+          `https://api.binance.com/api/v3/ticker/price?symbol=${encodeURIComponent(pair)}`,
+          { signal: AbortSignal.timeout(5_000), cache: "no-store" },
+        );
+        if (!response.ok) return [symbol, null] as const;
+        const data = (await response.json()) as { price?: string };
+        const price = Number(data.price);
+        return [symbol, Number.isFinite(price) && price > 0 ? price : null] as const;
+      } catch {
+        return [symbol, null] as const;
+      }
     }),
   );
   return Object.fromEntries(prices) as Record<string, number | null>;
@@ -123,6 +131,12 @@ export function TradesPanel() {
         <p className="text-sm text-destructive">Failed to load positions: {loadError}</p>
       )}
 
+      {openTrades.length > 0 && prices.data && openTrades.some((trade) => prices.data?.[trade.symbol] == null) && (
+        <p role="status" className="mb-2 text-[10px] text-warn">
+          Some live prices are unavailable. PnL is shown only for symbols with a valid current price.
+        </p>
+      )}
+
       <div className="overflow-x-auto">
         <table className="w-full min-w-[760px] text-sm">
           <thead>
@@ -131,7 +145,7 @@ export function TradesPanel() {
               <th className="pb-1 font-normal">Side</th>
               <th className="pb-1 font-normal">Entry</th>
               <th className="pb-1 font-normal">Current</th>
-              <th className="pb-1 font-normal">Value</th>
+              <th className="pb-1 font-normal">Entry Notional</th>
               <th className="pb-1 font-normal">PnL</th>
               <th className="pb-1 font-normal">PnL %</th>
               <th className="pb-1 font-normal">Status</th>
