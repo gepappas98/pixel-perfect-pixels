@@ -521,7 +521,7 @@ The following read-only website paths were moved off the legacy server-side Supa
 The owner confirmed that the open-ended paper book is intentional research design: repeated BUY triggers should be observed across entries, exits, TP/SL and net outcomes. A portfolio cap or one-position-per-symbol gate would bias that sample and must not be applied to the research executor.
 
 Changes on `fix/p0-paper-book-mtm-observability`:
-- Removed the draft executor's three-position and one-position-per-symbol capacity gate. Duplicate protection remains per composite signal; separate signals for the same symbol can create separate research positions.
+- Kept the existing research executor unchanged: the main-branch behavior already allows distinct eligible BUY signals to open concurrent positions, including repeated positions for the same symbol; duplicate protection remains per composite signal. No executor behavior change is included in this wallet-focused correction.
 - Renamed the Positions table's `Value` column to `Entry Notional`.
 - Reworked the wallet panel to distinguish $20,000 starting equity (reference only), all-time realized PnL, net unrealized MTM, current marked equity, open entry notional, current market value, open BUY count, and open stop-risk reference.
 - Open MTM now subtracts both the recorded entry fee (or estimated fallback) and estimated exit fee.
