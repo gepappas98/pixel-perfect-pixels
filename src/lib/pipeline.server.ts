@@ -1652,7 +1652,7 @@ async function groqBatchCouncil(candidates: AiCandidate[]): Promise<Map<string, 
       whale_buy_count: Number(c.whale?.["buy_count"] ?? 0),
       whale_sell_count: Number(c.whale?.["sell_count"] ?? 0),
       vwap_4h: c.mtfRaw.primary?.["raw"] && typeof (c.mtfRaw.primary?.["raw"] as Row)?.["vwap"] === "number"
-        ? Number((c.mtfRaw.primary?.["raw"] as Row)["vwap"])
+        ? Number((c.mtfRaw.primary?.["raw"] as Row)?.["vwap"])
         : null,
       market_regime: currentRegimeLabel ?? "unknown",
       past_lessons: lessons.slice(0, 3).map((l) => `[${l.outcome}] ${String(l.lesson).slice(0, 180)}`),
