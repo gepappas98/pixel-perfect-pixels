@@ -30,7 +30,7 @@ begin
 
   -- Eligibility policy: future publication timestamps are never live evidence.
   v_live := case
-    when timestamptz '2026-10-09 12:01:00+00' < timestamptz '2026-10-09 12:00:00+00' then 'historical_only'
+    when timestamptz '2026-10-09 12:00:00+00' < timestamptz '2026-10-09 12:01:00+00' then 'historical_only'
     when timestamptz '2026-10-09 12:00:00+00' - timestamptz '2026-10-09 12:01:00+00' > interval '15 minutes' then 'historical_only'
     else 'live_eligible'
   end;
