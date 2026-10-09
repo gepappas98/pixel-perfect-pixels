@@ -500,3 +500,14 @@ The following read-only website paths were moved off the legacy server-side Supa
   - `partial`: 457 rows remain partial where the paired horizon is not fully available.
 - The former false `complete_24h` count of 546 is now 144; this is a correction to completeness labels, not deletion of source data.
 - No trading strategy, live/paper execution, risk limits, or scheduler were changed. Repeated BUY ledger remains **WAITING_FOR_MATURITY**.
+
+
+## 2026-10-09 — P0 paper book / MTM forensic pass (draft branch)
+
+- Canonical DB confirmed: `yckewtpfttvwiptmmrfq`; no SQL writes or historical data changes were made during this audit.
+- Read-only snapshot: 46 open paper rows total = 43 BUY + 3 legacy SELL; BUY exposure is $43,000 across 8 symbols, all-side open entry notional is $46,000. Concentration: ONDO 17 rows / $17,000; TIA 15 / $15,000; DOT 5 / $5,000. All sampled open rows have entry price, quantity, SL and TP.
+- Confirmed code issue in `TradesPanel.tsx`: one rejected Binance ticker request could reject the whole `Promise.all`, causing all current prices to disappear. Draft fix isolates failures per symbol, adds a timeout and explicitly warns when some prices are unavailable.
+- Confirmed code issue in `RiskPanel.tsx`: any server-side query failure returned default `0 / 17` with an apparently ACTIVE status. Draft fix marks fallback metrics as DATA UNAVAILABLE and partial price coverage as PARTIAL DATA.
+- Confirmed canonical orchestrator calls the `trade-executor` Edge Function. The repository implementation previously bypassed capacity in research mode, only deduplicated the exact same signal, and did not manage TP/SL exits in that function. Draft fix adds current-ticker TP/SL close handling with fee-aware realized PnL, a hard cap of 3 open paper BUY positions, and one open BUY per symbol. Signal-level observations remain in the research ledger; SELL rows are not deleted or rewritten.
+- Branch: `fix/p0-paper-book-mtm-observability`. Changes are code-only and are NOT deployed to Supabase or production. Build/typecheck/runtime verification is still required before merge/deploy.
+- Important limitation: ticker-based exit checks can miss an intrabar TP/SL touch between polling runs; this draft does not claim candle-level ambiguity resolution. Existing open rows will only close when a current ticker price meets their stored TP/SL; no bulk close/reset was performed.
