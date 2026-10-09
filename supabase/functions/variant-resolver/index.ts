@@ -9,7 +9,7 @@ const MIN_AGE_MS = 60 * 60 * 1000;
 const EXPIRY_TRIGGER_HOURS = 72;
 const CANDLE_LIMIT = 1000;
 const CONCURRENCY = 8;
-const RESOLVER_VERSION = 5;
+const RESOLVER_VERSION = 6;
 function audit(event: string, details: Record<string, unknown>) {
   console.log("[VARIANT_RESOLVER_AUDIT]", JSON.stringify({resolver_version: RESOLVER_VERSION,event,...details}));
 }
@@ -298,10 +298,15 @@ Deno.serve(async () => {
   const maxHours = Number(settingsResult.data.variant_max_hours);
 
   const symbols = [...new Set(variants.map((v) => v.symbol))];
+  const candleFetchFailures = new Map<string, string>();
   const candleResults = await mapConcurrent(symbols, async (symbol) => {
     try {
       return { symbol, candles: await fetchResolutionCandles(symbol, "1h") };
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const pair = (() => { try { return toBinanceSpotSymbol(symbol); } catch { return "unresolved"; } })();
+      candleFetchFailures.set(symbol, message);
+      audit("symbol_candle_fetch_failed", { symbol, pair, interval: "1h", error: message });
       return { symbol, candles: [] as Candle[] };
     }
   });
@@ -384,6 +389,17 @@ Deno.serve(async () => {
         audit("expiry_decision",{variant_id:variant.id,symbol:variant.symbol,expiry_candle_open_time:new Date(expiryCandle.openTimeMs).toISOString(),close:expiryCandle.close,age_hours:Number(ageHours.toFixed(3)),max_hours:maxHours});
         outcome = "expired";
         exitPrice = expiryCandle.close;
+      } else if (candleFetchFailures.has(variant.symbol)) {
+        audit("expiry_blocked_candle_fetch_failed", {
+          variant_id: variant.id, symbol: variant.symbol,
+          age_hours: Number(ageHours.toFixed(3)), max_hours: maxHours,
+          error: candleFetchFailures.get(variant.symbol),
+        });
+      } else {
+        audit("expiry_blocked_no_relevant_candle", {
+          variant_id: variant.id, symbol: variant.symbol,
+          age_hours: Number(ageHours.toFixed(3)), max_hours: maxHours,
+        });
       }
     }
 
