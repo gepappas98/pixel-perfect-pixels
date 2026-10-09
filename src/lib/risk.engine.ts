@@ -97,7 +97,7 @@ export async function getPaperEquity(db: Admin): Promise<number> {
     .eq("side", "buy");
   if (error) throw new Error(`getPaperEquity: ${error.message}`);
   const realized = ((data ?? []) as { pnl: number | null; net_pnl: number | null }[])
-    .reduce((sum, t) => sum + (Number(t.net_pnl ?? t.pnl) || 0), 0);
+    .reduce((sum, t) => sum + ((t.net_pnl == null || (Number(t.net_pnl) === 0 && Number(t.pnl) !== 0) ? Number(t.pnl) : Number(t.net_pnl)) || 0), 0);
   return PAPER_STARTING_EQUITY + realized;
 }
 
@@ -133,7 +133,7 @@ export async function getDailyRealizedPnL(db: Admin): Promise<number> {
     .gte("closed_at", dayStart);
   if (error) throw new Error(`getDailyRealizedPnL: ${error.message}`);
   return ((data ?? []) as { pnl: number | null; net_pnl: number | null }[])
-    .reduce((sum, t) => sum + (Number(t.net_pnl ?? t.pnl) || 0), 0);
+    .reduce((sum, t) => sum + ((t.net_pnl == null || (Number(t.net_pnl) === 0 && Number(t.pnl) !== 0) ? Number(t.pnl) : Number(t.net_pnl)) || 0), 0);
 }
 
 export async function getOpenUnrealizedPnL(
