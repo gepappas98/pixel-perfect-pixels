@@ -70,12 +70,12 @@ begin
     from public.tracked_assets ta
     where ta.enabled = true
       and (
-        upper(e.text_content) ~ ('(^|[^A-Z0-9])' || regexp_replace(upper(ta.asset), '([^A-Z0-9])', '\\$1', 'g') || '([^A-Z0-9]|$)')
+        upper(e.text_content) ~ ('(^|[^A-Z0-9])' || upper(ta.asset) || '([^A-Z0-9]|$)')
         or exists (
           select 1
           from public.tracked_asset_social_aliases a
           where a.asset = ta.asset
-            and lower(e.text_content) ~ ('(^|[^a-z0-9])' || regexp_replace(lower(a.alias), '([^a-z0-9])', '\\$1', 'g') || '([^a-z0-9]|$)')
+            and lower(e.text_content) ~ ('(^|[^a-z0-9])' || lower(a.alias) || '([^a-z0-9]|$)')
         )
       )
   loop
