@@ -518,3 +518,11 @@ The following read-only website paths were moved off the legacy server-side Supa
 - `price_at` is derived from the chosen MTF primary indicator and deliberately writes NULL when `indicator?.price` is absent/non-positive. NULL price rows are concentrated in older records: 2026-10-08/09 = 0; 2026-10-07 = 24; 2026-10-06 and earlier = thousands/day. A retrospective 6-hour 4h-indicator check found 40 price-null rows with a positive 4h price, but these were old MON rows with newer MTF records, not sufficient evidence that the chosen primary indicator had a valid price at the signal timestamp. Do not backfill `price_at` from an arbitrary candle; inspect historical MTF selection/version before any repair.
 - `regime_label` and `fingerprint` have no new NULLs in the 2026-10-08/09 sample; their NULLs are historical/pre-v6 and should remain untouched unless a reproducible source exists.
 - **Next root-cause target:** inspect writer/version history around the 2026-10-06 → 2026-10-08 transition and test the MTF primary selection contract. No production database rows were changed.
+
+
+## 2026-10-09 — DB-NULL-23 root-cause pass: pipeline_runs NULL semantics
+
+- Read-only canonical DB grouping by `job_name,status` found all `result IS NULL` rows belong to the legacy `runFullPipeline` writer: 229/284 successful rows and 18/18 error rows. The canonical `trading-pipeline-orchestrator` has 1,359 rows across completed/error, and **0 NULL result** rows.
+- The canonical orchestrator inserts an initial JSON `result` (architecture, trigger, source, empty stages), updates it after each stage, and writes the final stage list plus execution audit. The legacy writer stopped being the source of truth; these NULLs are historical writer semantics, not current orchestrator data loss.
+- `error_message IS NULL` is expected on successful canonical runs (all 1,338 completed rows); it is not an error by itself. The canonical failed rows have `error_message` populated (21/21 in this audit). Likewise, legacy success rows with NULL `error_message` are semantically normal.
+- No counter backfill, JSON result fabrication, or status rewrite is justified. Preserve historical records. Old scalar counters remain unused by the canonical writer and must not be defaulted to zero.
