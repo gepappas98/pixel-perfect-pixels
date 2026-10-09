@@ -500,3 +500,11 @@ The following read-only website paths were moved off the legacy server-side Supa
   - `partial`: 457 rows remain partial where the paired horizon is not fully available.
 - The former false `complete_24h` count of 546 is now 144; this is a correction to completeness labels, not deletion of source data.
 - No trading strategy, live/paper execution, risk limits, or scheduler were changed. Repeated BUY ledger remains **WAITING_FOR_MATURITY**.
+
+
+## 2026-10-09 — DB-NULL-23 root-cause pass: composite_signals market_session
+
+- **CONFIRMED WRITER DEFECT (code fix prepared; not deployed):** `supabase/functions/signal-combiner/index.ts` computes `productionMarketSession`, but the `composite_signals` upsert omitted `market_session`. This directly explains why all 26,685 `composite_signals` rows created in the last 7 days have `market_session IS NULL`.
+- Read-only canonical DB check: 26,685/26,685 rows in the 7-day window have NULL `market_session`; new rows on 2026-10-08 and 2026-10-09 also show 100% NULL. This is an actual writer omission, not evidence of failed pipeline runs.
+- Code change on branch `fix/composite-signals-null-market-session`: include `market_session: productionMarketSession` in the `composite_signals` upsert. No database mutation, backfill, deploy, or strategy/execution change performed.
+- Other NULL classes remain under root-cause investigation. Do not mass-fill NULLs. In particular, nullable source IDs must be classified against their freshness/matching rules before any correction.
