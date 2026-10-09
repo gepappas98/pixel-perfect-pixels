@@ -89,6 +89,17 @@ function athensStartOfDay(): string {
   return new Date(Date.UTC(y, m - 1, d, 0, 0, 0) - offsetMs).toISOString();
 }
 
+/** Prefer fee-aware net PnL, but recover legacy rows where the fee migration
+ * populated net_pnl with its DEFAULT 0 without a valid closed-trade backfill. */
+function realizedPnlValue(t: { pnl: number | null; net_pnl: number | null }): number {
+  const legacyPnl = Number(t.pnl);
+  const netPnl = t.net_pnl == null ? null : Number(t.net_pnl);
+  if (netPnl == null || (netPnl === 0 && legacyPnl !== 0)) {
+    return Number.isFinite(legacyPnl) ? legacyPnl : 0;
+  }
+  return Number.isFinite(netPnl) ? netPnl : 0;
+}
+
 export async function getPaperEquity(db: Admin): Promise<number> {
   const { data, error } = await (db.from as any)("trades")
     .select("pnl, net_pnl")
@@ -97,7 +108,7 @@ export async function getPaperEquity(db: Admin): Promise<number> {
     .eq("side", "buy");
   if (error) throw new Error(`getPaperEquity: ${error.message}`);
   const realized = ((data ?? []) as { pnl: number | null; net_pnl: number | null }[])
-    .reduce((sum, t) => sum + ((t.net_pnl == null || (Number(t.net_pnl) === 0 && Number(t.pnl) !== 0) ? Number(t.pnl) : Number(t.net_pnl)) || 0), 0);
+    .reduce((sum, t) => sum + (realizedPnlValue(t)), 0);
   return PAPER_STARTING_EQUITY + realized;
 }
 
@@ -133,7 +144,7 @@ export async function getDailyRealizedPnL(db: Admin): Promise<number> {
     .gte("closed_at", dayStart);
   if (error) throw new Error(`getDailyRealizedPnL: ${error.message}`);
   return ((data ?? []) as { pnl: number | null; net_pnl: number | null }[])
-    .reduce((sum, t) => sum + ((t.net_pnl == null || (Number(t.net_pnl) === 0 && Number(t.pnl) !== 0) ? Number(t.pnl) : Number(t.net_pnl)) || 0), 0);
+    .reduce((sum, t) => sum + (realizedPnlValue(t)), 0);
 }
 
 export async function getOpenUnrealizedPnL(
