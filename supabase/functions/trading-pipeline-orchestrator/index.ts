@@ -25,7 +25,9 @@ function countBy(items: any[], key: string): Record<string, number> {
 /**
  * Keep the complete stage responses in the HTTP response for callers, but do
  * not duplicate large raw payloads in every pipeline_runs JSONB update.
- * whale_alerts.raw and prediction_snapshots.raw remain the canonical records.
+ * whale_alerts.raw is the canonical record for deduplicated whale trades.
+ * Polymarket snapshots are intentionally kept in pipeline_runs because
+ * prediction_snapshots is upserted by market_slug and only keeps the latest value.
  */
 function compactStageForStorage(stage: any): any {
   const result = stage?.result;
@@ -54,27 +56,9 @@ function compactStageForStorage(stage: any): any {
     };
   }
 
-  if (stage.name === "polymarket-check" && Array.isArray(result.snapshots)) {
-    const snapshots = result.snapshots;
-    const { snapshots: _rawSnapshots, ...rest } = result;
-    const topSymbols = Object.entries(countBy(snapshots, "related_symbol"))
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 12)
-      .map(([symbol, count]) => ({ symbol, count }));
-
-    return {
-      ...stage,
-      result: {
-        ...rest,
-        snapshots_count: snapshots.length,
-        snapshots_summary: {
-          by_symbol: countBy(snapshots, "related_symbol"),
-          top_symbols: topSymbols,
-        },
-        raw_payload_storage: "prediction_snapshots",
-      },
-    };
-  }
+  // Do not compact polymarket-check snapshots: prediction_snapshots is upserted
+  // by market_slug and does not preserve prior point-in-time prices. The
+  // pipeline_runs payload is currently the only historical series for replay.
 
   return stage;
 }
