@@ -91,13 +91,13 @@ function athensStartOfDay(): string {
 
 export async function getPaperEquity(db: Admin): Promise<number> {
   const { data, error } = await (db.from as any)("trades")
-    .select("pnl")
+    .select("pnl, net_pnl")
     .eq("mode", "paper")
     .eq("status", "closed")
     .eq("side", "buy");
   if (error) throw new Error(`getPaperEquity: ${error.message}`);
-  const realized = ((data ?? []) as { pnl: number | null }[])
-    .reduce((sum, t) => sum + (Number(t.pnl) || 0), 0);
+  const realized = ((data ?? []) as { pnl: number | null; net_pnl: number | null }[])
+    .reduce((sum, t) => sum + (Number(t.net_pnl ?? t.pnl) || 0), 0);
   return PAPER_STARTING_EQUITY + realized;
 }
 
