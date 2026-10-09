@@ -2490,11 +2490,14 @@ export async function combineSignals(): Promise<number> {
   // Market Regime is explicitly a whole-market reading. Keep its inputs
   // independent from the active execution/watchlist universe so the regime
   // label stored on signals cannot drift merely because the watchlist changes.
+  const regimeFreshnessNow = Date.now();
   const regime = computeRegimeSnapshot({
     whales: (regimeWhalesRes.data ?? []) as Record<string, unknown>[],
     indicators: (regimeIndicatorsRes.data ?? []) as Record<string, unknown>[],
-    predictions: (regimePredictionsRes.data ?? []) as Record<string, unknown>[],
-    councils: (regimeCouncilsRes.data ?? []) as Record<string, unknown>[],
+    predictions: ((regimePredictionsRes.data ?? []) as Record<string, unknown>[]).filter((row) =>
+      isFreshRow(row, "created_at", PREDICTION_MAX_AGE_MS, regimeFreshnessNow)),
+    councils: ((regimeCouncilsRes.data ?? []) as Record<string, unknown>[]).filter((row) =>
+      isFreshRow(row, "source_created_at", COUNCIL_MAX_AGE_MS, regimeFreshnessNow)),
   });
   currentRegimeLabel = regime.label;
   console.log(
