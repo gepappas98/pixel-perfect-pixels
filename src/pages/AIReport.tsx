@@ -341,8 +341,8 @@ export default function AIReport() {
           .gte("started_at", since)
           .order("started_at", { ascending: false })
           .limit(30),
-        (supabase as any).rpc("get_research_alerts", { p_limit: 20 }),
-        (supabase as any)
+        supabase.rpc("get_research_alerts", { p_limit: 20 }),
+        supabase
           .from("asset_price_snapshots")
           .select("asset,price,observed_at")
           .order("observed_at", { ascending: false })
@@ -356,7 +356,7 @@ export default function AIReport() {
       const closedTrades = (closed.data ?? []) as Row[];
       const variantRows = (variants.data ?? []) as Row[];
       const pipelineErrors = (errors.data ?? []) as Row[];
-      const currentResearchAlerts = (research.data ?? []) as unknown as ResearchAlert[];
+      const currentResearchAlerts = (research.data ?? []) as ResearchAlert[];
       const priceRows = (marks.data ?? []) as Row[];
       const latestMarks = new Map<string, number>();
       for (const row of priceRows) {
