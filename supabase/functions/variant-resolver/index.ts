@@ -84,7 +84,7 @@ async function fetchResolutionCandles(symbol: string, interval: string, openTime
     console.warn("[VARIANT_RESOLVER_CANDLE_FETCH_FAILED]", JSON.stringify({
       symbol, pair, interval, error: error instanceof Error ? error.message : String(error),
     }));
-    return [];
+    throw error;
   }
 }
 
@@ -95,9 +95,19 @@ async function resolveAmbiguous(
   slPrice: number,
   parent: Candle,
   variantId?: string,
-): Promise<Outcome> {
+): Promise<Outcome | null> {
   for (const timeframe of ["5m", "15m"] as const) {
-    const lower = await fetchResolutionCandles(symbol, timeframe, parent.openTimeMs, parent.closeTimeMs);
+    let lower: Candle[];
+    try {
+      lower = await fetchResolutionCandles(symbol, timeframe, parent.openTimeMs, parent.closeTimeMs);
+    } catch (error) {
+      audit("lower_timeframe_fetch_failed", {
+        variant_id: variantId ?? null, symbol, side, timeframe,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      // Missing lower-timeframe data is not evidence for AMBIGUOUS or expiry.
+      return null;
+    }
     audit("lower_timeframe_scan",{variant_id:variantId??null,symbol,side,timeframe,parent_open_time:new Date(parent.openTimeMs).toISOString(),parent_close_time:new Date(parent.closeTimeMs).toISOString(),candle_count:lower.length,tp_price:tpPrice,sl_price:slPrice});
     if (lower.length === 0) continue;
 
@@ -250,6 +260,7 @@ Deno.serve(async () => {
 
     let outcome: Outcome | null = null;
     let exitPrice: number | null = null;
+    let candleDataFailure = false;
 
     for (const candle of relevant) {
       const hitTP = variant.recommendation === "buy" ? candle.high >= tpPrice : candle.low <= tpPrice;
@@ -265,6 +276,7 @@ Deno.serve(async () => {
           candle,
           variant.id,
         );
+        if (outcome === null) candleDataFailure = true;
         if (outcome === "win") exitPrice = tpPrice;
         if (outcome === "loss") exitPrice = slPrice;
         break;
@@ -282,6 +294,9 @@ Deno.serve(async () => {
         break;
       }
     }
+
+    // Do not expire or terminally mark a row when candle retrieval failed.
+    if (candleDataFailure) continue;
 
     const ageHours = (nowMs - entryMs) / 3_600_000;
     if (!outcome && ageHours >= EXPIRY_TRIGGER_HOURS) {
