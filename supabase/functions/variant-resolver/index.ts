@@ -36,14 +36,19 @@ type Outcome = "win" | "loss" | "expired" | "ambiguous";
 function toBinanceSpotSymbol(symbol: string): string {
   const normalized = symbol.trim().toUpperCase().replace(/[\\/_-]/g, "");
   if (!normalized) throw new Error("empty symbol for Binance klines");
-  // Research rows usually store the base asset (e.g. BTC); Binance Spot
-  // klines requires the trading pair (e.g. BTCUSDT). Preserve an explicit
-  // quote asset if the caller already supplied a pair.
-  if (/(USDT|USDC|BUSD|FDUSD|TUSD|USDP|DAI|EUR|TRY|BRL|GBP|AUD|JPY)$/.test(normalized)
-      && normalized.length > normalized.match(/(USDT|USDC|BUSD|FDUSD|TUSD|USDP|DAI|EUR|TRY|BRL|GBP|AUD|JPY)$/)![0].length) {
-    return normalized;
+
+  // Explicit symbol migrations for assets renamed on Binance Spot.
+  // Keep this list intentionally small and evidence-based.
+  const aliases: Record<string, string> = { MATIC: "POL" };
+  const quoteSuffix = /(USDT|USDC|BUSD|FDUSD|TUSD|USDP|DAI|EUR|TRY|BRL|GBP|AUD|JPY)$/;
+  const match = normalized.match(quoteSuffix);
+  if (match && normalized.length > match[0].length) {
+    const base = normalized.slice(0, -match[0].length);
+    return `${aliases[base] ?? base}${match[0]}`;
   }
-  return `${normalized}USDT`;
+
+  const base = aliases[normalized] ?? normalized;
+  return `${base}USDT`;
 }
 
 async function fetchKlines(symbol: string, interval: string): Promise<Candle[]> {
@@ -73,7 +78,12 @@ async function fetchResolutionCandles(symbol: string, interval: string, openTime
       (openTimeMs == null || c.closeTimeMs > openTimeMs) &&
       (closeTimeMs == null || c.openTimeMs < closeTimeMs)
     );
-  } catch {
+  } catch (error) {
+    let pair = "unresolved";
+    try { pair = toBinanceSpotSymbol(symbol); } catch { /* preserve original error */ }
+    console.warn("[VARIANT_RESOLVER_CANDLE_FETCH_FAILED]", JSON.stringify({
+      symbol, pair, interval, error: error instanceof Error ? error.message : String(error),
+    }));
     return [];
   }
 }
@@ -124,6 +134,35 @@ Deno.serve(async () => {
   const nowMs = Date.now();
   const maxAgeIso = new Date(nowMs - MIN_AGE_MS).toISOString();
 
+  const { count: eligibleCount, error: countError } = await supabase
+    .from("strategy_variant_signals")
+    .select("id", { count: "exact", head: true })
+    .eq("outcome", "open")
+    .in("recommendation", ["buy", "sell"])
+    .not("entry_price", "is", null)
+    .gt("created_at", RESOLVER_START_AT)
+    .lte("created_at", maxAgeIso);
+
+  if (countError) {
+    return new Response(JSON.stringify({ ok: false, error: countError.message }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  const batchSize = 500;
+  const pageCount = Math.max(1, Math.ceil((eligibleCount ?? 0) / batchSize));
+  // Rotate through eligible rows on each two-minute scheduler slot. Rows that
+  // remain open because TP/SL has not been hit must not pin the resolver to
+  // the oldest 500 forever. The modulo also handles the final partial page.
+  const schedulerSlot = Math.floor(nowMs / (2 * 60 * 1000));
+  const page = schedulerSlot % pageCount;
+  const offset = page * batchSize;
+  audit("batch_selected", {
+    eligible_count: eligibleCount ?? 0, batch_size: batchSize,
+    page_count: pageCount, page, offset,
+  });
+
   const { data: rows, error } = await supabase
     .from("strategy_variant_signals")
     .select("id, symbol, recommendation, entry_price, created_at")
@@ -133,7 +172,7 @@ Deno.serve(async () => {
     .gt("created_at", RESOLVER_START_AT)
     .lte("created_at", maxAgeIso)
     .order("created_at", { ascending: true })
-    .limit(500);
+    .range(offset, offset + batchSize - 1);
 
   if (error) {
     return new Response(JSON.stringify({ ok: false, error: error.message }), {
