@@ -9,7 +9,7 @@ const MIN_AGE_MS = 60 * 60 * 1000;
 const EXPIRY_TRIGGER_HOURS = 72;
 const CANDLE_LIMIT = 1000;
 const CONCURRENCY = 8;
-const RESOLVER_VERSION = 3;
+const RESOLVER_VERSION = 4;
 function audit(event: string, details: Record<string, unknown>) {
   console.log("[VARIANT_RESOLVER_AUDIT]", JSON.stringify({resolver_version: RESOLVER_VERSION,event,...details}));
 }
