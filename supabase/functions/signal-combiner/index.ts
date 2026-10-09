@@ -711,6 +711,7 @@ Deno.serve(async (req) => {
             reasoning: reasoningParts.join("; "),
             price_at: Number(indicator?.price ?? 0) > 0 ? Number(indicator.price) : null,
             regime_label: productionRegimeLabel,
+            market_session: productionMarketSession,
             source_tags: sourceTags,
             fingerprint: signalFingerprint,
             created_at: new Date().toISOString(),
