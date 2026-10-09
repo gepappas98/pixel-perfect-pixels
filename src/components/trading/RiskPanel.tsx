@@ -92,7 +92,7 @@ const getRiskStatus = createServerFn({ method: "GET" }).handler(
         } catch (err) {
           priceCoverageError = err instanceof Error ? err.message : String(err);
         }
-        const missingSymbols = symbols.filter((symbol) => !prices.has(symbol));
+        const missingSymbols = symbols.filter((symbol) => !prices.has(symbol as string));
         if (missingSymbols.length > 0) {
           priceCoverageError = `Live prices unavailable for ${missingSymbols.length}/${symbols.length} open-position symbols; MTM/equity is partial.`;
         }

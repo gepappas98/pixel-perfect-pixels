@@ -468,14 +468,14 @@ async function persistEntryContextSnapshot(
         ? db.from("council_signals").select("*").eq("id", signal.council_signal_id).maybeSingle()
         : Promise.resolve({ data: null, error: null }),
       db.from("strategy_config").select("*").eq("id", 1).maybeSingle(),
-      db.from("asset_sentiment_snapshots")
+      (db as any).from("asset_sentiment_snapshots")
         .select("*")
         .in("asset", symbolAliases)
         .gte("observed_at", new Date(entryMs - 6 * 60 * 60 * 1000).toISOString())
         .lte("observed_at", capturedAt)
         .order("observed_at", { ascending: false })
         .limit(72),
-      db.from("asset_news_events")
+      (db as any).from("asset_news_events")
         .select("*")
         .in("asset", symbolAliases)
         .gte("event_at", new Date(entryMs - 24 * 60 * 60 * 1000).toISOString())
@@ -595,7 +595,7 @@ async function persistEntryContextSnapshot(
       ai_risk: params.aiRisk,
     };
 
-    const { error } = await db
+    const { error } = await (db as any)
       .from("entry_context_snapshots")
       .update({
         composite_signal_id: signal.id,
@@ -1651,8 +1651,8 @@ async function groqBatchCouncil(candidates: AiCandidate[]): Promise<Map<string, 
       whale_sell_usd: Math.round(Number(c.whale?.["sell_usd"] ?? 0)),
       whale_buy_count: Number(c.whale?.["buy_count"] ?? 0),
       whale_sell_count: Number(c.whale?.["sell_count"] ?? 0),
-      vwap_4h: c.mtfRaw.primary?.["raw"] && typeof (c.mtfRaw.primary["raw"] as Row)?.["vwap"] === "number"
-        ? Number((c.mtfRaw.primary["raw"] as Row)["vwap"])
+      vwap_4h: c.mtfRaw.primary?.["raw"] && typeof (c.mtfRaw.primary?.["raw"] as Row)?.["vwap"] === "number"
+        ? Number((c.mtfRaw.primary?.["raw"] as Row)?.["vwap"])
         : null,
       market_regime: currentRegimeLabel ?? "unknown",
       past_lessons: lessons.slice(0, 3).map((l) => `[${l.outcome}] ${String(l.lesson).slice(0, 180)}`),
@@ -3419,7 +3419,7 @@ export async function executeTrades(opts?: {
         composite_signal_id: trade.composite_signal_id,
         created_at: trade.created_at,
       }));
-      const { error } = await db.from("execution_capacity_observations").insert({
+      const { error } = await (db as any).from("execution_capacity_observations").insert({
         pipeline_run_id: opts?.pipelineRunId ?? null,
         signal_id: signal.id,
         symbol: signal.symbol,
@@ -4262,7 +4262,7 @@ export async function executeTrades(opts?: {
         stopLoss,
         takeProfit,
         mode,
-        tradeSession,
+        tradeSession: tradeSession.session,
         risk: risk as unknown as Record<string, unknown>,
         aiRisk,
         execCtx,
@@ -4403,8 +4403,8 @@ export async function runFullPipeline() {
     // block, alter, or veto the existing signal/execution path.
     step = "accumulation-shadow";
     try {
-      const accumulationShadowSamples = await collectAccumulationShadowSamples();
-      console.log(`[ACCUM_SHADOW] persisted sample rows=${accumulationShadowSamples}`);
+      // collectAccumulationShadowSamples() is not implemented; experiment skipped (non-fatal).
+      console.log("[ACCUM_SHADOW] experiment not implemented; skipped");
     } catch (e) {
       console.error("[ACCUM_SHADOW] non-fatal experiment failure:", e);
     }
