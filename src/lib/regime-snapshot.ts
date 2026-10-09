@@ -116,10 +116,11 @@ export function computeRegimeSnapshot(input: {
     else if (v === "SELL") cSell++;
   }
   const totalCouncil = seenCouncil.size;
-  const directionalCouncil = cBuy + cSell;
-  // HOLD and AVOID are non-directional for regime consensus.
+  // Keep snapshot scoring consistent with the live Market Regime calculation:
+  // neutral verdicts do not count as bearish, but they do not provide directional
+  // support either, so consensus is normalized by all current council symbols.
   const councilConsensus =
-    directionalCouncil > 0 ? (cBuy - cSell) / directionalCouncil : 0;
+    totalCouncil > 0 ? (cBuy - cSell) / totalCouncil : 0;
 
   const score =
     whaleNet * 0.3 +
