@@ -34,6 +34,90 @@ async function getCurrentPrice(symbol: string): Promise<number> {
   return price;
 }
 
+const MAX_OPEN_PAPER_POSITIONS = 3;
+
+/**
+ * Manage existing paper BUY positions before evaluating new entries.
+ * Uses current Binance ticker prices only; positions whose price cannot be
+ * fetched are left open and reported rather than assigned a fabricated PnL.
+ */
+async function manageOpenPaperPositions(supabase: ReturnType<typeof getServiceClient>) {
+  const { data: positions, error } = await supabase
+    .from("trades")
+    .select("id,symbol,quantity,entry_price,stop_loss,take_profit,entry_fee")
+    .eq("mode", "paper")
+    .eq("status", "open")
+    .eq("side", "buy");
+
+  if (error) throw error;
+
+  const events: Array<Record<string, unknown>> = [];
+  const priceCache = new Map<string, number>();
+
+  for (const position of positions ?? []) {
+    const symbol = String(position.symbol);
+    try {
+      let price = priceCache.get(symbol);
+      if (price === undefined) {
+        price = await getCurrentPrice(symbol);
+        priceCache.set(symbol, price);
+      }
+
+      const entry = Number(position.entry_price);
+      const quantity = Number(position.quantity);
+      const stop = Number(position.stop_loss);
+      const target = Number(position.take_profit);
+      if (![entry, quantity, stop, target].every(Number.isFinite) || entry <= 0 || quantity <= 0) {
+        events.push({ symbol, trade_id: position.id, decision: "skip", reason: "invalid_position_fields" });
+        continue;
+      }
+
+      const closeReason = price <= stop ? "stop_loss" : price >= target ? "take_profit" : null;
+      if (!closeReason) continue;
+
+      const grossPnl = (price - entry) * quantity;
+      const entryFee = Number(position.entry_fee ?? 0);
+      const exitFee = price * quantity * TRADING_FEE_RATE;
+      const totalFees = entryFee + exitFee;
+      const netPnl = grossPnl - totalFees;
+      const closedAt = new Date().toISOString();
+
+      const { data: closed, error: closeError } = await supabase
+        .from("trades")
+        .update({
+          status: "closed",
+          exit_price: price,
+          closed_at: closedAt,
+          close_reason: closeReason,
+          gross_pnl: grossPnl,
+          exit_fee: exitFee,
+          total_fees: totalFees,
+          net_pnl: netPnl,
+          pnl: netPnl,
+        })
+        .eq("id", position.id)
+        .eq("mode", "paper")
+        .eq("status", "open")
+        .select("id")
+        .maybeSingle();
+
+      if (closeError) throw closeError;
+      if (closed) events.push({
+        symbol, trade_id: position.id, decision: "closed",
+        reason: closeReason, exit_price: price, gross_pnl: grossPnl,
+        total_fees: totalFees, net_pnl: netPnl,
+      });
+    } catch (err) {
+      events.push({
+        symbol, trade_id: position.id, decision: "error",
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return { inspected: positions?.length ?? 0, events };
+}
+
 async function getEligibleSignals(supabase: ReturnType<typeof getServiceClient>) {
   const since = new Date(Date.now() - EXECUTION_WINDOW_MINUTES * 60 * 1000).toISOString();
 
@@ -70,6 +154,8 @@ Deno.serve(async (req) => {
     const { data: signals, error: signalError } = await getEligibleSignals(supabase);
     if (signalError) throw signalError;
 
+    const exitManagement = await manageOpenPaperPositions(supabase);
+
     const eligibleSignals = signals ?? [];
     const signalIds = eligibleSignals.map((signal) => String(signal.id));
 
@@ -90,6 +176,17 @@ Deno.serve(async (req) => {
     const existingSignalIds = new Set(
       (existingTrades ?? []).map((row) => String(row.composite_signal_id)),
     );
+
+    const { data: openPaperBuys, error: openPaperBuysError } = await supabase
+      .from("trades")
+      .select("id,symbol")
+      .eq("mode", "paper")
+      .eq("status", "open")
+      .eq("side", "buy");
+    if (openPaperBuysError) throw openPaperBuysError;
+
+    const activeSymbols = new Set((openPaperBuys ?? []).map((row) => String(row.symbol).toUpperCase()));
+    let openPositionCount = openPaperBuys?.length ?? 0;
 
     const opened: unknown[] = [];
     const errors: Array<{ signal_id: string; symbol: string; error: string }> = [];
@@ -136,19 +233,56 @@ Deno.serve(async (req) => {
         continue;
       }
 
+      const normalizedSymbol = symbol.toUpperCase();
+      const capacityReason = activeSymbols.has(normalizedSymbol)
+        ? "symbol_already_has_open_paper_position"
+        : openPositionCount >= MAX_OPEN_PAPER_POSITIONS
+          ? "max_open_paper_positions_reached"
+          : null;
+
+      if (capacityReason) {
+        auditEvents.push({
+          ts: new Date().toISOString(),
+          symbol,
+          signal_id: signalId,
+          stage: "PAPER_CAPACITY_GATE",
+          decision: "SKIP",
+          reason: capacityReason,
+          confidence,
+          details: {
+            open_positions: openPositionCount,
+            max_open_positions: MAX_OPEN_PAPER_POSITIONS,
+            active_symbols: [...activeSymbols],
+            research_signal_still_recorded: true,
+          },
+        });
+        await supabase.from("repeated_buy_research_ledger")
+          .update({
+            research_decision: "capacity_rejected",
+            research_reason: capacityReason,
+            limited_position_decision: "rejected",
+            limited_position_reason: capacityReason,
+          })
+          .eq("composite_signal_id", signalId)
+          .in("research_decision", ["pending_execution_audit", "pending"]);
+        continue;
+      }
+
       auditEvents.push({
         ts: new Date().toISOString(),
         symbol,
         signal_id: signalId,
         stage: "CANDIDATE_FILTER",
         decision: "ACCEPT",
-        reason: "eligible BUY accepted in paper research mode",
+        reason: "eligible BUY accepted within paper portfolio limits",
         confidence,
         details: {
           min_confidence: MIN_CONFIDENCE,
           window_minutes: EXECUTION_WINDOW_MINUTES,
           research_mode: true,
-          capacity_gate: "bypassed",
+          capacity_gate: "enforced",
+          open_positions: openPositionCount,
+          max_open_positions: MAX_OPEN_PAPER_POSITIONS,
         },
       });
 
@@ -204,6 +338,8 @@ Deno.serve(async (req) => {
           .eq("composite_signal_id", signalId)
           .in("research_decision", ["pending_execution_audit", "pending"]);
         existingSignalIds.add(signalId);
+        activeSymbols.add(normalizedSymbol);
+        openPositionCount += 1;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         errors.push({ signal_id: signalId, symbol, error: message });
@@ -305,6 +441,7 @@ Deno.serve(async (req) => {
         reason: "paper_research_mode",
       },
       trades: opened,
+      exit_management: exitManagement,
       execution_audit: {
         version: 2,
         started_at: auditStartedAt,
