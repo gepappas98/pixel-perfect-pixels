@@ -526,6 +526,7 @@ Changes on `fix/p0-paper-book-mtm-observability`:
 - Reworked the wallet panel to distinguish $20,000 starting equity (reference only), all-time realized PnL, net unrealized MTM, current marked equity, open entry notional, current market value, open BUY count, and open stop-risk reference.
 - Open MTM now subtracts both the recorded entry fee (or estimated fallback) and estimated exit fee.
 - Paper equity now uses net_pnl when available, falls back to pnl for historical rows, and no longer floors the displayed realized-equity basis at $1.
+- Legacy compatibility detail: the fee migration added `net_pnl DEFAULT 0`; wallet aggregation now falls back to a non-zero legacy `pnl` when `net_pnl` is still that default zero, avoiding silent omission of older closed rows.
 - Missing ticker coverage is surfaced as partial MTM; live ticker marks are explicitly not represented as guaranteed intrabar exit fills.
 
 Constraints:
