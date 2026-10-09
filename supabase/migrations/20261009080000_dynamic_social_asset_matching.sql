@@ -6,8 +6,9 @@ create table if not exists public.tracked_asset_social_aliases (
   created_at timestamptz not null default now(),
   primary key (asset, alias)
 );
-create index if not exists idx_tracked_asset_social_aliases_alias
-  on public.tracked_asset_social_aliases (lower(alias));
+alter table public.tracked_asset_social_aliases enable row level security;
+revoke all on table public.tracked_asset_social_aliases from public, anon, authenticated;
+grant all on table public.tracked_asset_social_aliases to service_role;
 
 -- Curated names only where the public name is well-defined. Ticker matching
 -- remains dynamic and is restricted to explicit token boundaries.
