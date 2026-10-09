@@ -13,17 +13,25 @@ const BINANCE_SYMBOL_MAP: Record<string, string> = {
 };
 
 async function getPrices(symbols: string[]) {
+  // Price lookup is best-effort per symbol: one Binance/network failure must
+  // not erase valid prices for every other open position.
   const prices = await Promise.all(
     symbols.map(async (symbol) => {
-      const normalizedSymbol = symbol.replace(/[^A-Z0-9]/gi, "").toUpperCase();
-      const binanceSymbol = BINANCE_SYMBOL_MAP[normalizedSymbol] ?? normalizedSymbol;
-      const response = await fetch(
-        `https://api.binance.com/api/v3/ticker/price?symbol=${encodeURIComponent(binanceSymbol)}USDT`,
-      );
-      if (!response.ok) return [symbol, null] as const;
-      const data = (await response.json()) as { price?: string };
-      const price = Number(data.price);
-      return [symbol, Number.isFinite(price) ? price : null] as const;
+      try {
+        const normalizedSymbol = symbol.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+        const mappedSymbol = BINANCE_SYMBOL_MAP[normalizedSymbol] ?? normalizedSymbol;
+        const pair = mappedSymbol.endsWith("USDT") ? mappedSymbol : `${mappedSymbol}USDT`;
+        const response = await fetch(
+          `https://api.binance.com/api/v3/ticker/price?symbol=${encodeURIComponent(pair)}`,
+          { signal: AbortSignal.timeout(5_000), cache: "no-store" },
+        );
+        if (!response.ok) return [symbol, null] as const;
+        const data = (await response.json()) as { price?: string };
+        const price = Number(data.price);
+        return [symbol, Number.isFinite(price) && price > 0 ? price : null] as const;
+      } catch {
+        return [symbol, null] as const;
+      }
     }),
   );
   return Object.fromEntries(prices) as Record<string, number | null>;
