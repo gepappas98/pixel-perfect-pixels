@@ -126,14 +126,14 @@ export async function getOpenPortfolioRisk(db: Admin): Promise<number> {
 export async function getDailyRealizedPnL(db: Admin): Promise<number> {
   const dayStart = athensStartOfDay();
   const { data, error } = await (db.from as any)("trades")
-    .select("pnl")
+    .select("pnl, net_pnl")
     .eq("mode", "paper")
     .eq("status", "closed")
     .eq("side", "buy")
     .gte("closed_at", dayStart);
   if (error) throw new Error(`getDailyRealizedPnL: ${error.message}`);
-  return ((data ?? []) as { pnl: number | null }[])
-    .reduce((sum, t) => sum + (Number(t.pnl) || 0), 0);
+  return ((data ?? []) as { pnl: number | null; net_pnl: number | null }[])
+    .reduce((sum, t) => sum + (Number(t.net_pnl ?? t.pnl) || 0), 0);
 }
 
 export async function getOpenUnrealizedPnL(
