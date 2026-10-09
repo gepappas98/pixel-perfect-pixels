@@ -96,6 +96,7 @@ async function resolveAmbiguous(
   parent: Candle,
   variantId?: string,
 ): Promise<Outcome | null> {
+  let sawLowerCandles = false;
   for (const timeframe of ["5m", "15m"] as const) {
     let lower: Candle[];
     try {
@@ -110,6 +111,7 @@ async function resolveAmbiguous(
     }
     audit("lower_timeframe_scan",{variant_id:variantId??null,symbol,side,timeframe,parent_open_time:new Date(parent.openTimeMs).toISOString(),parent_close_time:new Date(parent.closeTimeMs).toISOString(),candle_count:lower.length,tp_price:tpPrice,sl_price:slPrice});
     if (lower.length === 0) continue;
+    sawLowerCandles = true;
 
     for (const candle of lower) {
       const hitTP = side === "buy" ? candle.high >= tpPrice : candle.low <= tpPrice;
@@ -122,7 +124,12 @@ async function resolveAmbiguous(
     }
   }
 
-  // If lower-timeframe data cannot establish order, fail conservatively.
+  // No returned lower-timeframe candles means there is no evidence to
+  // resolve this row. Keep it open and retry later; do not terminally label
+  // missing data as AMBIGUOUS.
+  if (!sawLowerCandles) return null;
+
+  // Candles were available, but neither timeframe established a first hit.
   return "ambiguous";
 }
 
