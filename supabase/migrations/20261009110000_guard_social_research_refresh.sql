@@ -40,8 +40,8 @@ begin
   end if;
 
   foreach a in array coalesce(e.affected_assets,array[]::text[]) loop
-    n := null; ss := null; f := null;
-
+    -- SELECT INTO clears its target on no match; avoid assigning NULL to an
+    -- uninitialised PL/pgSQL RECORD variable before its row shape is known.
     select * into n
     from public.asset_news_events x
     where upper(x.asset)=upper(a)
