@@ -190,6 +190,10 @@ Deno.serve(async () => {
     });
   }
 
+  const maturedPageCount = Math.max(1, Math.ceil((maturedCount ?? 0) / batchSize));
+  const maturedPage = schedulerSlot % maturedPageCount;
+  const maturedOffset = maturedPage * batchSize;
+
   const { data: maturedRows, error: maturedRowsError } = await supabase
     .from("strategy_variant_signals")
     .select("id, symbol, recommendation, entry_price, created_at")
@@ -199,7 +203,7 @@ Deno.serve(async () => {
     .gt("created_at", RESOLVER_START_AT)
     .lte("created_at", expiryCutoffIso)
     .order("created_at", { ascending: true })
-    .limit(batchSize);
+    .range(maturedOffset, maturedOffset + batchSize - 1);
 
   if (maturedRowsError) {
     return new Response(JSON.stringify({ ok: false, error: maturedRowsError.message }), {
@@ -212,13 +216,13 @@ Deno.serve(async () => {
   // 72h expiry threshold. This keeps data-failure rows from monopolizing the
   // ordinary research batch while ensuring matured rows are never skipped.
   const regularCount = Math.max(0, (eligibleCount ?? 0) - (maturedCount ?? 0));
-  const regularSlots = Math.max(0, batchSize - (maturedRows ?? []).length);
+  const regularSlots = batchSize;
   let regularRows: typeof maturedRows = [];
   let regularPage = 0;
   let regularPageCount = 1;
   let regularOffset = 0;
 
-  if (regularSlots > 0 && regularCount > 0) {
+  if (regularCount > 0) {
     regularPageCount = Math.max(1, Math.ceil(regularCount / regularSlots));
     regularPage = schedulerSlot % regularPageCount;
     regularOffset = regularPage * regularSlots;
@@ -246,6 +250,9 @@ Deno.serve(async () => {
   audit("batch_selected", {
     eligible_count: eligibleCount ?? 0,
     matured_count: maturedCount ?? 0,
+    matured_page_count: maturedPageCount,
+    matured_page: maturedPage,
+    matured_offset: maturedOffset,
     matured_selected: (maturedRows ?? []).length,
     regular_count: regularCount,
     batch_size: batchSize,
