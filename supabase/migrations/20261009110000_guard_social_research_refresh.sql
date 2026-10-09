@@ -19,6 +19,7 @@ declare
   reason text;
   cnt integer := 0;
   evts integer := 0;
+  v_status text;
 begin
   if current_user not in ('service_role','postgres') then
     raise exception 'service_role required';
@@ -166,7 +167,6 @@ declare
   v_observations integer := 0;
   v_validations integer := 0;
   v_errors integer := 0;
-  v_status text;
 begin
   for r in
     select e.id
