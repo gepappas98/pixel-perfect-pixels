@@ -137,7 +137,16 @@ begin
   updated_at=now()
   where id=p_event_id;
 
-  return jsonb_build_object('event_id',p_event_id,'status','linked','assets',cnt,'research_only',true);
+  select market_link_status into v_status
+  from public.influential_social_events
+  where id = p_event_id;
+
+  return jsonb_build_object(
+    'event_id',p_event_id,
+    'status',coalesce(v_status,'insufficient_data'),
+    'assets',cnt,
+    'research_only',true
+  );
 end;
 $$;
 
@@ -157,6 +166,7 @@ declare
   v_observations integer := 0;
   v_validations integer := 0;
   v_errors integer := 0;
+  v_status text;
 begin
   for r in
     select e.id
