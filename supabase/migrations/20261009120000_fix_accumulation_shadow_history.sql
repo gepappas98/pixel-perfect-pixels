@@ -86,7 +86,10 @@ BEGIN
   LEFT JOIN LATERAL (
     SELECT o.observed_at AS created_at,o.price,o.obv
     FROM public.accumulation_shadow_observations o
-    WHERE o.asset=regexp_replace(i.symbol,'USDT
+    WHERE o.asset=regexp_replace(i.symbol,'USDT$','')
+      AND o.observed_at BETWEEN i.created_at-interval '32 hours' AND i.created_at-interval '20 hours'
+      AND o.obv IS NOT NULL
+    ORDER BY abs(extract(epoch FROM(i.created_at-o.observed_at))) LIMIT 1
   ) p24 ON true
   LEFT JOIN LATERAL (
     SELECT aps.price FROM public.asset_price_snapshots aps
@@ -106,99 +109,11 @@ BEGIN
     -- The orchestrator runs every two minutes; retain one research sample per asset per 15 minutes.
     AND NOT EXISTS (
       SELECT 1 FROM public.accumulation_shadow_observations recent
-      WHERE recent.asset=regexp_replace(i.symbol,'USDT
-    return_24h_pct=EXCLUDED.return_24h_pct,
-    return_72h_pct=EXCLUDED.return_72h_pct,
-    obv_slope_per_day=EXCLUDED.obv_slope_per_day,
-    obv_price_divergence=EXCLUDED.obv_price_divergence,
-    captured_at=now();
-
-  GET DIAGNOSTICS v_count=ROW_COUNT;
-  RETURN v_count;
-END;
-$$;
-
-REVOKE ALL ON FUNCTION public.capture_accumulation_shadow_observations(integer)
-  FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.capture_accumulation_shadow_observations(integer)
-  TO service_role;
-,'')
-      AND o.observed_at BETWEEN i.created_at-interval '32 hours' AND i.created_at-interval '20 hours'
-      AND o.obv IS NOT NULL
-    ORDER BY abs(extract(epoch FROM(i.created_at-o.observed_at))) LIMIT 1
-  ) p24 ON true
-  LEFT JOIN LATERAL (
-    SELECT aps.price FROM public.asset_price_snapshots aps
-    WHERE aps.asset=regexp_replace(i.symbol,'USDT$','') AND aps.source='binance-spot'
-      AND aps.observed_at BETWEEN i.created_at+interval '23 hours' AND i.created_at+interval '25 hours'
-    ORDER BY abs(extract(epoch FROM(aps.observed_at-(i.created_at+interval '24 hours')))) LIMIT 1
-  ) f24 ON true
-  LEFT JOIN LATERAL (
-    SELECT aps.price FROM public.asset_price_snapshots aps
-    WHERE aps.asset=regexp_replace(i.symbol,'USDT$','') AND aps.source='binance-spot'
-      AND aps.observed_at BETWEEN i.created_at+interval '71 hours' AND i.created_at+interval '73 hours'
-    ORDER BY abs(extract(epoch FROM(aps.observed_at-(i.created_at+interval '72 hours')))) LIMIT 1
-  ) f72 ON true
-  WHERE i.timeframe='1d'
-    AND i.created_at>=now()-make_interval(hours=>greatest(p_lookback_hours,1))
-    AND jsonb_typeof(i.raw->'accumulation')='object' AND i.price IS NOT NULL
-  ON CONFLICT(source_indicator_id) DO UPDATE SET
-    return_24h_pct=EXCLUDED.return_24h_pct,
-    return_72h_pct=EXCLUDED.return_72h_pct,
-    obv_slope_per_day=EXCLUDED.obv_slope_per_day,
-    obv_price_divergence=EXCLUDED.obv_price_divergence,
-    captured_at=now();
-
-  GET DIAGNOSTICS v_count=ROW_COUNT;
-  RETURN v_count;
-END;
-$$;
-
-REVOKE ALL ON FUNCTION public.capture_accumulation_shadow_observations(integer)
-  FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.capture_accumulation_shadow_observations(integer)
-  TO service_role;
-,'')
+      WHERE recent.asset=regexp_replace(i.symbol,'USDT$','')
         AND recent.observed_at >= i.created_at-interval '15 minutes'
         AND recent.observed_at < i.created_at
     )
   ON CONFLICT(source_indicator_id,observed_at) DO UPDATE SET
-    return_24h_pct=EXCLUDED.return_24h_pct,
-    return_72h_pct=EXCLUDED.return_72h_pct,
-    obv_slope_per_day=EXCLUDED.obv_slope_per_day,
-    obv_price_divergence=EXCLUDED.obv_price_divergence,
-    captured_at=now();
-
-  GET DIAGNOSTICS v_count=ROW_COUNT;
-  RETURN v_count;
-END;
-$$;
-
-REVOKE ALL ON FUNCTION public.capture_accumulation_shadow_observations(integer)
-  FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.capture_accumulation_shadow_observations(integer)
-  TO service_role;
-,'')
-      AND o.observed_at BETWEEN i.created_at-interval '32 hours' AND i.created_at-interval '20 hours'
-      AND o.obv IS NOT NULL
-    ORDER BY abs(extract(epoch FROM(i.created_at-o.observed_at))) LIMIT 1
-  ) p24 ON true
-  LEFT JOIN LATERAL (
-    SELECT aps.price FROM public.asset_price_snapshots aps
-    WHERE aps.asset=regexp_replace(i.symbol,'USDT$','') AND aps.source='binance-spot'
-      AND aps.observed_at BETWEEN i.created_at+interval '23 hours' AND i.created_at+interval '25 hours'
-    ORDER BY abs(extract(epoch FROM(aps.observed_at-(i.created_at+interval '24 hours')))) LIMIT 1
-  ) f24 ON true
-  LEFT JOIN LATERAL (
-    SELECT aps.price FROM public.asset_price_snapshots aps
-    WHERE aps.asset=regexp_replace(i.symbol,'USDT$','') AND aps.source='binance-spot'
-      AND aps.observed_at BETWEEN i.created_at+interval '71 hours' AND i.created_at+interval '73 hours'
-    ORDER BY abs(extract(epoch FROM(aps.observed_at-(i.created_at+interval '72 hours')))) LIMIT 1
-  ) f72 ON true
-  WHERE i.timeframe='1d'
-    AND i.created_at>=now()-make_interval(hours=>greatest(p_lookback_hours,1))
-    AND jsonb_typeof(i.raw->'accumulation')='object' AND i.price IS NOT NULL
-  ON CONFLICT(source_indicator_id) DO UPDATE SET
     return_24h_pct=EXCLUDED.return_24h_pct,
     return_72h_pct=EXCLUDED.return_72h_pct,
     obv_slope_per_day=EXCLUDED.obv_slope_per_day,
