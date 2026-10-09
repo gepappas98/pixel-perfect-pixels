@@ -34,88 +34,6 @@ async function getCurrentPrice(symbol: string): Promise<number> {
   return price;
 }
 
-/**
- * Manage existing paper BUY positions before evaluating new entries.
- * Uses current Binance ticker prices only; positions whose price cannot be
- * fetched are left open and reported rather than assigned a fabricated PnL.
- */
-async function manageOpenPaperPositions(supabase: ReturnType<typeof getServiceClient>) {
-  const { data: positions, error } = await supabase
-    .from("trades")
-    .select("id,symbol,quantity,entry_price,stop_loss,take_profit,entry_fee")
-    .eq("mode", "paper")
-    .eq("status", "open")
-    .eq("side", "buy");
-
-  if (error) throw error;
-
-  const events: Array<Record<string, unknown>> = [];
-  const priceCache = new Map<string, number>();
-
-  for (const position of positions ?? []) {
-    const symbol = String(position.symbol);
-    try {
-      let price = priceCache.get(symbol);
-      if (price === undefined) {
-        price = await getCurrentPrice(symbol);
-        priceCache.set(symbol, price);
-      }
-
-      const entry = Number(position.entry_price);
-      const quantity = Number(position.quantity);
-      const stop = Number(position.stop_loss);
-      const target = Number(position.take_profit);
-      if (![entry, quantity, stop, target].every(Number.isFinite) || entry <= 0 || quantity <= 0) {
-        events.push({ symbol, trade_id: position.id, decision: "skip", reason: "invalid_position_fields" });
-        continue;
-      }
-
-      const closeReason = price <= stop ? "stop_loss" : price >= target ? "take_profit" : null;
-      if (!closeReason) continue;
-
-      const grossPnl = (price - entry) * quantity;
-      const entryFee = Number(position.entry_fee ?? 0);
-      const exitFee = price * quantity * TRADING_FEE_RATE;
-      const totalFees = entryFee + exitFee;
-      const netPnl = grossPnl - totalFees;
-      const closedAt = new Date().toISOString();
-
-      const { data: closed, error: closeError } = await supabase
-        .from("trades")
-        .update({
-          status: "closed",
-          exit_price: price,
-          closed_at: closedAt,
-          close_reason: closeReason,
-          gross_pnl: grossPnl,
-          exit_fee: exitFee,
-          total_fees: totalFees,
-          net_pnl: netPnl,
-          pnl: netPnl,
-        })
-        .eq("id", position.id)
-        .eq("mode", "paper")
-        .eq("status", "open")
-        .select("id")
-        .maybeSingle();
-
-      if (closeError) throw closeError;
-      if (closed) events.push({
-        symbol, trade_id: position.id, decision: "closed",
-        reason: closeReason, exit_price: price, gross_pnl: grossPnl,
-        total_fees: totalFees, net_pnl: netPnl,
-      });
-    } catch (err) {
-      events.push({
-        symbol, trade_id: position.id, decision: "error",
-        reason: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  return { inspected: positions?.length ?? 0, events };
-}
-
 async function getEligibleSignals(supabase: ReturnType<typeof getServiceClient>) {
   const since = new Date(Date.now() - EXECUTION_WINDOW_MINUTES * 60 * 1000).toISOString();
 
@@ -152,14 +70,14 @@ Deno.serve(async (req) => {
     const { data: signals, error: signalError } = await getEligibleSignals(supabase);
     if (signalError) throw signalError;
 
-    const exitManagement = await manageOpenPaperPositions(supabase);
-
     const eligibleSignals = signals ?? [];
     const signalIds = eligibleSignals.map((signal) => String(signal.id));
 
-    // Research-mode paper book is intentionally unbounded so repeated BUY
-    // triggers can be measured. Duplicate protection remains per composite signal;
-    // same-symbol positions from distinct signals are valid research observations.
+    // Research-mode paper execution deliberately does NOT use MAX_OPEN_POSITIONS,
+    // daily-loss, portfolio-risk, loss-streak, symbol-cooldown, or held-symbol
+    // capacity as an opportunity filter. The research objective is to measure
+    // every distinct eligible BUY signal. Only the exact same composite signal
+    // is deduplicated.
     const { data: existingTrades, error: existingError } = signalIds.length
       ? await supabase
           .from("trades")
@@ -224,14 +142,13 @@ Deno.serve(async (req) => {
         signal_id: signalId,
         stage: "CANDIDATE_FILTER",
         decision: "ACCEPT",
-        reason: "eligible BUY accepted for unbounded research paper book",
+        reason: "eligible BUY accepted in paper research mode",
         confidence,
         details: {
           min_confidence: MIN_CONFIDENCE,
           window_minutes: EXECUTION_WINDOW_MINUTES,
           research_mode: true,
-          capacity_gate: "not_applied_research_mode",
-          research_book: "unbounded",
+          capacity_gate: "bypassed",
         },
       });
 
@@ -383,12 +300,11 @@ Deno.serve(async (req) => {
       skipped: auditEvents.filter((event) => event.decision === "SKIP").length,
       errors,
       capacity: {
-        research_book: "unbounded",
+        max_open_positions_config: 3,
         gate_applied: false,
-        note: "Distinct BUY signals may open multiple concurrent positions, including same-symbol positions.",
+        reason: "paper_research_mode",
       },
       trades: opened,
-      exit_management: exitManagement,
       execution_audit: {
         version: 2,
         started_at: auditStartedAt,
