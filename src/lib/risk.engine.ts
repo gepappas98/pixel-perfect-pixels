@@ -141,21 +141,22 @@ export async function getOpenUnrealizedPnL(
   currentPrices: Map<string, number>,
 ): Promise<number> {
   const { data, error } = await (db.from as any)("trades")
-    .select("symbol, side, entry_price, quantity")
+    .select("symbol, side, entry_price, quantity, entry_fee")
     .eq("mode", "paper")
     .eq("status", "open")
     .eq("side", "buy");
   if (error) throw new Error(`getOpenUnrealizedPnL: ${error.message}`);
 
-  return ((data ?? []) as { symbol: string; side: "buy" | "sell"; entry_price: number; quantity: number }[])
+  return ((data ?? []) as { symbol: string; side: "buy" | "sell"; entry_price: number; quantity: number; entry_fee: number | null }[])
     .reduce((sum, t) => {
       const current = currentPrices.get(`${t.symbol === "MATIC" ? "POL" : t.symbol === "RNDR" ? "RENDER" : t.symbol}USDT`);
       const entry = Number(t.entry_price);
       const qty = Number(t.quantity);
       if (current == null || !Number.isFinite(current) || !Number.isFinite(entry) || !Number.isFinite(qty) || qty <= 0) return sum;
       const gross = (t.side === "buy" ? current - entry : entry - current) * qty;
+      const entryFee = Number(t.entry_fee ?? entry * qty * RISK_CONFIG.FEE_RATE);
       const estimatedExitFee = current * qty * RISK_CONFIG.FEE_RATE;
-      return sum + gross - estimatedExitFee;
+      return sum + gross - entryFee - estimatedExitFee;
     }, 0);
 }
 
