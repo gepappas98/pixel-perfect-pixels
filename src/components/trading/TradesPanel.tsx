@@ -145,7 +145,7 @@ export function TradesPanel() {
               <th className="pb-1 font-normal">Side</th>
               <th className="pb-1 font-normal">Entry</th>
               <th className="pb-1 font-normal">Current</th>
-              <th className="pb-1 font-normal">Value</th>
+              <th className="pb-1 font-normal">Entry Notional</th>
               <th className="pb-1 font-normal">PnL</th>
               <th className="pb-1 font-normal">PnL %</th>
               <th className="pb-1 font-normal">Status</th>
