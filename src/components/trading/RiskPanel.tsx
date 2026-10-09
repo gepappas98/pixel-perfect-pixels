@@ -22,6 +22,8 @@ export interface RiskStatus {
   maxPositions: number;
   dailyLocked: boolean;
   portfolioFull: boolean;
+  dataStatus: "live" | "fallback";
+  dataError?: string;
 }
 
 const DEFAULT_RISK_STATUS: RiskStatus = {
@@ -35,6 +37,8 @@ const DEFAULT_RISK_STATUS: RiskStatus = {
   maxPositions: RISK_CONFIG.MAX_OPEN_POSITIONS,
   dailyLocked: false,
   portfolioFull: false,
+  dataStatus: "fallback",
+  dataError: "Live risk metrics have not been verified yet.",
 };
 
 const getRiskStatus = createServerFn({ method: "GET" }).handler(
@@ -110,13 +114,18 @@ const getRiskStatus = createServerFn({ method: "GET" }).handler(
         maxPositions: RISK_CONFIG.MAX_OPEN_POSITIONS,
         dailyLocked: dailyPnL <= dailyLossLimit,
         portfolioFull: portfolioRisk >= maxPortfolioRisk,
+        dataStatus: "live",
       };
     } catch (err) {
       console.error(
         "[RiskPanel] Failed to fetch live risk metrics, using fallback:",
         err,
       );
-      return DEFAULT_RISK_STATUS;
+      return {
+        ...DEFAULT_RISK_STATUS,
+        dataStatus: "fallback",
+        dataError: "Live risk query failed; displayed counts and PnL are not authoritative.",
+      };
     }
   },
 );
@@ -137,21 +146,27 @@ export function RiskPanel() {
   });
 
   const current = data ?? DEFAULT_RISK_STATUS;
-  const status = current.dailyLocked
-    ? "DAILY LOSS LOCK"
-    : current.portfolioFull
-      ? "PORTFOLIO RISK FULL"
-      : "ACTIVE";
-  const StatusIcon = current.dailyLocked
-    ? ShieldOff
-    : current.portfolioFull
-      ? ShieldAlert
-      : Shield;
-  const statusColor = current.dailyLocked
-    ? "text-bear"
-    : current.portfolioFull
-      ? "text-warn"
-      : "text-bull";
+  const status = current.dataStatus !== "live"
+    ? "DATA UNAVAILABLE"
+    : current.dailyLocked
+      ? "DAILY LOSS LOCK"
+      : current.portfolioFull
+        ? "PORTFOLIO RISK FULL"
+        : "ACTIVE";
+  const StatusIcon = current.dataStatus !== "live"
+    ? ShieldAlert
+    : current.dailyLocked
+      ? ShieldOff
+      : current.portfolioFull
+        ? ShieldAlert
+        : Shield;
+  const statusColor = current.dataStatus !== "live"
+    ? "text-warn"
+    : current.dailyLocked
+      ? "text-bear"
+      : current.portfolioFull
+        ? "text-warn"
+        : "text-bull";
   const rows: [string, string][] = [
     ["Paper Equity", money.format(current.equity)],
     ["Risk / Trade", money.format(current.maxTradeRisk)],
@@ -188,6 +203,11 @@ export function RiskPanel() {
           </div>
         ))}
       </div>
+      {current.dataStatus !== "live" && (
+        <p role="alert" className="mt-2 text-[10px] text-warn">
+          {current.dataError ?? "Live risk metrics unavailable. Counts and PnL are not authoritative."}
+        </p>
+      )}
       <p className="mt-2 text-[10px] text-muted-foreground">
         Max risk/trade: {(RISK_CONFIG.MAX_RISK_PER_TRADE_PCT * 100).toFixed(1)}% · Portfolio cap: {(RISK_CONFIG.MAX_PORTFOLIO_RISK_PCT * 100).toFixed(1)}% · Daily limit: {(RISK_CONFIG.DAILY_LOSS_LIMIT_PCT * 100).toFixed(1)}%
       </p>
