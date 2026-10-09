@@ -165,7 +165,7 @@ begin
         else 'first_observation_within_15m_of_publication'
       end,
       retention_until = case
-        when v_relevance = 'none' then now() + interval '7 days'
+        when v_relevance = 'none' then e.ingested_at + interval '7 days'
         else null
       end,
       updated_at = now()
