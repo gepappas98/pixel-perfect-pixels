@@ -487,3 +487,16 @@ The following read-only website paths were moved off the legacy server-side Supa
 - Draft fix: PR [#72](https://github.com/gepappas98/pixel-perfect-pixels/pull/72), branch `fix/whale-flow-shock-data-quality`. Completeness now requires both flow and BTC price values at the same horizon; migration includes one bounded 168-hour refresh of derived follow-up rows.
 - **Production status:** migration has NOT been applied. No source snapshots, transitions, trades, scoring, strategy, or scheduler were changed.
 - Next action: review PR #72 and its SQL, then apply the migration to canonical Supabase only after explicit approval; verify resulting horizon counts before using this dataset for causal analysis.
+
+## 2026-10-09 — Whale Flow Shock data-quality fix applied
+
+- PR [#72](https://github.com/gepappas98/pixel-perfect-pixels/pull/72) merged into `main`; merge commit `8c6af7853ef352ef3a6e922d39d0e94096ae0d5a`.
+- Migration `20261009050000_fix_whale_flow_shock_data_quality.sql` applied successfully to canonical Supabase project `yckewtpfttvwiptmmrfq`; Supabase migration history records `fix_whale_flow_shock_data_quality` at version `20261009043906`.
+- Verification after the bounded 168-hour recomputation:
+  - `complete_24h`: 144 rows, all 144 have both `delta_24h_pp` and `btc_return_24h`.
+  - `complete_4h`: 486 rows, all 486 have both `delta_4h_pp` and `btc_return_4h`.
+  - `complete_1h`: 76 rows, all 76 have both `delta_60m_pp` and `btc_return_1h`.
+  - `complete_15m`: 21 rows, all 21 have both `delta_15m_pp` and `btc_return_15m`.
+  - `partial`: 457 rows remain partial where the paired horizon is not fully available.
+- The former false `complete_24h` count of 546 is now 144; this is a correction to completeness labels, not deletion of source data.
+- No trading strategy, live/paper execution, risk limits, or scheduler were changed. Repeated BUY ledger remains **WAITING_FOR_MATURITY**.
