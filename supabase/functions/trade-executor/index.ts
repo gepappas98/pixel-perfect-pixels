@@ -174,6 +174,8 @@ Deno.serve(async (req) => {
             entry_fee: entryFee,
             exit_fee: 0,
             total_fees: entryFee,
+            regime_label: signal.regime_label ?? null,
+            market_session: signal.market_session ?? null,
             exchange_order_id: null,
             source_tags: [
               "paper",
