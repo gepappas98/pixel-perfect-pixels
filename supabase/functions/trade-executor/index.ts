@@ -159,11 +159,9 @@ Deno.serve(async (req) => {
     const eligibleSignals = signals ?? [];
     const signalIds = eligibleSignals.map((signal) => String(signal.id));
 
-    // Research-mode paper execution deliberately does NOT use MAX_OPEN_POSITIONS,
-    // daily-loss, portfolio-risk, loss-streak, symbol-cooldown, or held-symbol
-    // capacity as an opportunity filter. The research objective is to measure
-    // every distinct eligible BUY signal. Only the exact same composite signal
-    // is deduplicated.
+    // Research observations remain independent of paper execution capacity.
+    // The ledger retains BUY opportunities; the paper book itself is capped
+    // at three open BUY positions and one active position per symbol.
     const { data: existingTrades, error: existingError } = signalIds.length
       ? await supabase
           .from("trades")
@@ -315,7 +313,7 @@ Deno.serve(async (req) => {
               "paper",
               "trade-executor",
               "spot-long-only",
-              "research-unbounded",
+              "research-capped",
             ],
           })
           .select()
@@ -436,9 +434,10 @@ Deno.serve(async (req) => {
       skipped: auditEvents.filter((event) => event.decision === "SKIP").length,
       errors,
       capacity: {
-        max_open_positions_config: 3,
-        gate_applied: false,
-        reason: "paper_research_mode",
+        max_open_positions_config: MAX_OPEN_PAPER_POSITIONS,
+        gate_applied: true,
+        open_positions_after_run: openPositionCount,
+        active_symbols_after_run: [...activeSymbols],
       },
       trades: opened,
       exit_management: exitManagement,
