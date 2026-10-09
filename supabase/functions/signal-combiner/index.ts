@@ -203,6 +203,27 @@ function indicatorSymbol(symbol: string) {
   return `${SYMBOL_MAP[symbol] ?? symbol}USDT`;
 }
 
+// Research variants are resolved with Binance Spot candles. Never admit symbols
+// that are not currently Spot-tradable, and fail closed for variant creation if
+// Binance metadata cannot be verified. This gate must not affect composite signals.
+async function loadBinanceSpotTradingSymbols(): Promise<Set<string> | null> {
+  try {
+    const response = await fetch("https://api.binance.com/api/v3/exchangeInfo", {
+      signal: AbortSignal.timeout(10_000),
+      headers: { "Accept": "application/json" },
+    });
+    if (!response.ok) throw new Error(`exchangeInfo HTTP ${response.status}`);
+    const payload = await response.json();
+    if (!Array.isArray(payload?.symbols)) throw new Error("exchangeInfo response missing symbols array");
+    return new Set<string>(payload.symbols
+      .filter((item: any) => item?.status === "TRADING" && item?.isSpotTradingAllowed === true)
+      .map((item: any) => String(item.symbol)));
+  } catch (error) {
+    console.error("[SPOT_VARIANT_GATE] exchangeInfo validation failed; skipping new shadow variants for this run:", String(error));
+    return null;
+  }
+}
+
 function fresh(row: any): boolean {
   const ts = new Date(String(row?.created_at ?? "")).getTime();
   return Number.isFinite(ts) && Date.now() - ts >= 0 && Date.now() - ts <= INDICATOR_MAX_AGE_MS;
@@ -535,6 +556,8 @@ Deno.serve(async (req) => {
     const councilSymbols = [...new Set((councilSymbolRows ?? []).map((r: any) => r.symbol))];
     const whaleSymbols = [...new Set((whaleSymbolRows ?? []).map((r: any) => r.symbol))];
     const symbols = [...new Set([...WATCHLIST, ...councilSymbols, ...whaleSymbols])];
+    // Validate once per invocation; composite signals and paper execution are untouched.
+    const spotTradingSymbols = await loadBinanceSpotTradingSymbols();
 
     const created = [];
 
@@ -639,7 +662,7 @@ Deno.serve(async (req) => {
       // Observational strategy variants: same canonical inputs, isolated from composite signal/trades.
       // Long-only benchmark: only BUY variants are persisted.
       const variantEntryPrice = Number(indicator?.price ?? 0);
-      if (variantEntryPrice > 0) {
+      if (variantEntryPrice > 0 && spotTradingSymbols?.has(dbSymbol)) {
         const variantRows = Object.entries(VARIANT_PRESETS)
           .map(([strategy_name, weights]) => {
             const vr = calculateVariant(whale, mtf, prediction, council, weights);
@@ -692,6 +715,8 @@ Deno.serve(async (req) => {
             .upsert(buyVariantRows, { onConflict: "source_fingerprint", ignoreDuplicates: true });
           if (variantError) throw variantError;
         }
+      } else if (variantEntryPrice > 0 && spotTradingSymbols && !spotTradingSymbols.has(dbSymbol)) {
+        console.warn(`[SPOT_VARIANT_GATE] skipped shadow variants for ${symbol} (${dbSymbol}): not TRADING on Binance Spot`);
       }
 
       // Fingerprints are intentionally unique/idempotent. Re-observing the
