@@ -9,7 +9,7 @@ const MIN_AGE_MS = 60 * 60 * 1000;
 const EXPIRY_TRIGGER_HOURS = 72;
 const CANDLE_LIMIT = 1000;
 const CONCURRENCY = 8;
-const RESOLVER_VERSION = 4;
+const RESOLVER_VERSION = 5;
 function audit(event: string, details: Record<string, unknown>) {
   console.log("[VARIANT_RESOLVER_AUDIT]", JSON.stringify({resolver_version: RESOLVER_VERSION,event,...details}));
 }
@@ -168,37 +168,95 @@ Deno.serve(async () => {
   }
 
   const batchSize = 500;
-  const pageCount = Math.max(1, Math.ceil((eligibleCount ?? 0) / batchSize));
-  // Rotate through eligible rows on each two-minute scheduler slot. Rows that
-  // remain open because TP/SL has not been hit must not pin the resolver to
-  // the oldest 500 forever. The modulo also handles the final partial page.
   const schedulerSlot = Math.floor(nowMs / (2 * 60 * 1000));
-  const page = schedulerSlot % pageCount;
-  const offset = page * batchSize;
-  audit("batch_selected", {
-    eligible_count: eligibleCount ?? 0, batch_size: batchSize,
-    page_count: pageCount, page, offset,
-  });
+  const expiryCutoffIso = new Date(nowMs - EXPIRY_TRIGGER_HOURS * 60 * 60 * 1000).toISOString();
 
-  const { data: rows, error } = await supabase
+  // Always give matured rows first access to a batch. Otherwise the rotating
+  // offset can repeatedly skip 72h+ rows when the eligible count/page count
+  // changes as other rows resolve.
+  const { count: maturedCount, error: maturedCountError } = await supabase
+    .from("strategy_variant_signals")
+    .select("id", { count: "exact", head: true })
+    .eq("outcome", "open")
+    .in("recommendation", ["buy", "sell"])
+    .not("entry_price", "is", null)
+    .gt("created_at", RESOLVER_START_AT)
+    .lte("created_at", expiryCutoffIso);
+
+  if (maturedCountError) {
+    return new Response(JSON.stringify({ ok: false, error: maturedCountError.message }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  const { data: maturedRows, error: maturedRowsError } = await supabase
     .from("strategy_variant_signals")
     .select("id, symbol, recommendation, entry_price, created_at")
     .eq("outcome", "open")
     .in("recommendation", ["buy", "sell"])
     .not("entry_price", "is", null)
     .gt("created_at", RESOLVER_START_AT)
-    .lte("created_at", maxAgeIso)
+    .lte("created_at", expiryCutoffIso)
     .order("created_at", { ascending: true })
-    .range(offset, offset + batchSize - 1);
+    .limit(batchSize);
 
-  if (error) {
-    return new Response(JSON.stringify({ ok: false, error: error.message }), {
+  if (maturedRowsError) {
+    return new Response(JSON.stringify({ ok: false, error: maturedRowsError.message }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
     });
   }
 
-  const variants = (rows ?? []).map((r) => ({
+  // Rotate the remaining slots through rows that have not yet reached the
+  // 72h expiry threshold. This keeps data-failure rows from monopolizing the
+  // ordinary research batch while ensuring matured rows are never skipped.
+  const regularCount = Math.max(0, (eligibleCount ?? 0) - (maturedCount ?? 0));
+  const regularSlots = Math.max(0, batchSize - (maturedRows ?? []).length);
+  let regularRows: typeof maturedRows = [];
+  let regularPage = 0;
+  let regularPageCount = 1;
+  let regularOffset = 0;
+
+  if (regularSlots > 0 && regularCount > 0) {
+    regularPageCount = Math.max(1, Math.ceil(regularCount / regularSlots));
+    regularPage = schedulerSlot % regularPageCount;
+    regularOffset = regularPage * regularSlots;
+
+    const { data, error: regularRowsError } = await supabase
+      .from("strategy_variant_signals")
+      .select("id, symbol, recommendation, entry_price, created_at")
+      .eq("outcome", "open")
+      .in("recommendation", ["buy", "sell"])
+      .not("entry_price", "is", null)
+      .gt("created_at", expiryCutoffIso)
+      .lte("created_at", maxAgeIso)
+      .order("created_at", { ascending: true })
+      .range(regularOffset, regularOffset + regularSlots - 1);
+
+    if (regularRowsError) {
+      return new Response(JSON.stringify({ ok: false, error: regularRowsError.message }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    regularRows = data ?? [];
+  }
+
+  audit("batch_selected", {
+    eligible_count: eligibleCount ?? 0,
+    matured_count: maturedCount ?? 0,
+    matured_selected: (maturedRows ?? []).length,
+    regular_count: regularCount,
+    batch_size: batchSize,
+    regular_slots: regularSlots,
+    regular_page_count: regularPageCount,
+    regular_page: regularPage,
+    regular_offset: regularOffset,
+  });
+
+  const rows = [...(maturedRows ?? []), ...(regularRows ?? [])];
+  const variants = rows.map((r) => ({
     id: String(r.id),
     symbol: String(r.symbol),
     recommendation: String(r.recommendation).toLowerCase() as "buy" | "sell",
