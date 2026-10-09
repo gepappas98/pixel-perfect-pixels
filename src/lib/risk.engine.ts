@@ -98,7 +98,7 @@ export async function getPaperEquity(db: Admin): Promise<number> {
   if (error) throw new Error(`getPaperEquity: ${error.message}`);
   const realized = ((data ?? []) as { pnl: number | null }[])
     .reduce((sum, t) => sum + (Number(t.pnl) || 0), 0);
-  return Math.max(PAPER_STARTING_EQUITY + realized, 1);
+  return PAPER_STARTING_EQUITY + realized;
 }
 
 /** Open stop-risk including estimated fees if every open trade hits its stop. */
