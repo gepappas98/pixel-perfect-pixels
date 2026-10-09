@@ -9,7 +9,7 @@ const MIN_AGE_MS = 60 * 60 * 1000;
 const EXPIRY_TRIGGER_HOURS = 72;
 const CANDLE_LIMIT = 1000;
 const CONCURRENCY = 8;
-const RESOLVER_VERSION = 3;
+const RESOLVER_VERSION = 4;
 function audit(event: string, details: Record<string, unknown>) {
   console.log("[VARIANT_RESOLVER_AUDIT]", JSON.stringify({resolver_version: RESOLVER_VERSION,event,...details}));
 }
@@ -33,8 +33,27 @@ type Variant = {
 
 type Outcome = "win" | "loss" | "expired" | "ambiguous";
 
+function toBinanceSpotSymbol(symbol: string): string {
+  const normalized = symbol.trim().toUpperCase().replace(/[\\/_-]/g, "");
+  if (!normalized) throw new Error("empty symbol for Binance klines");
+
+  // Explicit symbol migrations for assets renamed on Binance Spot.
+  // Keep this list intentionally small and evidence-based.
+  const aliases: Record<string, string> = { MATIC: "POL" };
+  const quoteSuffix = /(USDT|USDC|BUSD|FDUSD|TUSD|USDP|DAI|EUR|TRY|BRL|GBP|AUD|JPY)$/;
+  const match = normalized.match(quoteSuffix);
+  if (match && normalized.length > match[0].length) {
+    const base = normalized.slice(0, -match[0].length);
+    return `${aliases[base] ?? base}${match[0]}`;
+  }
+
+  const base = aliases[normalized] ?? normalized;
+  return `${base}USDT`;
+}
+
 async function fetchKlines(symbol: string, interval: string): Promise<Candle[]> {
-  const url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${CANDLE_LIMIT}`;
+  const pair = toBinanceSpotSymbol(symbol);
+  const url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(pair)}&interval=${interval}&limit=${CANDLE_LIMIT}`;
   const response = await fetch(url, { signal: AbortSignal.timeout(12000) });
   if (!response.ok) throw new Error(`Binance klines HTTP ${response.status}`);
   const rows = await response.json() as unknown[][];
@@ -59,8 +78,13 @@ async function fetchResolutionCandles(symbol: string, interval: string, openTime
       (openTimeMs == null || c.closeTimeMs > openTimeMs) &&
       (closeTimeMs == null || c.openTimeMs < closeTimeMs)
     );
-  } catch {
-    return [];
+  } catch (error) {
+    let pair = "unresolved";
+    try { pair = toBinanceSpotSymbol(symbol); } catch { /* preserve original error */ }
+    console.warn("[VARIANT_RESOLVER_CANDLE_FETCH_FAILED]", JSON.stringify({
+      symbol, pair, interval, error: error instanceof Error ? error.message : String(error),
+    }));
+    throw error;
   }
 }
 
@@ -71,11 +95,23 @@ async function resolveAmbiguous(
   slPrice: number,
   parent: Candle,
   variantId?: string,
-): Promise<Outcome> {
+): Promise<Outcome | null> {
+  let sawLowerCandles = false;
   for (const timeframe of ["5m", "15m"] as const) {
-    const lower = await fetchResolutionCandles(symbol, timeframe, parent.openTimeMs, parent.closeTimeMs);
+    let lower: Candle[];
+    try {
+      lower = await fetchResolutionCandles(symbol, timeframe, parent.openTimeMs, parent.closeTimeMs);
+    } catch (error) {
+      audit("lower_timeframe_fetch_failed", {
+        variant_id: variantId ?? null, symbol, side, timeframe,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      // Missing lower-timeframe data is not evidence for AMBIGUOUS or expiry.
+      return null;
+    }
     audit("lower_timeframe_scan",{variant_id:variantId??null,symbol,side,timeframe,parent_open_time:new Date(parent.openTimeMs).toISOString(),parent_close_time:new Date(parent.closeTimeMs).toISOString(),candle_count:lower.length,tp_price:tpPrice,sl_price:slPrice});
     if (lower.length === 0) continue;
+    sawLowerCandles = true;
 
     for (const candle of lower) {
       const hitTP = side === "buy" ? candle.high >= tpPrice : candle.low <= tpPrice;
@@ -88,7 +124,12 @@ async function resolveAmbiguous(
     }
   }
 
-  // If lower-timeframe data cannot establish order, fail conservatively.
+  // No returned lower-timeframe candles means there is no evidence to
+  // resolve this row. Keep it open and retry later; do not terminally label
+  // missing data as AMBIGUOUS.
+  if (!sawLowerCandles) return null;
+
+  // Candles were available, but neither timeframe established a first hit.
   return "ambiguous";
 }
 
@@ -110,6 +151,35 @@ Deno.serve(async () => {
   const nowMs = Date.now();
   const maxAgeIso = new Date(nowMs - MIN_AGE_MS).toISOString();
 
+  const { count: eligibleCount, error: countError } = await supabase
+    .from("strategy_variant_signals")
+    .select("id", { count: "exact", head: true })
+    .eq("outcome", "open")
+    .in("recommendation", ["buy", "sell"])
+    .not("entry_price", "is", null)
+    .gt("created_at", RESOLVER_START_AT)
+    .lte("created_at", maxAgeIso);
+
+  if (countError) {
+    return new Response(JSON.stringify({ ok: false, error: countError.message }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  const batchSize = 500;
+  const pageCount = Math.max(1, Math.ceil((eligibleCount ?? 0) / batchSize));
+  // Rotate through eligible rows on each two-minute scheduler slot. Rows that
+  // remain open because TP/SL has not been hit must not pin the resolver to
+  // the oldest 500 forever. The modulo also handles the final partial page.
+  const schedulerSlot = Math.floor(nowMs / (2 * 60 * 1000));
+  const page = schedulerSlot % pageCount;
+  const offset = page * batchSize;
+  audit("batch_selected", {
+    eligible_count: eligibleCount ?? 0, batch_size: batchSize,
+    page_count: pageCount, page, offset,
+  });
+
   const { data: rows, error } = await supabase
     .from("strategy_variant_signals")
     .select("id, symbol, recommendation, entry_price, created_at")
@@ -119,7 +189,7 @@ Deno.serve(async () => {
     .gt("created_at", RESOLVER_START_AT)
     .lte("created_at", maxAgeIso)
     .order("created_at", { ascending: true })
-    .limit(500);
+    .range(offset, offset + batchSize - 1);
 
   if (error) {
     return new Response(JSON.stringify({ ok: false, error: error.message }), {
@@ -197,6 +267,7 @@ Deno.serve(async () => {
 
     let outcome: Outcome | null = null;
     let exitPrice: number | null = null;
+    let candleDataFailure = false;
 
     for (const candle of relevant) {
       const hitTP = variant.recommendation === "buy" ? candle.high >= tpPrice : candle.low <= tpPrice;
@@ -212,6 +283,7 @@ Deno.serve(async () => {
           candle,
           variant.id,
         );
+        if (outcome === null) candleDataFailure = true;
         if (outcome === "win") exitPrice = tpPrice;
         if (outcome === "loss") exitPrice = slPrice;
         break;
@@ -229,6 +301,9 @@ Deno.serve(async () => {
         break;
       }
     }
+
+    // Do not expire or terminally mark a row when candle retrieval failed.
+    if (candleDataFailure) continue;
 
     const ageHours = (nowMs - entryMs) / 3_600_000;
     if (!outcome && ageHours >= EXPIRY_TRIGGER_HOURS) {
