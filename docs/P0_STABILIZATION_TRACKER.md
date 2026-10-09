@@ -526,3 +526,11 @@ The following read-only website paths were moved off the legacy server-side Supa
 - The canonical orchestrator inserts an initial JSON `result` (architecture, trigger, source, empty stages), updates it after each stage, and writes the final stage list plus execution audit. The legacy writer stopped being the source of truth; these NULLs are historical writer semantics, not current orchestrator data loss.
 - `error_message IS NULL` is expected on successful canonical runs (all 1,338 completed rows); it is not an error by itself. The canonical failed rows have `error_message` populated (21/21 in this audit). Likewise, legacy success rows with NULL `error_message` are semantically normal.
 - No counter backfill, JSON result fabrication, or status rewrite is justified. Preserve historical records. Old scalar counters remain unused by the canonical writer and must not be defaulted to zero.
+
+
+## 2026-10-09 — DB-NULL-23 root-cause pass: trades metadata
+
+- **CONFIRMED WRITER OMISSION (code fix prepared; not deployed):** canonical `trade-executor` reads `composite_signals.select("*")`, but the paper trade insert omitted `regime_label` and `market_session`. The canonical read-only status grouping currently shows 33/33 paper trades open and 33/33 with both fields NULL. This is a real lineage gap for newly opened trades, not a close-lifecycle NULL.
+- Code change on this branch copies `signal.regime_label ?? null` and `signal.market_session ?? null` into the trade insert. This depends on the separate signal-combiner fix to populate market_session on new composite signals. No existing trade was updated.
+- NULL `exit_price`, `pnl`, `closed_at`, `close_reason`, `gross_pnl`, and `net_pnl` occur on all 33 currently open trades and are expected until closure; do not fill them with zero. `exit_fee IS NULL` on 19 open trades is also not enough by itself to prove a defect (the close-side fee may not yet have been realized), while `total_fees` and `entry_fee` are populated.
+- The open trades' NULL `regime_label`/ `market_session` should not be backfilled from the current market state; only an exact contemporaneous composite signal could support a targeted historical reconstruction, and no such backfill has been performed.
