@@ -477,3 +477,13 @@ The following read-only website paths were moved off the legacy server-side Supa
 ### Security note
 - Supabase security advisor flags the new System Resources RPC as a public SECURITY DEFINER function. This is intentional for the public dashboard and the function returns aggregate resource metrics only; no secrets, rows, or query text are exposed.
 - Existing security findings remain open and are not being mixed into this read-binding pass.
+
+## 2026-10-09 — Research checkpoint / avoid repeated work
+
+- `DB-NULL-23` — full SQL NULL inventory: **DONE**. Do not rerun the inventory; continue only with a specific root-cause question.
+- Social observation/transmission writer investigation: **STOPPED BY USER**. Do not reopen unless explicitly requested.
+- `repeated_buy_research_ledger` — **WAITING_FOR_MATURITY**. Do not rerun the same performance analysis until markout horizons and sample size mature.
+- Next active item: **Whale Flow Shock Follow-up data-quality semantics**. Read-only canonical DB audit found 546 rows labeled `complete_24h`, but only 144 had `btc_return_24h` populated. Root cause: `refresh_whale_flow_shock_followups()` labels completeness from flow deltas only, without requiring the paired BTC price return.
+- Draft fix: PR [#72](https://github.com/gepappas98/pixel-perfect-pixels/pull/72), branch `fix/whale-flow-shock-data-quality`. Completeness now requires both flow and BTC price values at the same horizon; migration includes one bounded 168-hour refresh of derived follow-up rows.
+- **Production status:** migration has NOT been applied. No source snapshots, transitions, trades, scoring, strategy, or scheduler were changed.
+- Next action: review PR #72 and its SQL, then apply the migration to canonical Supabase only after explicit approval; verify resulting horizon counts before using this dataset for causal analysis.
