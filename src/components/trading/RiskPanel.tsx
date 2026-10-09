@@ -22,7 +22,7 @@ export interface RiskStatus {
   maxPositions: number;
   dailyLocked: boolean;
   portfolioFull: boolean;
-  dataStatus: "live" | "fallback";
+  dataStatus: "live" | "partial" | "fallback";
   dataError?: string;
 }
 
@@ -59,6 +59,7 @@ const getRiskStatus = createServerFn({ method: "GET" }).handler(
 
       const openPositions = openTrades?.length ?? 0;
       const prices = new Map<string, number>();
+      let priceCoverageError: string | undefined;
 
       if (openPositions > 0) {
         const symbols = [
@@ -87,7 +88,11 @@ const getRiskStatus = createServerFn({ method: "GET" }).handler(
             }
           }
         } catch {
-          // Keep unrealized PnL at the safe zero fallback if Binance is unavailable.
+          // The panel remains available, but missing prices make unrealized PnL partial.
+        }
+        const missingSymbols = symbols.filter((symbol) => !prices.has(symbol));
+        if (missingSymbols.length > 0) {
+          priceCoverageError = `Live prices unavailable for ${missingSymbols.length}/${symbols.length} open-position symbols; unrealized PnL is partial.`;
         }
       }
 
@@ -114,7 +119,8 @@ const getRiskStatus = createServerFn({ method: "GET" }).handler(
         maxPositions: RISK_CONFIG.MAX_OPEN_POSITIONS,
         dailyLocked: dailyPnL <= dailyLossLimit,
         portfolioFull: portfolioRisk >= maxPortfolioRisk,
-        dataStatus: "live",
+        dataStatus: priceCoverageError ? "partial" : "live",
+        dataError: priceCoverageError,
       };
     } catch (err) {
       console.error(
@@ -146,8 +152,10 @@ export function RiskPanel() {
   });
 
   const current = data ?? DEFAULT_RISK_STATUS;
-  const status = current.dataStatus !== "live"
+  const status = current.dataStatus === "fallback"
     ? "DATA UNAVAILABLE"
+    : current.dataStatus === "partial"
+      ? "PARTIAL DATA"
     : current.dailyLocked
       ? "DAILY LOSS LOCK"
       : current.portfolioFull
