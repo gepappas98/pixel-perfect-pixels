@@ -34,8 +34,6 @@ async function getCurrentPrice(symbol: string): Promise<number> {
   return price;
 }
 
-const MAX_OPEN_PAPER_POSITIONS = 3;
-
 /**
  * Manage existing paper BUY positions before evaluating new entries.
  * Uses current Binance ticker prices only; positions whose price cannot be
@@ -159,9 +157,9 @@ Deno.serve(async (req) => {
     const eligibleSignals = signals ?? [];
     const signalIds = eligibleSignals.map((signal) => String(signal.id));
 
-    // Research observations remain independent of paper execution capacity.
-    // The ledger retains BUY opportunities; the paper book itself is capped
-    // at three open BUY positions and one active position per symbol.
+    // Research-mode paper book is intentionally unbounded so repeated BUY
+    // triggers can be measured. Duplicate protection remains per composite signal;
+    // same-symbol positions from distinct signals are valid research observations.
     const { data: existingTrades, error: existingError } = signalIds.length
       ? await supabase
           .from("trades")
@@ -174,17 +172,6 @@ Deno.serve(async (req) => {
     const existingSignalIds = new Set(
       (existingTrades ?? []).map((row) => String(row.composite_signal_id)),
     );
-
-    const { data: openPaperBuys, error: openPaperBuysError } = await supabase
-      .from("trades")
-      .select("id,symbol")
-      .eq("mode", "paper")
-      .eq("status", "open")
-      .eq("side", "buy");
-    if (openPaperBuysError) throw openPaperBuysError;
-
-    const activeSymbols = new Set((openPaperBuys ?? []).map((row) => String(row.symbol).toUpperCase()));
-    let openPositionCount = openPaperBuys?.length ?? 0;
 
     const opened: unknown[] = [];
     const errors: Array<{ signal_id: string; symbol: string; error: string }> = [];
@@ -231,56 +218,20 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      const normalizedSymbol = symbol.toUpperCase();
-      const capacityReason = activeSymbols.has(normalizedSymbol)
-        ? "symbol_already_has_open_paper_position"
-        : openPositionCount >= MAX_OPEN_PAPER_POSITIONS
-          ? "max_open_paper_positions_reached"
-          : null;
-
-      if (capacityReason) {
-        auditEvents.push({
-          ts: new Date().toISOString(),
-          symbol,
-          signal_id: signalId,
-          stage: "PAPER_CAPACITY_GATE",
-          decision: "SKIP",
-          reason: capacityReason,
-          confidence,
-          details: {
-            open_positions: openPositionCount,
-            max_open_positions: MAX_OPEN_PAPER_POSITIONS,
-            active_symbols: [...activeSymbols],
-            research_signal_still_recorded: true,
-          },
-        });
-        await supabase.from("repeated_buy_research_ledger")
-          .update({
-            research_decision: "capacity_rejected",
-            research_reason: capacityReason,
-            limited_position_decision: "rejected",
-            limited_position_reason: capacityReason,
-          })
-          .eq("composite_signal_id", signalId)
-          .in("research_decision", ["pending_execution_audit", "pending"]);
-        continue;
-      }
-
       auditEvents.push({
         ts: new Date().toISOString(),
         symbol,
         signal_id: signalId,
         stage: "CANDIDATE_FILTER",
         decision: "ACCEPT",
-        reason: "eligible BUY accepted within paper portfolio limits",
+        reason: "eligible BUY accepted for unbounded research paper book",
         confidence,
         details: {
           min_confidence: MIN_CONFIDENCE,
           window_minutes: EXECUTION_WINDOW_MINUTES,
           research_mode: true,
-          capacity_gate: "enforced",
-          open_positions: openPositionCount,
-          max_open_positions: MAX_OPEN_PAPER_POSITIONS,
+          capacity_gate: "not_applied_research_mode",
+          research_book: "unbounded",
         },
       });
 
@@ -313,7 +264,7 @@ Deno.serve(async (req) => {
               "paper",
               "trade-executor",
               "spot-long-only",
-              "research-capped",
+              "research-unbounded",
             ],
           })
           .select()
@@ -336,8 +287,6 @@ Deno.serve(async (req) => {
           .eq("composite_signal_id", signalId)
           .in("research_decision", ["pending_execution_audit", "pending"]);
         existingSignalIds.add(signalId);
-        activeSymbols.add(normalizedSymbol);
-        openPositionCount += 1;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         errors.push({ signal_id: signalId, symbol, error: message });
@@ -434,10 +383,9 @@ Deno.serve(async (req) => {
       skipped: auditEvents.filter((event) => event.decision === "SKIP").length,
       errors,
       capacity: {
-        max_open_positions_config: MAX_OPEN_PAPER_POSITIONS,
-        gate_applied: true,
-        open_positions_after_run: openPositionCount,
-        active_symbols_after_run: [...activeSymbols],
+        research_book: "unbounded",
+        gate_applied: false,
+        note: "Distinct BUY signals may open multiple concurrent positions, including same-symbol positions.",
       },
       trades: opened,
       exit_management: exitManagement,
