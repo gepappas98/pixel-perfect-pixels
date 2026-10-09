@@ -12,14 +12,17 @@ create index if not exists idx_tracked_asset_social_aliases_alias
 -- Curated names only where the public name is well-defined. Ticker matching
 -- remains dynamic and is restricted to explicit token boundaries.
 insert into public.tracked_asset_social_aliases(asset, alias)
-values
- ('BTC','bitcoin'),('BTC','bitcoin'),('ETH','ethereum'),('ETH','ether'),
+select v.asset, v.alias
+from (values
+ ('BTC','bitcoin'),('ETH','ethereum'),('ETH','ether'),
  ('SOL','solana'),('BNB','binance coin'),('XRP','ripple'),
  ('DOGE','dogecoin'),('ADA','cardano'),('LINK','chainlink'),
  ('AVAX','avalanche'),('NEAR','near protocol'),('UNI','uniswap'),
  ('AAVE','aave'),('LTC','litecoin'),('ZEC','zcash'),
  ('SUI','sui'),('ARB','arbitrum'),('OP','optimism'),
  ('TRUMP','official trump'),('SHIB','shiba inu')
+) as v(asset, alias)
+join public.tracked_assets ta on ta.asset = v.asset
 on conflict (asset, alias) do nothing;
 
 alter table public.influential_social_events
@@ -52,6 +55,7 @@ declare
   v_engagement_score numeric := 0;
   v_source_score numeric := 0;
   v_crypto_hits integer := 0;
+  r record;
 begin
   select * into e from public.influential_social_events where id = p_event_id;
   if not found then raise exception 'influential social event % not found', p_event_id; end if;
@@ -148,6 +152,20 @@ begin
       affected_assets = v_assets,
       classification_status = case when v_relevance='none' then 'rejected' else 'classified' end,
       classification_reason = array_to_string(v_reasons,';'),
+      research_eligibility = case
+        when v_relevance = 'none' then 'irrelevant'
+        when e.ingested_at - e.published_at > interval '15 minutes' then 'historical_only'
+        else 'live_eligible'
+      end,
+      eligibility_reason = case
+        when v_relevance = 'none' then 'no_crypto_relevance'
+        when e.ingested_at - e.published_at > interval '15 minutes' then 'late_ingestion_not_live_eligible'
+        else 'first_observation_within_15m_of_publication'
+      end,
+      retention_until = case
+        when v_relevance = 'none' then now() + interval '7 days'
+        else null
+      end,
       updated_at = now()
   where ie.id = p_event_id;
 
