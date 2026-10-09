@@ -515,3 +515,21 @@ The following read-only website paths were moved off the legacy server-side Supa
 
 - Follow-up read-only snapshot during review: the existing deployed pipeline continued changing the book while this PR remained undeployed. Latest query returned 45 open paper BUY rows ($45,000 entry notional) across 8 symbols plus 3 legacy SELL rows ($48,000 total all-side notional). This confirms the old deployed executor is still adding positions; code changes on the draft branch have not affected production. Counts are time-sensitive and must be re-queried before deployment.
 - UI follow-up: risk percentage formatting now shows two decimal places for per-trade risk so 0.15% is not rounded misleadingly to 0.1%.
+
+## 2026-10-09 — Research paper wallet scope correction (DRAFT / NOT DEPLOYED)
+
+The owner confirmed that the open-ended paper book is intentional research design: repeated BUY triggers should be observed across entries, exits, TP/SL and net outcomes. A portfolio cap or one-position-per-symbol gate would bias that sample and must not be applied to the research executor.
+
+Changes on `fix/p0-paper-book-mtm-observability`:
+- Removed the draft executor's three-position and one-position-per-symbol capacity gate. Duplicate protection remains per composite signal; separate signals for the same symbol can create separate research positions.
+- Renamed the Positions table's `Value` column to `Entry Notional`.
+- Reworked the wallet panel to distinguish $20,000 starting equity (reference only), all-time realized PnL, net unrealized MTM, current marked equity, open entry notional, current market value, open BUY count, and open stop-risk reference.
+- Open MTM now subtracts both the recorded entry fee (or estimated fallback) and estimated exit fee.
+- Paper equity now uses net_pnl when available, falls back to pnl for historical rows, and no longer floors the displayed realized-equity basis at $1.
+- Missing ticker coverage is surfaced as partial MTM; live ticker marks are explicitly not represented as guaranteed intrabar exit fills.
+
+Constraints:
+- No Supabase writes/migrations, no production deploy, no historical resets/deletes.
+- Strategy thresholds, weights, SL/TP constants and $1,000 research entry sizing were not changed.
+- Existing paper positions are preserved. Executor's ticker-based TP/SL close logic remains approximate and does not model intrabar candle touches or a 72h expiry.
+- Build/typecheck/runtime verification remains required before merging or deploying.
