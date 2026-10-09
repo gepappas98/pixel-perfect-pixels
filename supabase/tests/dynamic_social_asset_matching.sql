@@ -28,10 +28,10 @@ begin
     raise exception 'FAIL: canonical Chainlink alias was not matched';
   end if;
 
-  -- Eligibility policy: future publication timestamps are never live evidence.
+  -- Eligibility policy: a publication timestamp later than ingestion/now is future-dated.
   v_live := case
-    when timestamptz '2026-10-09 12:00:00+00' < timestamptz '2026-10-09 12:01:00+00' then 'historical_only'
-    when timestamptz '2026-10-09 12:00:00+00' - timestamptz '2026-10-09 12:01:00+00' > interval '15 minutes' then 'historical_only'
+    when timestamptz '2026-10-09 12:02:00+00' > timestamptz '2026-10-09 12:01:00+00' then 'historical_only'
+    when timestamptz '2026-10-09 12:01:00+00' - timestamptz '2026-10-09 12:02:00+00' > interval '15 minutes' then 'historical_only'
     else 'live_eligible'
   end;
   if v_live <> 'historical_only' then
@@ -40,7 +40,7 @@ begin
 
   -- Late-arriving posts are historical-only, not causal/live evidence.
   v_live := case
-    when timestamptz '2026-10-09 12:30:00+00' < timestamptz '2026-10-09 12:00:00+00' then 'historical_only'
+    when timestamptz '2026-10-09 12:00:00+00' > timestamptz '2026-10-09 12:30:00+00' then 'historical_only'
     when timestamptz '2026-10-09 12:30:00+00' - timestamptz '2026-10-09 12:00:00+00' > interval '15 minutes' then 'historical_only'
     else 'live_eligible'
   end;
@@ -50,7 +50,7 @@ begin
 
   -- Timely first observation is eligible under the provisional 15m threshold.
   v_live := case
-    when timestamptz '2026-10-09 12:10:00+00' < timestamptz '2026-10-09 12:00:00+00' then 'historical_only'
+    when timestamptz '2026-10-09 12:00:00+00' > timestamptz '2026-10-09 12:10:00+00' then 'historical_only'
     when timestamptz '2026-10-09 12:10:00+00' - timestamptz '2026-10-09 12:00:00+00' > interval '15 minutes' then 'historical_only'
     else 'live_eligible'
   end;
