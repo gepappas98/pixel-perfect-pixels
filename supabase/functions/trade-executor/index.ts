@@ -1,4 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { binancePair, decideExit, normalizeExitSettings, type OpenTradeRow } from "../_shared/trade-exit.ts";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -422,6 +423,7 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({
       mode: "paper",
       research_mode: true,
+      exits: exitStage,
       opened: opened.length,
       skipped: auditEvents.filter((event) => event.decision === "SKIP").length,
       errors,
@@ -457,6 +459,7 @@ Deno.serve(async (req) => {
     console.error("[trade-executor] fatal", err);
     return new Response(JSON.stringify({
       error: err instanceof Error ? err.message : String(err),
+      exits: exitStage,
       execution_audit: {
         version: 2,
         started_at: auditStartedAt,
