@@ -500,9 +500,14 @@ async function persistEntryContextSnapshot(
       return Number.isFinite(ts) && ts <= entryMs ? row : null;
     };
     const compositeAtEntry = atEntry(compositeRes.data);
-    const signalEntryContext = (compositeAtEntry as Record<string, any> | null)?.entry_context_snapshot ?? null;
-    // Prefer the JSON copied when this signal was evaluated. Never reconstruct
-    // entry technicals from the mutable indicator_snapshots row if the copy exists.
+    const signalEntryContextCandidate = (compositeRes.data as Record<string, any> | null)?.entry_context_snapshot ?? null;
+    const signalEntryContext = signalEntryContextCandidate
+      && atEntry({ created_at: signalEntryContextCandidate.captured_at })
+      ? signalEntryContextCandidate
+      : null;
+    // Validate the copied context's own timestamp, not the mutable composite row's
+    // updated_at/created_at. This also avoids rejecting a valid snapshot after a later upsert.
+    // Never reconstruct entry technicals from mutable indicator_snapshots when a valid copy exists.
     const whaleAtEntry = signalEntryContext?.whale_flow ?? atEntry(whaleRes.data);
     const indicatorAtEntry = signalEntryContext?.technicals?.primary ?? atEntry(indicatorRes.data);
     const predictionAtEntry = signalEntryContext?.prediction_market ?? atEntry(predictionRes.data);
