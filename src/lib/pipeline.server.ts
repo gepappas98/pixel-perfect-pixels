@@ -500,11 +500,24 @@ async function persistEntryContextSnapshot(
       return Number.isFinite(ts) && ts <= entryMs ? row : null;
     };
     const compositeAtEntry = atEntry(compositeRes.data);
-    const whaleAtEntry = atEntry(whaleRes.data);
-    const indicatorAtEntry = atEntry(indicatorRes.data);
-    const predictionAtEntry = atEntry(predictionRes.data);
-    const councilAtEntry = atEntry(councilRes.data, "source_created_at") ?? atEntry(councilRes.data, "synced_at");
-    const strategyAtEntry = atEntry(strategyRes.data, "updated_at");
+    const signalEntryContextCandidate = (compositeRes.data as Record<string, any> | null)?.entry_context_snapshot ?? null;
+    const signalEntryContext = signalEntryContextCandidate
+      && atEntry({ created_at: signalEntryContextCandidate.captured_at })
+      ? signalEntryContextCandidate
+      : null;
+    // Validate the copied context's own timestamp, not the mutable composite row's
+    // updated_at/created_at. This also avoids rejecting a valid snapshot after a later upsert.
+    // Never reconstruct entry technicals from mutable indicator_snapshots when a valid copy exists.
+    const whaleAtEntry = signalEntryContext?.whale_flow ?? atEntry(whaleRes.data);
+    const indicatorAtEntry = signalEntryContext?.technicals?.primary ?? atEntry(indicatorRes.data);
+    const predictionAtEntry = signalEntryContext?.prediction_market ?? atEntry(predictionRes.data);
+    const councilAtEntry = signalEntryContext?.ai_council
+      ?? (atEntry(councilRes.data, "source_created_at") ?? atEntry(councilRes.data, "synced_at"));
+    const technicalMtfAtEntry = Array.isArray(signalEntryContext?.technicals?.mtf)
+      ? signalEntryContext.technicals.mtf
+      : (additionalIndicators.data ?? []);
+    const strategyAtEntry = signalEntryContext?.strategy ?? atEntry(strategyRes.data, "updated_at");
+    const regimeAtEntry = signalEntryContext?.market_regime ?? currentRegimeLabel;
 
     const sourceStatus = {
       composite_signal: compositeAtEntry ? "present" : "missing",
@@ -518,11 +531,13 @@ async function persistEntryContextSnapshot(
           ? "present"
           : "missing"
         : "not_applicable",
-      technical_mtf: additionalIndicators.error
-        ? "error"
-        : additionalIndicators.data?.length
-          ? "present"
-          : "missing",
+      technical_mtf: signalEntryContext?.technicals?.mtf?.length
+        ? "present_at_signal"
+        : additionalIndicators.error
+          ? "error"
+          : additionalIndicators.data?.length
+            ? "fallback_current_state"
+            : "missing",
       prediction_market: signal.prediction_snapshot_id
         ? predictionAtEntry
           ? "present"
@@ -561,12 +576,15 @@ async function persistEntryContextSnapshot(
         whale_flow: whaleAtEntry,
         technicals: {
           primary: indicatorAtEntry,
-          recent_mtf: additionalIndicators.data ?? [],
+          recent_mtf: technicalMtfAtEntry,
+          signal_snapshot_captured_at: signalEntryContext?.captured_at ?? null,
+          snapshot_source: signalEntryContext ? "immutable_signal_copy" : "legacy_timestamp_checked_fallback",
         },
         prediction_market: predictionAtEntry,
         ai_council: councilAtEntry,
         market_regime: {
-          label: currentRegimeLabel,
+          label: regimeAtEntry,
+          source: signalEntryContext ? "signal_time_copy" : "execution_time_fallback",
         },
         strategy: strategyAtEntry,
         sentiment_context: {

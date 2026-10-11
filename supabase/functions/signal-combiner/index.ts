@@ -739,6 +739,52 @@ Deno.serve(async (req) => {
         console.warn(`[SPOT_VARIANT_GATE] skipped shadow variants for ${symbol} (${dbSymbol}): not TRADING on Binance Spot`);
       }
 
+      // Capture the complete source context at signal-evaluation time.
+      // indicator_snapshots is a mutable current-state table, so the copied
+      // JSON is the research record; indicator_snapshot_id remains provenance only.
+      const entryContextSnapshot = {
+        schema_version: 1,
+        captured_at: new Date().toISOString(),
+        symbol,
+        signal: {
+          recommendation: gate.recommendation,
+          confidence: result.confidence,
+          score: result.score,
+          reasoning: reasoningParts.join("; "),
+          price_at: Number(indicator?.price ?? 0) > 0 ? Number(indicator.price) : null,
+        },
+        technicals: {
+          primary: indicator,
+          mtf: [mtf.primary, mtf.fast, mtf.trend].filter(Boolean),
+          alignment: {
+            primary: mtf.p, fast: mtf.f, trend: mtf.t,
+            bull_count: mtf.bullCount, bear_count: mtf.bearCount, neutral_count: mtf.neuCount,
+            detail: mtf.detail,
+          },
+        },
+        whale_flow: whale ? {
+          id: whale.id, symbol: whale.symbol, chain: whale.chain,
+          direction: whale.direction, usd_value: whale.usd_value,
+          source: whale.source, created_at: whale.created_at,
+        } : null,
+        prediction_market: prediction ? {
+          id: prediction.id, market_slug: prediction.market_slug,
+          question: prediction.question, related_symbol: prediction.related_symbol,
+          yes_price: prediction.yes_price, no_price: prediction.no_price,
+          volume_24h: prediction.volume_24h, created_at: prediction.created_at,
+        } : null,
+        ai_council: council ? {
+          id: council.id, symbol: council.symbol, depth: council.depth,
+          final_verdict: council.final_verdict, conviction: council.conviction,
+          price_at: council.price_at, reflection: council.reflection,
+          source_created_at: council.source_created_at, synced_at: council.synced_at,
+        } : null,
+        market_regime: productionRegimeLabel,
+        market_session: productionMarketSession,
+        strategy: productionWeights,
+        source_tags: sourceTags,
+      };
+
       // Fingerprints are intentionally unique/idempotent. Re-observing the
       // same input combination must refresh the signal timestamp rather than
       // crash the whole pipeline on uq_composite_signals_fingerprint.
@@ -759,6 +805,7 @@ Deno.serve(async (req) => {
             market_session: productionMarketSession,
             source_tags: sourceTags,
             fingerprint: signalFingerprint,
+            entry_context_snapshot: entryContextSnapshot,
             created_at: new Date().toISOString(),
           },
           { onConflict: "fingerprint" },
