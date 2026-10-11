@@ -95,6 +95,43 @@ async function raiseAlert(
   }
   return severity;
 }
+
+async function recordHeartbeat(
+  supabase: ReturnType<typeof getServiceClient>,
+  now: string,
+  evidence: Record<string, unknown>,
+) {
+  const alertKey = "system:position_watchdog_heartbeat";
+  const { data: existing, error: readError } = await supabase
+    .from("trade_position_alerts")
+    .select("id")
+    .eq("alert_key", alertKey)
+    .maybeSingle();
+  if (readError) throw readError;
+  const payload = {
+    alert_code: "position_watchdog_heartbeat",
+    severity: "info",
+    status: "resolved",
+    message: "Position watchdog completed a check successfully.",
+    evidence,
+    last_seen_at: now,
+    resolved_at: now,
+    updated_at: now,
+  };
+  if (existing) {
+    const { error } = await supabase.from("trade_position_alerts").update(payload).eq("id", existing.id);
+    if (error) throw error;
+  } else {
+    const { error } = await supabase.from("trade_position_alerts").insert({
+      alert_key: alertKey,
+      ...payload,
+      first_seen_at: now,
+      created_at: now,
+    });
+    if (error) throw error;
+  }
+}
+
 async function resolveAlert(supabase: ReturnType<typeof getServiceClient>, alertKey: string, now: string) {
   const { error } = await supabase
     .from("trade_position_alerts")
@@ -230,6 +267,7 @@ Deno.serve(async (req) => {
 
     await resolveAlert(supabase, "system:position_watchdog_failed", now);
     if (result.errors.length) result.status = "partial";
+    await recordHeartbeat(supabase, now, { ...result, checked_at: now });
     console.log("[TRADE_POSITION_WATCHDOG]", JSON.stringify(result));
     return new Response(JSON.stringify({ ...result, checked_at: now }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
