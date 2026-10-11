@@ -234,6 +234,9 @@ export const getSystemResourceMetrics = createServerFn({ method: "GET" }).handle
       pretty: String(resource["total_db_size_pretty"] ?? "—"),
       bytes: Number(resource["total_db_size_bytes"] ?? 0),
       variantSignals: Number(resource["variant_signals_count"] ?? 0),
+      dailyGrowthMb: resource["daily_growth_mb"] == null ? null : Number(resource["daily_growth_mb"]),
+      dailyGrowthWindowHours: resource["daily_growth_window_hours"] == null ? null : Number(resource["daily_growth_window_hours"]),
+      sampledAt: typeof resource["storage_sampled_at"] === "string" ? resource["storage_sampled_at"] : null,
     },
     cacheHitPct: Number(resource["cache_hit_pct"] ?? 0),
     pipeline: {
