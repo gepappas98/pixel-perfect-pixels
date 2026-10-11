@@ -65,12 +65,13 @@ async function raiseAlert(
 ) {
   const { data: existing, error: readError } = await supabase
     .from("trade_position_alerts")
-    .select("id,first_seen_at")
+    .select("id,first_seen_at,status")
     .eq("alert_key", input.alert_key)
     .maybeSingle();
   if (readError) throw readError;
 
-  const age = existing ? Date.parse(now) - Date.parse(existing.first_seen_at) : 0;
+  const isSameActiveIncident = existing?.status === "active";
+  const age = isSameActiveIncident ? Date.parse(now) - Date.parse(existing.first_seen_at) : 0;
   const severity = age >= ESCALATE_AFTER_MS ? "critical" : "warning";
   const payload = {
     ...input,
@@ -79,6 +80,7 @@ async function raiseAlert(
     last_seen_at: now,
     resolved_at: null,
     updated_at: now,
+    ...(!isSameActiveIncident ? { first_seen_at: now } : {}),
   };
   if (existing) {
     const { error } = await supabase.from("trade_position_alerts").update(payload).eq("id", existing.id);
