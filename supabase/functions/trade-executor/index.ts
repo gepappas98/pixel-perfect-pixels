@@ -1,4 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { binancePair, decideExit, normalizeExitSettings, type OpenTradeRow } from "../_shared/trade-exit.ts";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -34,6 +35,127 @@ async function getCurrentPrice(symbol: string): Promise<number> {
   return price;
 }
 
+const PRICE_HOSTS = ["https://api.binance.com", "https://data-api.binance.vision", "https://api1.binance.com"];
+
+async function fetchAllSpotPrices(): Promise<{ prices: Map<string, number>; host: string | null; errors: string[] }> {
+  const errors: string[] = [];
+  for (const host of PRICE_HOSTS) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const res = await fetch(`${host}/api/v3/ticker/price`, { signal: ctrl.signal });
+      if (!res.ok) { errors.push(`${host}: HTTP ${res.status}`); continue; }
+      const rows = (await res.json()) as Array<{ symbol: string; price: string }>;
+      const map = new Map<string, number>();
+      for (const r of rows) {
+        const p = Number(r.price);
+        if (Number.isFinite(p) && p > 0) map.set(r.symbol, p);
+      }
+      if (map.size > 0) return { prices: map, host, errors };
+      errors.push(`${host}: empty price list`);
+    } catch (e) {
+      errors.push(`${host}: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return { prices: new Map(), host: null, errors };
+}
+
+/**
+ * Exit stage. Runs on EVERY executor invocation, before and independent of
+ * entry logic, so expired/SL/TP paper BUYs are closed even when no entries happen.
+ * Never throws: failures are returned as structured status and logged.
+ */
+async function closeTriggeredTradesStage(supabase: ReturnType<typeof getServiceClient>) {
+  const summary: Record<string, unknown> = {
+    status: "ok", open_buy: 0, closed: 0, by_reason: {} as Record<string, number>,
+    held: 0, no_price: [] as string[], legacy_sell_open: 0, legacy_sell_ids: [] as string[],
+    live_pending_exchange: [] as string[], race_skipped: 0, errors: [] as string[],
+    settings: null as unknown, settings_source: "defaults", price_host: null as string | null,
+  };
+  try {
+    const { data: settingsRow, error: settingsErr } = await supabase
+      .from("pipeline_settings").select("*").eq("id", 1).maybeSingle();
+    if (settingsErr) (summary.errors as string[]).push(`settings: ${settingsErr.message}`);
+    else if (settingsRow) summary.settings_source = "pipeline_settings";
+    const settings = normalizeExitSettings(settingsRow as Record<string, unknown> | null);
+    summary.settings = settings;
+
+    const { data: openRows, error: openErr } = await supabase
+      .from("trades")
+      .select("id,symbol,side,mode,quantity,entry_price,stop_loss,take_profit,created_at")
+      .eq("status", "open")
+      .order("created_at", { ascending: true })
+      .range(0, 4999);
+    if (openErr) throw new Error(`open trades query failed: ${openErr.message}`);
+    const rows = (openRows ?? []) as OpenTradeRow[];
+
+    const legacy = rows.filter((r) => r.side !== "buy");
+    summary.legacy_sell_open = legacy.length;
+    summary.legacy_sell_ids = legacy.map((r) => r.id);
+    if (legacy.length) {
+      console.warn("[TRADE_EXIT] legacy SELL rows left open (Spot long-only, not auto-closed)",
+        JSON.stringify(legacy.map((r) => ({ id: r.id, symbol: r.symbol, created_at: r.created_at }))));
+    }
+    const buys = rows.filter((r) => r.side === "buy");
+    summary.open_buy = buys.length;
+    if (!buys.length) return summary;
+
+    const { prices, host, errors: priceErrors } = await fetchAllSpotPrices();
+    summary.price_host = host;
+    if (!prices.size) {
+      summary.status = "error";
+      (summary.errors as string[]).push(`price fetch failed: ${priceErrors.join("; ")}`);
+      console.error("[TRADE_EXIT] FAILED: no valid Binance prices; 0 trades evaluated", JSON.stringify(priceErrors));
+      return summary;
+    }
+
+    const nowMs = Date.now();
+    for (const trade of buys) {
+      const decision = decideExit(trade, prices.get(binancePair(trade.symbol)), settings, nowMs);
+      if (decision.action === "hold") { (summary.held as number)++; continue; }
+      if (decision.action === "skip_no_price") { (summary.no_price as string[]).push(trade.symbol); continue; }
+      if (decision.action === "skip_legacy_sell") continue;
+      if (decision.action === "skip_live_requires_exchange") {
+        // This executor has no live-order adapter: never mark live trades closed.
+        (summary.live_pending_exchange as string[]).push(trade.id);
+        console.error(`[TRADE_EXIT] live trade ${trade.id} ${trade.symbol} due (${decision.reason}) but no confirmed exchange SELL; left open`);
+        continue;
+      }
+      const closedAt = new Date().toISOString();
+      // Idempotent + concurrency-safe: only flips rows still open.
+      const { data: updated, error: updErr } = await supabase
+        .from("trades")
+        .update({
+          status: "closed", exit_price: decision.exit_price, close_reason: decision.reason, closed_at: closedAt,
+          pnl: decision.net_pnl, gross_pnl: decision.gross_pnl, net_pnl: decision.net_pnl,
+          entry_fee: decision.entry_fee, exit_fee: decision.exit_fee, total_fees: decision.total_fees,
+        })
+        .eq("id", trade.id).eq("status", "open").eq("mode", "paper").eq("side", "buy")
+        .select("id").maybeSingle();
+      if (updErr) { (summary.errors as string[]).push(`${trade.id}: ${updErr.message}`); continue; }
+      if (!updated) { (summary.race_skipped as number)++; continue; }
+      summary.closed = (summary.closed as number) + 1;
+      const br = summary.by_reason as Record<string, number>;
+      br[decision.reason] = (br[decision.reason] ?? 0) + 1;
+      const { error: alertErr } = await supabase.from("trade_alerts").insert({
+        trade_id: trade.id, symbol: trade.symbol, side: "buy", event_type: decision.reason,
+        entry_price: Number(trade.entry_price), exit_price: decision.exit_price,
+        pnl: decision.net_pnl, pnl_pct: decision.net_pnl_pct, created_at: closedAt,
+      });
+      if (alertErr) (summary.errors as string[]).push(`alert ${trade.id}: ${alertErr.message}`);
+    }
+    if ((summary.errors as string[]).length) summary.status = "partial";
+    console.log("[TRADE_EXIT]", JSON.stringify({ ...summary, legacy_sell_ids: undefined }));
+  } catch (e) {
+    summary.status = "error";
+    (summary.errors as string[]).push(e instanceof Error ? e.message : String(e));
+    console.error("[TRADE_EXIT] FAILED", JSON.stringify(summary));
+  }
+  return summary;
+}
+
 async function getEligibleSignals(supabase: ReturnType<typeof getServiceClient>) {
   const since = new Date(Date.now() - EXECUTION_WINDOW_MINUTES * 60 * 1000).toISOString();
 
@@ -51,21 +173,26 @@ Deno.serve(async (req) => {
   if (preflight) return preflight;
 
   const auditStartedAt = new Date().toISOString();
+  let exitStage: Record<string, unknown> | null = null;
 
   try {
     const supabase = getServiceClient();
     const tradingMode = Deno.env.get("TRADING_MODE") ?? "paper";
+
+    exitStage = await closeTriggeredTradesStage(supabase);
 
     // Live order placement remains explicitly disabled.
     if (tradingMode === "live") {
       return new Response(JSON.stringify({
         error:
           "Live execution is intentionally blocked in phase 1. Use paper mode until a verified live-order adapter is implemented.",
+        exits: exitStage,
       }), {
         status: 503,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
+
 
     const { data: signals, error: signalError } = await getEligibleSignals(supabase);
     if (signalError) throw signalError;
@@ -296,6 +423,7 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({
       mode: "paper",
       research_mode: true,
+      exits: exitStage,
       opened: opened.length,
       skipped: auditEvents.filter((event) => event.decision === "SKIP").length,
       errors,
@@ -331,6 +459,7 @@ Deno.serve(async (req) => {
     console.error("[trade-executor] fatal", err);
     return new Response(JSON.stringify({
       error: err instanceof Error ? err.message : String(err),
+      exits: exitStage,
       execution_audit: {
         version: 2,
         started_at: auditStartedAt,

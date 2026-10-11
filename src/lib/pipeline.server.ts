@@ -3217,7 +3217,13 @@ async function closeTriggeredTrades(): Promise<number> {
 
   let prices: Map<string, number>;
   try { prices = await allBinancePrices(); }
-  catch { return 0; }
+  catch (priceError) {
+    console.error("[TRADE_EXIT] FAILED: no price source; open BUY trades not evaluated", JSON.stringify({
+      open_buy: trades.length,
+      error: priceError instanceof Error ? priceError.message : String(priceError),
+    }));
+    return 0;
+  }
 
   const closeCtx = await getActiveWatchlistContext();
   let closed = 0;
