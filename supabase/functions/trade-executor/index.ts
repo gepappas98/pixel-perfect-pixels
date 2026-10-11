@@ -378,7 +378,9 @@ Deno.serve(async (req) => {
       .select("id,symbol,signal_price,observed_at,limited_position_decision,markout_15m_at,markout_1h_at,markout_4h_at,markout_24h_at,markout_72h_at")
       .eq("recommendation", "buy")
       .lt("observed_at", new Date(Date.now() - 15 * 60 * 1000).toISOString())
-      .or("markout_15m_at.is.null,markout_1h_at.is.null,markout_4h_at.is.null,markout_24h_at.is.null,markout_72h_at.is.null")
+      // Preserve rows with incomplete horizons unless explicitly retired from active markout collection.
+      .or("and(or(markout_15m_at.is.null,markout_1h_at.is.null,markout_4h_at.is.null,markout_24h_at.is.null,markout_72h_at.is.null),or(metadata->>markout_collection_status.is.null,metadata->>markout_collection_status.neq.excluded_stale_no_15m_4h))")
+      .order("observed_at", { ascending: true })
       .limit(500);
     const priceCache = new Map<string, number>();
     for (const row of dueRows ?? []) {
