@@ -373,13 +373,19 @@ Deno.serve(async (req) => {
       }).eq("id", item.id);
     }
 
-    // Fixed-horizon markouts: first executor run at/after each horizon, priced from Binance.
+    // Select only markouts whose own horizon is due. This prevents rows with a
+    // future 24h/72h horizon from occupying the 500-row batch before that horizon.
+    // Oldest-first ordering ensures overdue samples are drained before newer ones.
+    const markoutNow = Date.now();
+    const due15m = new Date(markoutNow - 15 * 60 * 1000).toISOString();
+    const due1h = new Date(markoutNow - 60 * 60 * 1000).toISOString();
+    const due4h = new Date(markoutNow - 4 * 60 * 60 * 1000).toISOString();
+    const due24h = new Date(markoutNow - 24 * 60 * 60 * 1000).toISOString();
+    const due72h = new Date(markoutNow - 72 * 60 * 60 * 1000).toISOString();
     const { data: dueRows } = await supabase.from("repeated_buy_research_ledger")
       .select("id,symbol,signal_price,observed_at,limited_position_decision,markout_15m_at,markout_1h_at,markout_4h_at,markout_24h_at,markout_72h_at")
       .eq("recommendation", "buy")
-      .lt("observed_at", new Date(Date.now() - 15 * 60 * 1000).toISOString())
-      // Preserve rows with incomplete horizons unless explicitly retired from active markout collection.
-      .or("and(or(markout_15m_at.is.null,markout_1h_at.is.null,markout_4h_at.is.null,markout_24h_at.is.null,markout_72h_at.is.null),or(metadata->>markout_collection_status.is.null,metadata->>markout_collection_status.neq.excluded_stale_no_15m_4h))")
+      .or(`and(markout_15m_at.is.null,observed_at.lt.${due15m}),and(markout_1h_at.is.null,observed_at.lt.${due1h}),and(markout_4h_at.is.null,observed_at.lt.${due4h}),and(markout_24h_at.is.null,observed_at.lt.${due24h}),and(markout_72h_at.is.null,observed_at.lt.${due72h})`)
       .order("observed_at", { ascending: true })
       .limit(500);
     const priceCache = new Map<string, number>();
