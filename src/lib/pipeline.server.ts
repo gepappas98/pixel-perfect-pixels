@@ -511,7 +511,8 @@ async function persistEntryContextSnapshot(
     const technicalMtfAtEntry = Array.isArray(signalEntryContext?.technicals?.mtf)
       ? signalEntryContext.technicals.mtf
       : (additionalIndicators.data ?? []);
-    const strategyAtEntry = atEntry(strategyRes.data, "updated_at");
+    const strategyAtEntry = signalEntryContext?.strategy ?? atEntry(strategyRes.data, "updated_at");
+    const regimeAtEntry = signalEntryContext?.market_regime ?? currentRegimeLabel;
 
     const sourceStatus = {
       composite_signal: compositeAtEntry ? "present" : "missing",
@@ -577,7 +578,8 @@ async function persistEntryContextSnapshot(
         prediction_market: predictionAtEntry,
         ai_council: councilAtEntry,
         market_regime: {
-          label: currentRegimeLabel,
+          label: regimeAtEntry,
+          source: signalEntryContext ? "signal_time_copy" : "execution_time_fallback",
         },
         strategy: strategyAtEntry,
         sentiment_context: {
