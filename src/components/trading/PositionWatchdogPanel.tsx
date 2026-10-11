@@ -57,7 +57,7 @@ export function PositionWatchdogPanel() {
   const criticalCount = alerts.filter((alert) => alert.severity === "critical").length;
 
   return (
-    <section className="panel lg:col-span-3" aria-live="polite">
+    <div className="mb-4 rounded-md border border-border bg-surface-2/40 p-3" aria-live="polite">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           {query.isError ? (
@@ -127,7 +127,7 @@ export function PositionWatchdogPanel() {
       <p className="mt-3 text-[10px] text-muted-foreground">
         Checks every minute after deployment. A warning escalates to critical if it persists for 3 minutes. Alert-only: no position is automatically closed by this watchdog.
       </p>
-    </section>
+    </div>
   );
 }
 
