@@ -1,1 +1,4 @@
 project_id = "yckewtpfttvwiptmmrfq"
+
+[functions.trade-position-watchdog]
+verify_jwt = false
