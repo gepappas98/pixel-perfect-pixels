@@ -38,22 +38,35 @@ export function PositionWatchdogPanel() {
     queryKey: ["position-watchdog-alerts"],
     queryFn: async () => {
       // The new watchdog table may not yet be in generated client types.
-      const { data, error } = await (supabase as any)
-        .from("trade_position_alerts")
-        .select("id,trade_id,symbol,alert_code,severity,status,message,evidence,first_seen_at,last_seen_at")
-        .eq("status", "active")
-        .order("severity", { ascending: true })
-        .order("last_seen_at", { ascending: false })
-        .limit(100);
-      if (error) throw error;
-      return (data ?? []) as PositionAlert[];
+      const table = (supabase as any).from("trade_position_alerts");
+      const [alertsResult, heartbeatResult] = await Promise.all([
+        table
+          .select("id,trade_id,symbol,alert_code,severity,status,message,evidence,first_seen_at,last_seen_at")
+          .eq("status", "active")
+          .order("severity", { ascending: true })
+          .order("last_seen_at", { ascending: false })
+          .limit(100),
+        table
+          .select("last_seen_at")
+          .eq("alert_key", "system:position_watchdog_heartbeat")
+          .maybeSingle(),
+      ]);
+      if (alertsResult.error) throw alertsResult.error;
+      if (heartbeatResult.error) throw heartbeatResult.error;
+      return {
+        alerts: (alertsResult.data ?? []) as PositionAlert[],
+        heartbeat: heartbeatResult.data as { last_seen_at: string } | null,
+      };
     },
     refetchInterval: 15_000,
     staleTime: 10_000,
     retry: 1,
   });
 
-  const alerts = query.data ?? [];
+  const alerts = query.data?.alerts ?? [];
+  const heartbeat = query.data?.heartbeat ?? null;
+  const heartbeatAgeMs = heartbeat ? Date.now() - Date.parse(heartbeat.last_seen_at) : Number.POSITIVE_INFINITY;
+  const heartbeatStale = !heartbeat || !Number.isFinite(heartbeatAgeMs) || heartbeatAgeMs > 150_000;
   const criticalCount = alerts.filter((alert) => alert.severity === "critical").length;
 
   return (
@@ -72,7 +85,7 @@ export function PositionWatchdogPanel() {
           <h2 className="panel-title">Open Position Watchdog</h2>
         </div>
         <span className={`rounded border px-2 py-1 font-mono text-[10px] uppercase tracking-wider ${query.isError || criticalCount > 0 ? "border-destructive/40 bg-destructive/10 text-destructive" : alerts.length > 0 ? "border-warn/40 bg-warn/10 text-warn" : "border-bull/30 bg-bull/5 text-bull"}`}>
-          {query.isError ? "ALARM FEED UNAVAILABLE" : criticalCount > 0 ? `${criticalCount} CRITICAL` : alerts.length > 0 ? `${alerts.length} ACTIVE ALERTS` : "NO ACTIVE ALERTS"}
+          {query.isError ? "ALARM FEED UNAVAILABLE" : heartbeatStale ? (criticalCount > 0 ? `WATCHDOG STALE · ${criticalCount} CRITICAL` : "WATCHDOG NOT VERIFIED") : criticalCount > 0 ? `${criticalCount} CRITICAL` : alerts.length > 0 ? `${alerts.length} ACTIVE ALERTS` : "NO ACTIVE ALERTS"}
         </span>
       </div>
 
@@ -85,8 +98,14 @@ export function PositionWatchdogPanel() {
         </div>
       )}
 
-      {!query.isError && alerts.length === 0 && !query.isLoading && (
-        <p className="text-xs text-bull">No active watchdog alarms. This means no unresolved exit condition was detected by the latest successful check; it is not a guarantee against intrabar price moves.</p>
+      {!query.isError && heartbeatStale && !query.isLoading && (
+        <div role="alert" className="mb-2 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
+          <strong>Watchdog health is unverified.</strong> No successful heartbeat has been recorded within 2.5 minutes. The watchdog may not yet be deployed/scheduled, or its latest checks may be failing.
+        </div>
+      )}
+
+      {!query.isError && !heartbeatStale && alerts.length === 0 && !query.isLoading && (
+        <p className="text-xs text-bull">No active watchdog alarms. Last successful check: {formatTime(heartbeat!.last_seen_at)}. This is not a guarantee against intrabar price moves.</p>
       )}
 
       {alerts.length > 0 && (
@@ -125,7 +144,7 @@ export function PositionWatchdogPanel() {
       )}
 
       <p className="mt-3 text-[10px] text-muted-foreground">
-        Checks every minute after deployment. A warning escalates to critical if it persists for 3 minutes. Alert-only: no position is automatically closed by this watchdog.
+        Expected check cadence: every minute. A warning escalates to critical after 3 minutes; missing heartbeat for 2.5 minutes is shown as unverified. Alert-only: no position is automatically closed by this watchdog.
       </p>
     </div>
   );
