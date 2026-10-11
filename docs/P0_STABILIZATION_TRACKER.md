@@ -542,6 +542,6 @@ Constraints:
 - Added `supabase/functions/trade-position-watchdog/index.ts`, reusing the shared `decideExit()` logic. It checks current Binance Spot prices, SL/TP, stale-exit and max-hold rules, but **never closes or mutates a trade**.
 - An exit condition that remains due/open raises a persistent warning; if it remains unresolved for 3 minutes it escalates to critical. Price-feed failures and watchdog failures also produce persistent alerts. Alerts resolve when the condition clears or the position is no longer open.
 - Added a visible watchdog alert feed above the open positions list. If the alert feed itself cannot load, the UI says it cannot verify alarms instead of claiming a healthy state.
-- GitHub commits: migration `b3ed4d1`; watchdog function `d308185`; config `7a901e2`; UI `63c7b69` and `a834c0a`.
+- GitHub commits: migration `b3ed4d1`; watchdog function + heartbeat/escalation fixes `a86a30d`; config `7a901e2`; watchdog UI + heartbeat/stale-state fixes `fb0ee7b`; integration into open positions `a834c0a`.
 - Live SQL created the alert table. The watchdog Edge Function and frontend have **not** been deployed by this change. No watchdog cron was scheduled yet, to avoid a failing minute-by-minute caller before the function is deployed.
 - **After deployment:** invoke the function once and verify its JSON response; then schedule it every minute and verify a fresh `checked_at`/healthy result. Test alert-only behavior with a controlled test case; do not create/close a real trade for testing.
