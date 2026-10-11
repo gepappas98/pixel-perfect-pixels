@@ -84,7 +84,7 @@ export function PositionWatchdogPanel() {
           )}
           <h2 className="panel-title">Open Position Watchdog</h2>
         </div>
-        <span className={`rounded border px-2 py-1 font-mono text-[10px] uppercase tracking-wider ${query.isError || criticalCount > 0 ? "border-destructive/40 bg-destructive/10 text-destructive" : alerts.length > 0 ? "border-warn/40 bg-warn/10 text-warn" : "border-bull/30 bg-bull/5 text-bull"}`}>
+        <span className={`rounded border px-2 py-1 font-mono text-[10px] uppercase tracking-wider ${query.isError || heartbeatStale || criticalCount > 0 ? "border-destructive/40 bg-destructive/10 text-destructive" : alerts.length > 0 ? "border-warn/40 bg-warn/10 text-warn" : "border-bull/30 bg-bull/5 text-bull"}`}>
           {query.isError ? "ALARM FEED UNAVAILABLE" : heartbeatStale ? (criticalCount > 0 ? `WATCHDOG STALE · ${criticalCount} CRITICAL` : "WATCHDOG NOT VERIFIED") : criticalCount > 0 ? `${criticalCount} CRITICAL` : alerts.length > 0 ? `${alerts.length} ACTIVE ALERTS` : "NO ACTIVE ALERTS"}
         </span>
       </div>
