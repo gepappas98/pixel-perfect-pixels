@@ -6,6 +6,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { formatPrice } from "@/lib/format-price";
 import { computeFeeAwarePnl } from "@/lib/fees";
 import type { Trade } from "@/lib/trading-types";
+import { PositionWatchdogPanel } from "@/components/trading/PositionWatchdogPanel";
 
 const BINANCE_SYMBOL_MAP: Record<string, string> = {
   MATIC: "POL",
@@ -111,6 +112,7 @@ export function TradesPanel() {
 
   return (
     <section className="panel">
+      <PositionWatchdogPanel />
       <div className="mb-3 flex items-center justify-between">
         <div>
           <h2 className="panel-title">Positions · Spot Long-only</h2>
