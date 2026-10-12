@@ -61,7 +61,6 @@ interface Candidate {
   primary: Row | null;
   fast: Row | null;
   trend: Row | null;
-  prediction: Row | null;
   conflict: boolean;
   whaleUsd: number;
 }
@@ -575,7 +574,6 @@ Deno.serve(async (req) => {
           candidate.primary?.created_at,
           candidate.fast?.created_at,
           candidate.trend?.created_at,
-          candidate.prediction?.created_at,
         ].map((v) => new Date(String(v ?? "")).getTime()).filter(Number.isFinite);
         const sourceCreatedAt = inputTimes.length
           ? new Date(Math.min(...inputTimes)).toISOString()
