@@ -168,8 +168,15 @@ export function TradesPanel() {
               const positive = (pnl ?? 0) >= 0;
 
               return (
-                <tr key={t.id} className="border-t border-border font-mono text-xs">
-                  <td className="py-1.5 font-semibold">{t.symbol}</td>
+                <tr key={t.id} className={`border-t border-border font-mono text-xs ${t.entry_source === "early_entry_regime" ? "bg-violet-500/10 ring-1 ring-inset ring-violet-500/30" : ""}`}>
+                  <td className="py-1.5 font-semibold">
+                    <span>{t.symbol}</span>
+                    {t.entry_source === "early_entry_regime" && (
+                      <span className="ml-2 inline-flex rounded border border-violet-400/50 bg-violet-500/15 px-1.5 py-0.5 align-middle text-[9px] font-bold tracking-wide text-violet-300">
+                        EARLY ENTRY
+                      </span>
+                    )}
+                  </td>
                   <td
                     className={`py-1.5 ${t.side === "buy" ? "text-bull" : "text-bear"}`}
                   >

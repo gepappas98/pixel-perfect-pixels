@@ -7,6 +7,7 @@ const STAGES: any[] = [
   ["council-sync", 90000],
   ["strategy-auto-switch", 60000],
   ["signal-combiner", 180000],
+  ["early-entry-regime", 30000],
   ["variant-resolver", 90000],
   ["trade-executor", 120000],
   ["council-lessons", 60000],
@@ -192,7 +193,8 @@ Deno.serve(async (req) => {
       },
     }).eq("id", id);
 
-    if (!stage.ok && name !== "council-lessons") {
+    // Early Entry is research-only and must never interrupt the established pipeline.
+    if (!stage.ok && name !== "council-lessons" && name !== "early-entry-regime") {
       await db.from("pipeline_runs").update({
         status: "error",
         completed_at: new Date().toISOString(),

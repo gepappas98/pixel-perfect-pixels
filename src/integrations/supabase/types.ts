@@ -910,6 +910,8 @@ export type Database = {
           composite_signal_id: string | null
           created_at: string
           entry_fee: number | null
+          entry_metadata: Json
+          entry_source: string
           entry_price: number
           exchange_order_id: string | null
           exit_fee: number | null
@@ -937,6 +939,8 @@ export type Database = {
           composite_signal_id?: string | null
           created_at?: string
           entry_fee?: number | null
+          entry_metadata?: Json
+          entry_source?: string
           entry_price: number
           exchange_order_id?: string | null
           exit_fee?: number | null
