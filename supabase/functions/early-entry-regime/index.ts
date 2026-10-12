@@ -46,22 +46,21 @@ Deno.serve(async (req) => {
       .select("*").order("observed_at", { ascending: false }).limit(1).maybeSingle();
 
     // Use 1h breadth change over at least two observations, not price movement.
+    // Require the actual transition: previous market regime was bearish/sideways,
+    // while the current canonical regime has turned bullish. No price confirmation gate.
+    const body = await req.json().catch(() => ({}));
+    const regime = String(body.market_regime ?? "unknown").toLowerCase();
+    const score = Number.isFinite(Number(body.market_regime_score)) ? Number(body.market_regime_score) : null;
     const breadthImproving = !!previous
       && breadth.bullish > Number(previous.technicals_1h_bullish ?? 0)
       && breadth.bearish < Number(previous.technicals_1h_bearish ?? 0);
     const whaleTurningPositive = whaleState === "accumulation"
       && (previous?.whale_flow_state === "distribution" || previous?.whale_flow_state === "neutral");
-    const priorRegime = String(previous?.market_regime ?? "unknown");
-    const regimeImproving = ["bear", "strong_bear", "sideways"].includes(priorRegime);
-    const transition = breadthImproving && whaleTurningPositive && regimeImproving ? "EARLY_ENTRY_ACTIVE" : "STRICT";
-    
-    // The existing canonical regime is computed from the same current market evidence.
-    // Require an explicit request payload label; never invent a market-regime score.
-    const body = await req.json().catch(() => ({}));
-    const regime = String(body.market_regime ?? "unknown");
-    const score = Number.isFinite(Number(body.market_regime_score)) ? Number(body.market_regime_score) : null;
-    const finalTransition = transition === "EARLY_ENTRY_ACTIVE" && ["bear", "strong_bear", "sideways"].includes(regime)
-      ? "EARLY_ENTRY_ACTIVE" : "STRICT";
+    const priorRegime = String(previous?.market_regime ?? "unknown").toLowerCase();
+    const priorWasBearishOrSideways = ["bear", "bearish", "strong_bear", "strong_bearish", "sideways"].includes(priorRegime);
+    const currentIsBullish = ["bull", "bullish", "strong_bull", "strong_bullish"].includes(regime);
+    const finalTransition = !!previous && priorWasBearishOrSideways && currentIsBullish
+      && breadthImproving && whaleTurningPositive ? "EARLY_ENTRY_ACTIVE" : "STRICT";
 
     const { error: obsError } = await db.from("early_entry_regime_observations").insert({
       observed_at: now.toISOString(), market_regime: regime, market_regime_score: score,
