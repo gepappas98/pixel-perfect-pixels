@@ -31,11 +31,11 @@ jobs:
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
 
+      - name: Build production app and generate routes
+        run: bun run build
+
       - name: TypeScript strict type-check
         run: bunx tsc --noEmit
 
       - name: Run unit tests
         run: bun run test
-
-      - name: Build production app
-        run: bun run build
