@@ -40,9 +40,6 @@ type WhaleFlowContext = {
     hold?: number;
     avg_confidence?: number | null;
   };
-  prediction_context: {
-    samples?: number;
-  };
   sentiment_context?: { available?: boolean; reason?: string };
   news_context?: { available?: boolean; reason?: string };
   data_quality: string;
@@ -246,10 +243,6 @@ export function WhalePanel() {
                       {" · "}
                       <span className="text-muted-foreground">{lastContext.signal_context?.hold ?? 0} H</span>
                     </div>
-                  </div>
-                  <div className="rounded bg-muted/30 px-1.5 py-1">
-                    <div className="text-muted-foreground">Predictions</div>
-                    <div className="mt-0.5">{lastContext.prediction_context?.samples ?? 0} samples</div>
                   </div>
                 </div>
 
