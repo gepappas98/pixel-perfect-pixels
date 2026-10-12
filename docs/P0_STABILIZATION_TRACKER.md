@@ -545,3 +545,14 @@ Constraints:
 - GitHub commits: migration `b3ed4d1`; watchdog function + heartbeat/escalation fixes `a86a30d`; config `7a901e2`; watchdog UI + heartbeat/stale-state fixes `fb0ee7b`; integration into open positions `a834c0a`.
 - Live SQL created the alert table. The watchdog Edge Function and frontend have **not** been deployed by this change. No watchdog cron was scheduled yet, to avoid a failing minute-by-minute caller before the function is deployed.
 - **After deployment:** invoke the function once and verify its JSON response; then schedule it every minute and verify a fresh `checked_at`/healthy result. Test alert-only behavior with a controlled test case; do not create/close a real trade for testing.
+
+
+## 2026-10-12 — Watchdog paper-exit gap correction (CODE COMMITTED / DEPLOYMENT PENDING)
+
+- Runtime evidence showed the 1-minute watchdog could observe a stop-loss breach while the 10-minute executor's next ticker snapshot was already back above the stored stop. The executor correctly reported `held=7`; this is a polling-window gap, not a failed DB update.
+- Updated `supabase/functions/trade-position-watchdog/index.ts` to close a triggered position only when `mode='paper'`, `side='buy'`, and `status='open'`, using the existing shared `decideExit()` logic and the current Binance ticker price.
+- The close is compare-and-set/idempotent and writes the same fee-aware PnL fields and `trade_alerts` event as `trade-executor`. It reports closed counts/by-reason and race skips. Existing trade history is not reset or rewritten.
+- Live positions are still never marked closed without a confirmed exchange SELL. Legacy SELL rows are not auto-closed. If an exit remains due but cannot be paper-closed, the watchdog keeps the alert/escalation path.
+- Updated the dashboard copy to distinguish paper auto-close from live exchange safety.
+- Commits: watchdog `c26c47446386f3b93ff17bad2adf7220f517eea7`; UI copy `ec89e451d4db8ea8a8bedc370fba1026bcdc3b5e`.
+- **Not deployed to Supabase by these GitHub commits.** Deploy the updated `trade-position-watchdog` Edge Function from main, then verify its JSON includes `auto_close_paper=true`, a healthy heartbeat, and accurate `closed`/error counts. This reduces missed brief crossings to the watchdog's sampling interval; it cannot guarantee an intrabar fill at the exact stop price.
