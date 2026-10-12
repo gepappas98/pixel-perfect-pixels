@@ -1130,18 +1130,6 @@ export type Database = {
           wins: number
         }[]
       }
-      get_variant_performance_v2: {
-        Args: { days?: number }
-        Returns: {
-          expired: number
-          losses: number
-          open_count: number
-          resolved: number
-          strategy_name: string
-          total_pnl_pct: number
-          wins: number
-        }[]
-      }
       get_variant_summary: {
         Args: never
         Returns: {
