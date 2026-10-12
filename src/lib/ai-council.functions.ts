@@ -29,7 +29,7 @@ export const generateCouncilVerdict = createServerFn({ method: "POST" })
     const sym = data.symbol;
 
     try {
-      const [{ data: whales }, { data: indicators }, { data: predictions }] = await Promise.all([
+      const [{ data: whales }, { data: indicators }] = await Promise.all([
         (supabaseAdmin.from as any)("whale_alerts")
           .select("*")
           .eq("symbol", sym)
@@ -40,16 +40,10 @@ export const generateCouncilVerdict = createServerFn({ method: "POST" })
           .ilike("symbol", `${sym}%`)
           .order("created_at", { ascending: false })
           .limit(1),
-        (supabaseAdmin.from as any)("prediction_snapshots")
-          .select("*")
-          .eq("related_symbol", sym)
-          .order("created_at", { ascending: false })
-          .limit(1),
       ]);
 
       const whale = whales?.[0] ?? null;
       const indicator = indicators?.[0] ?? null;
-      const prediction = predictions?.[0] ?? null;
 
       const dataBlock = [
         `Symbol: ${sym}`,
@@ -59,9 +53,6 @@ export const generateCouncilVerdict = createServerFn({ method: "POST" })
         indicator
           ? `Technical signal: ${indicator.signal} (RSI ${indicator.rsi}, price ${indicator.price})`
           : "Technical signal: no recent data",
-        prediction
-          ? `Prediction market: "${prediction.question}" (yes price ${prediction.yes_price})`
-          : "Prediction market: none matching",
       ].join("\n");
 
       const prompt = [
