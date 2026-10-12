@@ -64,13 +64,13 @@ const getRiskStatus = createServerFn({ method: "GET" }).handler(
       const openPositions = trades.length;
       const prices = new Map<string, number>();
       let priceCoverageError: string | undefined;
-      const symbols = [
-        ...new Set(
+      const symbols: string[] = Array.from(
+        new Set<string>(
           trades.map((trade: { symbol: string }) =>
             `${trade.symbol === "MATIC" ? "POL" : trade.symbol === "RNDR" ? "RENDER" : trade.symbol}USDT`,
           ),
         ),
-      ];
+      );
 
       if (symbols.length > 0) {
         try {
