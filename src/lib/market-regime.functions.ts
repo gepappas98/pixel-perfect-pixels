@@ -211,11 +211,11 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
         totalCouncil > 0 ? (cBuy - cSell) / totalCouncil : 0;
 
       // ── Composite regime score ──
+      // Normalize remaining sources after removing prediction markets.
       const score =
-        whaleNet * 0.3 +
-        techBreadth * 0.4 +
-        predConsensus * 0.2 +
-        councilConsensus * 0.1;
+        whaleNet * 0.375 +
+        techBreadth * 0.5 +
+        councilConsensus * 0.125;
 
       // ── Directional agreement ──
       // The previous implementation used |sum(signs)| / 4. That is
@@ -225,7 +225,6 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
       const signs = [
         Math.sign(whaleNet),
         Math.sign(techBreadth),
-        Math.sign(predConsensus),
         Math.sign(councilConsensus),
       ];
       const nonNeutralSigns = signs.filter((s) => s !== 0);
@@ -255,13 +254,6 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
           techBreadth > 0
             ? `${techBull}/${totalTech} coins technically bullish`
             : `${techBear}/${totalTech} coins technically bearish`,
-        );
-      }
-      if (Math.abs(predConsensus) > 0.15) {
-        reasons.push(
-          predConsensus > 0
-            ? "technical breadth is bullish"
-            : "technical breadth is bearish",
         );
       }
       if (Math.abs(councilConsensus) > 0.15) {
