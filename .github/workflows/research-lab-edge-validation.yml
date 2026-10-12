@@ -1,0 +1,32 @@
+name: Research Lab Edge Function validation
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, remove-polymarket-prediction-market]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-lab-edge-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  edge-type-check:
+    name: Supabase Edge Function type-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Type-check active modified Edge Functions
+        run: deno check --no-lock supabase/functions/signal-combiner/index.ts supabase/functions/council-sync/index.ts supabase/functions/trading-pipeline-orchestrator/index.ts
