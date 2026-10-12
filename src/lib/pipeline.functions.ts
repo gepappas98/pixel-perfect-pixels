@@ -199,7 +199,7 @@ export const getCronHealth = createServerFn({ method: "GET" }).handler(async () 
     };
 
     const intervalMinutes = Number(health.intervalMinutes ?? 10);
-    const status = health.status ?? "STALE";
+    const status = health["status"] ?? "STALE";
     const staleAfterMinutes = Number(health.staleAfterMinutes ?? Math.max(intervalMinutes * 2, 30));
 
     return {
@@ -207,7 +207,7 @@ export const getCronHealth = createServerFn({ method: "GET" }).handler(async () 
       status,
       intervalMinutes,
       schedule: health.schedule ?? `every ${intervalMinutes} minutes`,
-      latestRun: health.latestRun ?? null,
+      latestRun: health["latestRun"] ?? null,
       lastSuccess: health.lastSuccess ?? null,
       lastSuccessAt: health.lastSuccessAt ?? null,
       nextRunAt: health.nextRunAt ?? null,
