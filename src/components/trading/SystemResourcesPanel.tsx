@@ -17,7 +17,7 @@ function Metric({ icon: Icon, label, value, detail, subDetail, percent, level = 
 
 export function SystemResourcesPanel() {
   const fn = useServerFn(getSystemResourceMetrics);
-  const { data, isLoading, error } = useQuery({ queryKey: ["system-resource-metrics"], queryFn: () => fn(), refetchInterval: 15_000, staleTime: 10_000 });
+  const { data, isLoading, error } = useQuery({ queryKey: ["system-resource-metrics"], queryFn: () => fn(), refetchInterval: 120_000, staleTime: 10_000 });
   const storageSampleAgeMs = data?.storage.sampledAt ? Date.now() - new Date(data.storage.sampledAt).getTime() : Number.POSITIVE_INFINITY;
   const dailyGrowthDetail = storageSampleAgeMs > 2.5 * 60 * 60 * 1000
     ? "Daily growth unavailable · snapshot stale"
