@@ -202,6 +202,45 @@ describe("ruleBased — prediction-free scoring", () => {
     expect(result.confidence).toBeCloseTo(2 / 3.22, 5);
   });
 
+  it("returns BUY at the current +2.2 score threshold", () => {
+    const whaleOnly: StrategyConfig = {
+      whale_weight: 2.2,
+      technicals_weight: 0,
+      council_weight: 0,
+      preset_name: null,
+      updated_at: "2026-01-01T00:00:00.000Z",
+    };
+    const result = ruleBased({ direction: "accumulation" }, mtf(), null, whaleOnly);
+    expect(result.score).toBeCloseTo(2.2, 5);
+    expect(result.recommendation).toBe("buy");
+  });
+
+  it("returns SELL at the current -2.2 score threshold", () => {
+    const whaleOnly: StrategyConfig = {
+      whale_weight: 2.2,
+      technicals_weight: 0,
+      council_weight: 0,
+      preset_name: null,
+      updated_at: "2026-01-01T00:00:00.000Z",
+    };
+    const result = ruleBased({ direction: "distribution" }, mtf(), null, whaleOnly);
+    expect(result.score).toBeCloseTo(-2.2, 5);
+    expect(result.recommendation).toBe("sell");
+  });
+
+  it("keeps scores between hold and BUY threshold in watch", () => {
+    const whaleOnly: StrategyConfig = {
+      whale_weight: 2.1,
+      technicals_weight: 0,
+      council_weight: 0,
+      preset_name: null,
+      updated_at: "2026-01-01T00:00:00.000Z",
+    };
+    const result = ruleBased({ direction: "accumulation" }, mtf(), null, whaleOnly);
+    expect(result.score).toBeCloseTo(2.1, 5);
+    expect(result.recommendation).toBe("watch");
+  });
+
   it("keeps MTF-only chart-trader scoring intact", () => {
     const chartTrader: StrategyConfig = {
       whale_weight: 0.5,
