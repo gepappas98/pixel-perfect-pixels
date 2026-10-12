@@ -461,14 +461,14 @@ async function persistEntryContextSnapshot(
         ? db.from("council_signals").select("*").eq("id", signal.council_signal_id).maybeSingle()
         : Promise.resolve({ data: null, error: null }),
       db.from("strategy_config").select("*").eq("id", 1).maybeSingle(),
-      db.from("asset_sentiment_snapshots")
+      (db.from as any)("asset_sentiment_snapshots")
         .select("*")
         .in("asset", symbolAliases)
         .gte("observed_at", new Date(entryMs - 6 * 60 * 60 * 1000).toISOString())
         .lte("observed_at", capturedAt)
         .order("observed_at", { ascending: false })
         .limit(72),
-      db.from("asset_news_events")
+      (db.from as any)("asset_news_events")
         .select("*")
         .in("asset", symbolAliases)
         .gte("event_at", new Date(entryMs - 24 * 60 * 60 * 1000).toISOString())
@@ -599,8 +599,7 @@ async function persistEntryContextSnapshot(
       ai_risk: params.aiRisk,
     };
 
-    const { error } = await db
-      .from("entry_context_snapshots")
+    const { error } = await (db.from as any)("entry_context_snapshots")
       .update({
         composite_signal_id: signal.id,
         symbol: signal.symbol,
@@ -3181,7 +3180,7 @@ export async function executeTrades(opts?: {
         composite_signal_id: trade.composite_signal_id,
         created_at: trade.created_at,
       }));
-      const { error } = await db.from("execution_capacity_observations").insert({
+      const { error } = await (db.from as any)("execution_capacity_observations").insert({
         pipeline_run_id: opts?.pipelineRunId ?? null,
         signal_id: signal.id,
         symbol: signal.symbol,
