@@ -33,3 +33,11 @@ After Phase 1 is deployed and verified, review and promote `REMOVE_POLYMARKET_FI
 - A read-only scan of public PostgreSQL function definitions found exactly three routines still referencing prediction-market objects: `analyze_whale_waves_by_market_regime`, `capture_whale_flow_transition_context`, and `check_whale_wave_research_readiness`. These are the three routines replaced in the cleanup draft. The draft contains three function definitions/terminators and no `DROP TABLE`, `DROP COLUMN`, `DELETE FROM`, or `TRUNCATE` statements.
 - No production migration, function replacement, merge, or deployment was executed during this audit.
 - Follow-up outside this Polymarket-removal scope: reconcile the live two-minute cron schedule with the earlier intent to reduce database growth by running every ten minutes. Do not silently change the schedule as part of this feature removal.
+
+## Follow-up validation — 2026-10-12 07:00 UTC (read-only)
+
+- Latest branch head `280c45584bf55cbc3204655bf60984ad8bc4aa60` passed [75/75 unit tests and production build](https://github.com/gepappas98/pixel-perfect-pixels/actions/runs/38214739796) and [Edge Function type-check](https://github.com/gepappas98/pixel-perfect-pixels/actions/runs/38214739800). This validates the source/build, not deployed runtime behavior.
+- Rechecked live schema read-only: all columns referenced by the cleanup draft exist; `whale_alerts.direction` currently contains `accumulation` and `distribution` values as expected by the regime query.
+- The preparation migration is **not applied**: `strategy_shadow_diagnostics.prediction_weight` remains NOT NULL with no default. Do not deploy the new `signal-combiner` before applying that compatibility migration, or diagnostic inserts may fail.
+- At this later snapshot, `prediction_snapshots` contains 22 rows and 642 composite signals reference a prediction snapshot. Counts are live and can change; keep all these records intact.
+- The active cron remains `*/2 * * * *`. No production changes were made by this follow-up.
