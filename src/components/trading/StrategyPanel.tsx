@@ -73,7 +73,6 @@ export function StrategyPanel() {
         data: {
           whale_weight: cfg.whale_weight,
           technicals_weight: cfg.technicals_weight,
-          prediction_weight: 0,
           council_weight: cfg.council_weight,
           preset_name: cfg.preset_name,
           auto_switch_enabled: cfg.auto_switch_enabled,
@@ -95,7 +94,6 @@ export function StrategyPanel() {
             ...prev,
             whale_weight: p.whale_weight,
             technicals_weight: p.technicals_weight,
-            prediction_weight: p.prediction_weight,
             council_weight: p.council_weight,
             preset_name: p.preset_name,
           }
@@ -121,14 +119,12 @@ export function StrategyPanel() {
   const maxScore =
     draft.whale_weight * 1.0 +
     draft.technicals_weight * 1.69 +
-    draft.prediction_weight * 0.5 +
     draft.council_weight * 0.75;
 
   const dirty =
     serverConfig &&
     (draft.whale_weight !== serverConfig.whale_weight ||
       draft.technicals_weight !== serverConfig.technicals_weight ||
-      draft.prediction_weight !== serverConfig.prediction_weight ||
       draft.council_weight !== serverConfig.council_weight ||
       draft.auto_switch_enabled !== serverConfig.auto_switch_enabled ||
       draft.auto_switch_interval_hours !== serverConfig.auto_switch_interval_hours);
