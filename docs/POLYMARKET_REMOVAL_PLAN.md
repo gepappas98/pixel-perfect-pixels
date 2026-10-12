@@ -10,7 +10,6 @@ The Research Lab is intended to evaluate short-horizon Binance Spot signals. Pol
 
 ## Phase 2 — destructive cleanup (not yet an active migration)
 After Phase 1 is deployed and verified, review and promote `REMOVE_POLYMARKET_FINAL_CLEANUP_DRAFT.sql` into `supabase/migrations` as a new migration. It:
-- Replaces the three database functions that currently depend on `prediction_snapshots`.
 - Replaces the three database functions that still depend on prediction snapshots so they operate without prediction-market inputs.
 - Removes the retired `watch_conflict_fix` setting from persisted cleanup configuration.
 - Preserves all historical prediction-era records and links: `composite_signals.entry_context_snapshot`, `prediction_snapshot_id`, `strategy_config.prediction_weight`, `pipeline_runs.predictions`, `whale_flow_transition_context.prediction_context`, and `prediction_snapshots` remain intact.
