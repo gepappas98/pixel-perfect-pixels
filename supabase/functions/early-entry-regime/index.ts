@@ -84,14 +84,14 @@ Deno.serve(async (req) => {
     if (finalTransition === "EARLY_ENTRY_ACTIVE" && activationKey) {
       const candidates = [...latest.values()].filter((row) => row.signal === "bullish");
       const { data: alreadyOpened, error: duplicateError } = await db.from("trades")
-        .select("id,entry_metadata")
+        .select("id")
         .eq("entry_source", "early_entry_regime")
         .eq("mode", "paper")
-        .limit(5000);
+        .eq("entry_metadata->>activation_key", activationKey)
+        .limit(1)
+        .maybeSingle();
       if (duplicateError) throw duplicateError;
-      const duplicateKeys = new Set((alreadyOpened ?? [])
-        .map((row) => String(row.entry_metadata?.activation_key ?? "")));
-      if (!duplicateKeys.has(activationKey) && candidates.length > 0) {
+      if (!alreadyOpened && candidates.length > 0) {
         const hosts = ["https://api.binance.com", "https://data-api.binance.vision", "https://api1.binance.com"];
         let prices = new Map<string, number>();
         for (const host of hosts) {
