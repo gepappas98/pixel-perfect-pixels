@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Loader2, GitCompare, Info } from "lucide-react";
 
@@ -12,6 +13,11 @@ interface VariantPerfRow {
   open_count: number;
   resolved: number;
   total_pnl_pct: number;
+}
+
+interface VariantPerfCohorts {
+  legacy: VariantPerfRow[];
+  v2: VariantPerfRow[];
 }
 
 interface TradingSettings {
@@ -77,15 +83,22 @@ const FALLBACK_SETTINGS: TradingSettings = {
 };
 
 export function VariantComparisonPanel() {
-  // ── Fetch performance data ──
-  const { data, isLoading, error } = useQuery<VariantPerfRow[]>({
-    queryKey: ["strategy-variants-perf"],
+  const [cohort, setCohort] = useState<"v2" | "legacy">("v2");
+
+  // Fetch cohorts separately; legacy observations never enter v2 aggregates.
+  const { data, isLoading, error } = useQuery<VariantPerfCohorts>({
+    queryKey: ["strategy-variants-perf-cohorts"],
     queryFn: async () => {
-      const { data, error } = await supabase.rpc("get_variant_performance", {
-        days: 7,
-      });
-      if (error) throw error;
-      return (data ?? []) as VariantPerfRow[];
+      const [legacyResult, v2Result] = await Promise.all([
+        supabase.rpc("get_variant_performance", { days: 7 }),
+        (supabase.rpc as any)("get_variant_performance_v2", { days: 7 }),
+      ]);
+      if (legacyResult.error) throw legacyResult.error;
+      if (v2Result.error) throw v2Result.error;
+      return {
+        legacy: (legacyResult.data ?? []) as VariantPerfRow[],
+        v2: (v2Result.data ?? []) as VariantPerfRow[],
+      };
     },
     refetchInterval: 60_000,
     staleTime: 30_000,
@@ -116,7 +129,7 @@ export function VariantComparisonPanel() {
     );
   }
 
-  const rows = data ?? [];
+  const rows = cohort === "v2" ? data?.v2 ?? [] : data?.legacy ?? [];
   const s = settings ?? FALLBACK_SETTINGS;
 
   // ── Build aggregation ──
