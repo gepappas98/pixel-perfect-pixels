@@ -599,7 +599,7 @@ async function persistEntryContextSnapshot(
       ai_risk: params.aiRisk,
     };
 
-    const { error } = await db
+    const { error } = await (db as any)
       .from("entry_context_snapshots")
       .update({
         composite_signal_id: signal.id,
@@ -1493,8 +1493,8 @@ async function groqBatchCouncil(candidates: AiCandidate[]): Promise<Map<string, 
       whale_sell_usd: Math.round(Number(c.whale?.["sell_usd"] ?? 0)),
       whale_buy_count: Number(c.whale?.["buy_count"] ?? 0),
       whale_sell_count: Number(c.whale?.["sell_count"] ?? 0),
-      vwap_4h: c.mtfRaw.primary?.["raw"] && typeof (c.mtfRaw.primary["raw"] as Row)?.["vwap"] === "number"
-        ? Number((c.mtfRaw.primary["raw"] as Row)["vwap"])
+      vwap_4h: c.mtfRaw.primary?.["raw"] && typeof (c.mtfRaw.primary?.["raw"] as Row)?.["vwap"] === "number"
+        ? Number((c.mtfRaw.primary?.["raw"] as Row)["vwap"])
         : null,
       market_regime: currentRegimeLabel ?? "unknown",
       past_lessons: lessons.slice(0, 3).map((l) => `[${l.outcome}] ${String(l.lesson).slice(0, 180)}`),
@@ -4018,7 +4018,7 @@ export async function executeTrades(opts?: {
         stopLoss,
         takeProfit,
         mode,
-        tradeSession,
+        tradeSession: tradeSession.session,
         risk: risk as unknown as Record<string, unknown>,
         aiRisk,
         execCtx,
@@ -4159,7 +4159,8 @@ export async function runFullPipeline() {
     // block, alter, or veto the existing signal/execution path.
     step = "accumulation-shadow";
     try {
-      const accumulationShadowSamples = await collectAccumulationShadowSamples();
+      const { data: accShadowData } = await (db.rpc as any)("capture_accumulation_shadow_observations", { p_lookback_hours: 168 });
+      const accumulationShadowSamples = Number(accShadowData ?? 0);
       console.log(`[ACCUM_SHADOW] persisted sample rows=${accumulationShadowSamples}`);
     } catch (e) {
       console.error("[ACCUM_SHADOW] non-fatal experiment failure:", e);
