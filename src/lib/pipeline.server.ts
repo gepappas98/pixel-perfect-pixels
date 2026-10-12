@@ -448,7 +448,6 @@ async function persistEntryContextSnapshot(
       compositeRes,
       whaleRes,
       indicatorRes,
-      predictionRes,
       councilRes,
       strategyRes,
       sentimentRes,
@@ -460,9 +459,6 @@ async function persistEntryContextSnapshot(
         : Promise.resolve({ data: null, error: null }),
       signal.indicator_snapshot_id
         ? db.from("indicator_snapshots").select("*").eq("id", signal.indicator_snapshot_id).maybeSingle()
-        : Promise.resolve({ data: null, error: null }),
-      signal.prediction_snapshot_id
-        ? db.from("prediction_snapshots").select("*").eq("id", signal.prediction_snapshot_id).maybeSingle()
         : Promise.resolve({ data: null, error: null }),
       signal.council_signal_id
         ? db.from("council_signals").select("*").eq("id", signal.council_signal_id).maybeSingle()
@@ -510,7 +506,6 @@ async function persistEntryContextSnapshot(
     // Never reconstruct entry technicals from mutable indicator_snapshots when a valid copy exists.
     const whaleAtEntry = signalEntryContext?.whale_flow ?? atEntry(whaleRes.data);
     const indicatorAtEntry = signalEntryContext?.technicals?.primary ?? atEntry(indicatorRes.data);
-    const predictionAtEntry = signalEntryContext?.prediction_market ?? atEntry(predictionRes.data);
     const councilAtEntry = signalEntryContext?.ai_council
       ?? (atEntry(councilRes.data, "source_created_at") ?? atEntry(councilRes.data, "synced_at"));
     const technicalMtfAtEntry = Array.isArray(signalEntryContext?.technicals?.mtf)
@@ -538,11 +533,6 @@ async function persistEntryContextSnapshot(
           : additionalIndicators.data?.length
             ? "fallback_current_state"
             : "missing",
-      prediction_market: signal.prediction_snapshot_id
-        ? predictionAtEntry
-          ? "present"
-          : "missing"
-        : "not_applicable",
       ai_council: signal.council_signal_id
         ? councilAtEntry
           ? "present"
@@ -580,7 +570,6 @@ async function persistEntryContextSnapshot(
           signal_snapshot_captured_at: signalEntryContext?.captured_at ?? null,
           snapshot_source: signalEntryContext ? "immutable_signal_copy" : "legacy_timestamp_checked_fallback",
         },
-        prediction_market: predictionAtEntry,
         ai_council: councilAtEntry,
         market_regime: {
           label: regimeAtEntry,
@@ -719,7 +708,6 @@ async function fetchStrategy(): Promise<StrategyConfig> {
     const config: StrategyConfig = {
       whale_weight: Number(row["whale_weight"]),
       technicals_weight: Number(row["technicals_weight"]),
-      prediction_weight: Number(row["prediction_weight"]),
       council_weight: Number(row["council_weight"]),
       preset_name: (row["preset_name"] as string | null) ?? null,
       updated_at: String(row["updated_at"]),
@@ -1359,157 +1347,6 @@ export async function collectIndicators(): Promise<number> {
   return data?.length ?? 0;
 }
 
-/* ───────────── Predictions ───────────── */
-
-const WATCH_KEYWORDS: Record<string, string[]> = {
-  BTC: ["bitcoin", "btc"], ETH: ["ethereum", "eth"],
-  SOL: ["solana", "sol"], XRP: ["xrp", "ripple"],
-  DOGE: ["dogecoin", "doge"], ADA: ["cardano", "ada"],
-  AVAX: ["avalanche", "avax"], LINK: ["chainlink", "link"],
-  DOT: ["polkadot", "dot"], LTC: ["litecoin", "ltc"],
-  MATIC: ["polygon", "matic", "pol"], BNB: ["bnb", "binance coin"],
-  TRX: ["tron", "trx"], SHIB: ["shiba", "shib"],
-  PEPE: ["pepe"], ATOM: ["cosmos", "atom"],
-  NEAR: ["near protocol"], APT: ["aptos", "apt"],
-  SUI: ["sui"], INJ: ["injective", "inj"],
-  ARB: ["arbitrum", "arb"], OP: ["optimism"],
-  UNI: ["uniswap", "uni"], AAVE: ["aave"],
-};
-
-const cryptoWord = /\b(bitcoin|btc|ethereum|eth|solana|sol|xrp|ripple|dogecoin|doge|cardano|ada|avalanche|avax|chainlink|link|polkadot|dot|litecoin|ltc|polygon|matic|pol|bnb|binance coin|tron|trx|shiba|shib|pepe|cosmos|atom|near protocol|aptos|apt|sui|injective|inj|arbitrum|arb|optimism|uniswap|uni|aave)\b/i;
-
-interface PolymarketMarket { slug?: string; question?: string; outcomePrices?: string; volume24hr?: number; }
-interface PolymarketEvent { markets?: PolymarketMarket[]; }
-
-const PREDICTION_MIN_VOLUME_USD = 500;
-const PREDICTION_RESOLVED_LOW = 0.05;
-const PREDICTION_RESOLVED_HIGH = 0.95;
-const PREDICTION_PRICE_TARGET = /(?:\$\s?\d|\b(?:all[- ]time high|ath)\b)/i;
-const PREDICTION_DIRECTIONAL = /\b(?:reach|hit|above|surpass|exceed|break|all[- ]time high|ath|dip|drop|fall|below|crash|down to|under|bottom)\b/i;
-
-function isUsablePredictionQuestion(question: string): boolean {
-  const q = question.toLowerCase();
-  return PREDICTION_PRICE_TARGET.test(q) && PREDICTION_DIRECTIONAL.test(q);
-}
-
-function isUsablePredictionRow(row: Row): boolean {
-  if (!row) return false;
-  const yes = Number(row["yes_price"]);
-  const volume = Number(row["volume_24h"]);
-  const question = String(row["question"] ?? "");
-  return (
-    Number.isFinite(yes) &&
-    yes >= PREDICTION_RESOLVED_LOW &&
-    yes <= PREDICTION_RESOLVED_HIGH &&
-    Number.isFinite(volume) &&
-    volume >= PREDICTION_MIN_VOLUME_USD &&
-    isUsablePredictionQuestion(question)
-  );
-}
-
-function predictionRank(row: Row): [number, number] {
-  const volume = Number(row?.["volume_24h"]);
-  const createdAt = new Date(String(row?.["created_at"] ?? "")).getTime();
-  return [
-    Number.isFinite(volume) ? volume : 0,
-    Number.isFinite(createdAt) ? createdAt : 0,
-  ];
-}
-
-function eventMarkets(payload: (PolymarketEvent | PolymarketMarket)[]): PolymarketMarket[] {
-  return payload.flatMap((item) => "markets" in item ? ((item as PolymarketEvent).markets ?? []) : [item as PolymarketMarket]);
-}
-
-function matchSymbolFromQuestion(q: string): string | null {
-  const matches: { sym: string; pos: number }[] = [];
-  for (const [sym, keywords] of Object.entries(WATCH_KEYWORDS)) {
-    for (const kw of keywords) {
-      const pos = q.search(new RegExp(`\\b${kw}\\b`, "i"));
-      if (pos >= 0) { matches.push({ sym, pos }); break; }
-    }
-  }
-  if (matches.length === 0) return null;
-  matches.sort((a, b) => a.pos - b.pos);
-  return matches[0]!.sym;
-}
-
-export async function collectPredictions(): Promise<number> {
-  const db = await admin();
-  const res = await fetchWithTimeout("https://gamma-api.polymarket.com/events?tag_slug=crypto&active=true&closed=false&limit=200");
-  if (!res.ok) return 0;
-  const payload = (await res.json()) as PolymarketEvent[] | PolymarketMarket[];
-  const markets = eventMarkets(payload);
-  const rows: Record<string, unknown>[] = [];
-
-  for (const m of markets) {
-    if (!m.slug) continue;
-    const question = m.question ?? "";
-    const q = question.toLowerCase();
-    if (!cryptoWord.test(q)) continue;
-    const symbol = matchSymbolFromQuestion(q);
-    if (!symbol) continue;
-    let yes: number | null = null, no: number | null = null;
-    try {
-      const prices = JSON.parse(m.outcomePrices ?? "[]") as string[];
-      yes = prices[0] ? parseFloat(prices[0]) : null;
-      no = prices[1] ? parseFloat(prices[1]) : null;
-    } catch {}
-    const volume = Number(m.volume24hr);
-    if (
-      yes == null ||
-      !Number.isFinite(yes) ||
-      yes < PREDICTION_RESOLVED_LOW ||
-      yes > PREDICTION_RESOLVED_HIGH ||
-      !Number.isFinite(volume) ||
-      volume < PREDICTION_MIN_VOLUME_USD ||
-      !isUsablePredictionQuestion(question)
-    ) continue;
-    rows.push({
-      market_slug: m.slug, question, related_symbol: symbol,
-      yes_price: yes, no_price: no,
-      volume_24h: volume,
-      created_at: new Date().toISOString(),
-      raw: m as unknown as Record<string, unknown>,
-    });
-  }
-
-  if (rows.length === 0) return 0;
-  const { data, error } = await db.from("prediction_snapshots").upsert(rows as never, { onConflict: "market_slug" }).select("id");
-  if (error) throw error;
-  return data?.length ?? 0;
-}
-
-/* ───────────── Prediction helpers ───────────── */
-
-const BULLISH_QUESTION = /\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\b/i;
-const BEARISH_QUESTION = /\b(dip|drop|fall|below|crash|down to|under|bottom)\b/i;
-
-export function predictionDirection(prediction: Row): "bullish" | "bearish" | "neutral" {
-  const yes = Number(prediction?.["yes_price"]);
-  if (!Number.isFinite(yes)) return "neutral";
-  const q = String(prediction?.["question"] ?? "").toLowerCase();
-  const isBullishQ = BULLISH_QUESTION.test(q);
-  const isBearishQ = BEARISH_QUESTION.test(q);
-  if (!isBullishQ && !isBearishQ) return "neutral";
-  const up = isBullishQ ? yes : 1 - yes;
-  if (up > 0.6) return "bullish";
-  if (up < 0.4) return "bearish";
-  return "neutral";
-}
-
-export function predictionMagnitude(prediction: Row): number {
-  const yes = Number(prediction?.["yes_price"]);
-  if (!Number.isFinite(yes)) return 0;
-  const q = String(prediction?.["question"] ?? "").toLowerCase();
-  const isBullishQ = BULLISH_QUESTION.test(q);
-  const isBearishQ = BEARISH_QUESTION.test(q);
-  if (!isBullishQ && !isBearishQ) return 0;
-  const up = isBullishQ ? yes : 1 - yes;
-  const distance = Math.abs(up - 0.5) * 2;
-  if (distance < 0.2) return 0;
-  return Math.min(1, (distance - 0.2) / 0.8);
-}
-
 /* ───────────── Multi-timeframe ───────────── */
 
 export interface MultiTfInput { primary: Row; fast: Row; trend: Row; }
@@ -1562,7 +1399,7 @@ export function evaluateMultiTimeframe(tf: MultiTfInput): MultiTfResult {
 
 /* ───────────── Council fallback ───────────── */
 
-function councilEvaluation(whale: Row, mtf: MultiTfResult, prediction: Row) {
+function councilEvaluation(whale: Row, mtf: MultiTfResult) {
   const votes: CouncilVerdict[] = [];
   const reasons: string[] = [];
 
@@ -1575,11 +1412,6 @@ function councilEvaluation(whale: Row, mtf: MultiTfResult, prediction: Row) {
   if (flow === "accumulation") { votes.push("BUY"); reasons.push("whale tracker sees accumulation"); }
   else if (flow === "distribution") { votes.push("SELL"); reasons.push("whale tracker sees distribution"); }
   else { votes.push("HOLD"); reasons.push("whale tracker has no directional flow"); }
-
-  const dir = predictionDirection(prediction);
-  if (dir === "bullish") { votes.push("BUY"); reasons.push("sentiment leans bullish"); }
-  else if (dir === "bearish") { votes.push("SELL"); reasons.push("sentiment leans bearish"); }
-  else { votes.push("HOLD"); reasons.push("sentiment is inconclusive"); }
 
   const counts = votes.reduce<Record<string, number>>((all, v) => { all[v] = (all[v] ?? 0) + 1; return all; }, {});
   const ordered = (Object.entries(counts) as [CouncilVerdict, number][]).sort((a, b) => b[1] - a[1]);
@@ -1979,7 +1811,6 @@ function compositeMaxScore(w: StrategyConfig): number {
   return (
     w.whale_weight * 1.0 +
     w.technicals_weight * 1.69 +
-    w.prediction_weight * 0.5 +
     w.council_weight * COMPOSITE_AI_BASE_WEIGHT
   );
 }
@@ -2019,7 +1850,7 @@ function effectiveWhaleWeight(baseWeight: number, assetRegime?: AssetMicroRegime
 }
 
 export function ruleBased(
-  whale: Row, mtf: MultiTfResult, prediction: Row, council: Row,
+  whale: Row, mtf: MultiTfResult, council: Row,
   weights: StrategyConfig,
   options?: {
     conflictFixEnabled?: boolean;
@@ -2034,8 +1865,7 @@ export function ruleBased(
   const reasons: string[] = [];
   let aiAvoid = false;
 
-  const predDir = predictionDirection(prediction);
-  const conflict = detectHardConflict(whale, mtf.direction, predDir);
+  const conflict = detectHardConflict(whale, mtf.direction, "neutral");
 
   const whaleWeight = effectiveWhaleWeight(weights.whale_weight, options?.assetRegime);
   if (whale?.["direction"] === "accumulation") {
@@ -2051,16 +1881,6 @@ export function ruleBased(
     score += weighted;
     const dir = weighted > 0 ? "bullish" : "bearish";
     reasons.push(`${dir} technicals (${mtf.detail}${mtf.aligned ? " · aligned" : mtf.conflict ? " · conflict" : ""}) ×${weights.technicals_weight.toFixed(1)}`);
-  }
-
-  if (predDir === "bullish") {
-    const mag = predictionMagnitude(prediction);
-    score += 0.5 * weights.prediction_weight * mag;
-    reasons.push(`prediction market bullish ×${weights.prediction_weight.toFixed(1)} (mag ${(mag * 100).toFixed(0)}%)`);
-  } else if (predDir === "bearish") {
-    const mag = predictionMagnitude(prediction);
-    score -= 0.5 * weights.prediction_weight * mag;
-    reasons.push(`prediction market bearish ×${weights.prediction_weight.toFixed(1)} (mag ${(mag * 100).toFixed(0)}%)`);
   }
 
   if (council?.["final_verdict"]) {
@@ -2115,7 +1935,7 @@ export function ruleBased(
 
   if (conflict.hardConflict && options?.conflictFixEnabled) {
     recommendation = "hold";
-    reasons.push(`hard conflict (whale=${conflict.whaleDir}, pred=${conflict.predDir}, no technicals) → hold`);
+    reasons.push(`hard conflict (whale=${conflict.whaleDir}, technicals=${mtf.direction}) → hold`);
   } else {
     if (score >= buyThreshold) recommendation = "buy";
     else if (score <= sellThreshold) recommendation = "sell";
@@ -2439,7 +2259,7 @@ async function runShadowV2Observer(variantRows: Record<string, unknown>[]): Prom
 
 function signalFingerprint(
   symbol: string, whale: Row, mtf: MultiTfResult, mtfRaw: MultiTfInput,
-  prediction: Row, council: Row, weights: StrategyConfig,
+  council: Row, weights: StrategyConfig,
   result: ReturnType<typeof ruleBased>,
 ) {
   const normalize = (value: unknown): string => {
@@ -2457,9 +2277,8 @@ function signalFingerprint(
     round2(mtfRaw.primary?.["rsi"]), round2(mtfRaw.fast?.["rsi"]), round2(mtfRaw.trend?.["rsi"]),
     normalize(mtfRaw.primary?.["signal"]), normalize(mtfRaw.fast?.["signal"]), normalize(mtfRaw.trend?.["signal"]),
     round2(mtf.score),
-    normalize(prediction?.["market_slug"]), normalize(prediction?.["yes_price"]), normalize(prediction?.["no_price"]),
     normalize(council?.["final_verdict"]), normalize(council?.["conviction"]),
-    `strat:${weights.whale_weight.toFixed(1)},${weights.technicals_weight.toFixed(1)},${weights.prediction_weight.toFixed(1)},${weights.council_weight.toFixed(1)}`,
+    `strat:${weights.whale_weight.toFixed(1)},${weights.technicals_weight.toFixed(1)},${weights.council_weight.toFixed(1)}`,
     result.recommendation, result.confidence.toFixed(4),
   ].join("|");
 }
@@ -3658,7 +3477,6 @@ export async function executeTrades(opts?: {
     source_tags?: string[] | null;
     whale_alert_id?: string | null;
     indicator_snapshot_id?: string | null;
-    prediction_snapshot_id?: string | null;
     council_signal_id?: string | null;
   };
   const executionSignals = (signalsRes.data ?? []) as ExecutionSignal[];
@@ -4052,11 +3870,10 @@ export async function executeTrades(opts?: {
   }
   const reasoning = String((signal as { reasoning?: string }).reasoning ?? "");
 
-  // 1d bear + conflict protection — επιτρέπεται μόνο με whale/pred support.
+  // 1d bear + conflict protection — επιτρέπεται μόνο με whale accumulation.
   if (/1d bear\s*·\s*conflict/i.test(reasoning)) {
     const hasWhaleAcc = /whale accumulation/i.test(reasoning);
-    const hasPredBull = /prediction market bullish/i.test(reasoning);
-    if (!hasWhaleAcc && !hasPredBull) {
+    if (!hasWhaleAcc) {
       console.log(
         `[QUALITY] skip ${signal.symbol}: 1d conflict without whale/pred support`,
       );
@@ -4064,13 +3881,12 @@ export async function executeTrades(opts?: {
       auditReject(
         signal.symbol,
         "QUALITY",
-        "1d bear conflict without whale or prediction support",
+        "1d bear conflict without whale accumulation support",
         {
           signalId: signal.id,
           confidence: signal.confidence,
           details: {
             whale_accumulation: hasWhaleAcc,
-            prediction_bullish: hasPredBull,
           },
         },
       );
