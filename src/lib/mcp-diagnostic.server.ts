@@ -111,7 +111,7 @@ export function sourceMetadata() {
 /* ───────────── Tool implementations ───────────── */
 
 export async function getPipelineRuns(db: ReadOnlyDb, a: Row) {
-  const limit = clampInt(a.limit, 20, 1, 200);
+  const limit = clampInt(a["limit"], 20, 1, 200);
   let q = db
     .select(
       "pipeline_runs",
@@ -119,13 +119,13 @@ export async function getPipelineRuns(db: ReadOnlyDb, a: Row) {
     )
     .order("started_at", { ascending: false })
     .limit(limit);
-  const runId = str(a.run_id);
+  const runId = str(a["run_id"]);
   if (runId) q = q.eq("id", runId);
   const { data, error } = await q;
   const runs = (data ?? []) as Row[];
   return {
     runs,
-    errors: runs.filter((r) => r.status === "error" || r.error_message),
+    errors: runs.filter((r) => r["status"] === "error" || r["error_message"]),
     query_error: error?.message ?? null,
   };
 }
@@ -140,8 +140,8 @@ async function loadAudits(db: ReadOnlyDb, windowMin: number, runId?: string) {
   const runs = (data ?? []) as Row[];
   const audits = runs
     .map((run) => {
-      const result = run.result && typeof run.result === "object"
-        ? (run.result as Row)
+      const result = run["result"] && typeof run["result"] === "object"
+        ? (run["result"] as Row)
         : {};
       // Canonical storage is result.execution_audit. Some orchestrator
       // versions may additionally wrap executor output inside result.stages.
@@ -169,7 +169,7 @@ async function loadAudits(db: ReadOnlyDb, windowMin: number, runId?: string) {
 
 /** Signal-level audit analysis. Seed events (details.audit_seed===true) are markers only. */
 export function analyzeAudits(
-  audits: Array<{ run: Row; audit?: Row }>,
+  audits: Array<{ run: Row; audit?: Row | undefined }>,
   symbol?: string,
 ) {
   const auditedSignalIds = new Set<string>();
@@ -179,26 +179,26 @@ export function analyzeAudits(
   const executionErrors: Row[] = [];
   const events: Row[] = [];
   for (const { run, audit } of audits) {
-    opened += Number(((audit?.summary ?? {}) as Row)["opened"] ?? 0);
-    for (const ev of ((audit?.events ?? []) as Row[])) {
-      if (symbol && ev.symbol !== symbol) continue;
-      const details = (ev.details ?? {}) as Row;
-      const isSeed = details.audit_seed === true;
-      const sid = typeof ev.signal_id === "string" && ev.signal_id ? ev.signal_id : null;
+    opened += Number(((audit?.["summary"] ?? {}) as Row)["opened"] ?? 0);
+    for (const ev of ((audit?.["events"] ?? []) as Row[])) {
+      if (symbol && ev["symbol"] !== symbol) continue;
+      const details = (ev["details"] ?? {}) as Row;
+      const isSeed = details["audit_seed"] === true;
+      const sid = typeof ev["signal_id"] === "string" && ev["signal_id"] ? ev["signal_id"] : null;
       if (sid) auditedSignalIds.add(sid);
-      events.push({ run_id: run.id, ...ev, is_seed: isSeed });
+      events.push({ run_id: run["id"], ...ev, is_seed: isSeed });
       if (isSeed) { seed++; continue; }
       nonSeed++;
       if (sid) realSignalIds.add(sid);
-      const stage = String(ev.stage ?? ""), decision = String(ev.decision ?? "");
+      const stage = String(ev["stage"] ?? ""), decision = String(ev["decision"] ?? "");
       if (stage === "CANDIDATE_FILTER" && decision === "ACCEPT") realCandidateAccepts++;
       if (stage === "AI_RISK" && decision === "ACCEPT") aiRiskAllowed++;
       if (stage === "AI_RISK" && decision === "REJECT") aiRiskBlocked++;
       if (decision === "REJECT") {
-        const k = `${stage}:${String(ev.reason ?? "unknown")}`;
+        const k = `${stage}:${String(ev["reason"] ?? "unknown")}`;
         rejections[k] = (rejections[k] ?? 0) + 1;
       }
-      if (decision === "ERROR" || stage === "ERROR") executionErrors.push({ run_id: run.id, ...ev });
+      if (decision === "ERROR" || stage === "ERROR") executionErrors.push({ run_id: run["id"], ...ev });
     }
   }
   return {
@@ -213,8 +213,8 @@ export function analyzeAudits(
 }
 
 export async function getEligibleSignals(db: ReadOnlyDb, a: Row) {
-  const windowMin = clampInt(a.window_minutes, 15, 1, 1440);
-  const minConf = clampNum(a.min_confidence, EXECUTION_CONFIDENCE_THRESHOLD, 0, 1);
+  const windowMin = clampInt(a["window_minutes"], 15, 1, 1440);
+  const minConf = clampNum(a["min_confidence"], EXECUTION_CONFIDENCE_THRESHOLD, 0, 1);
   let q = db
     .select("composite_signals", "id,symbol,recommendation,confidence,created_at,regime_label,market_session")
     .eq("recommendation", "buy")
@@ -222,16 +222,16 @@ export async function getEligibleSignals(db: ReadOnlyDb, a: Row) {
     .gte("confidence", minConf)
     .order("created_at", { ascending: false })
     .limit(500);
-  const sym = str(a.symbol, 32);
+  const sym = str(a["symbol"], 32);
   if (sym) q = q.eq("symbol", sym);
   const { data, error } = await q;
   return { window_minutes: windowMin, min_confidence: minConf, signals: (data ?? []) as Row[], query_error: error?.message ?? null };
 }
 
 export async function getExecutionAudit(db: ReadOnlyDb, a: Row) {
-  const windowMin = clampInt(a.window_minutes, 15, 1, 1440);
-  const { audits, error } = await loadAudits(db, windowMin, str(a.run_id));
-  const r = analyzeAudits(audits, str(a.symbol, 32));
+  const windowMin = clampInt(a["window_minutes"], 15, 1, 1440);
+  const { audits, error } = await loadAudits(db, windowMin, str(a["run_id"]));
+  const r = analyzeAudits(audits, str(a["symbol"], 32));
   return {
     window_minutes: windowMin,
     counts: r.counts,
@@ -243,17 +243,17 @@ export async function getExecutionAudit(db: ReadOnlyDb, a: Row) {
 }
 
 export async function getExecutionGap(db: ReadOnlyDb, a: Row) {
-  const windowMin = clampInt(a.window_minutes, 15, 1, 1440);
-  const symbol = str(a.symbol, 32);
+  const windowMin = clampInt(a["window_minutes"], 15, 1, 1440);
+  const symbol = str(a["symbol"], 32);
   const [elig, aud] = await Promise.all([
     getEligibleSignals(db, { window_minutes: windowMin, symbol }),
-    loadAudits(db, windowMin, str(a.run_id)),
+    loadAudits(db, windowMin, str(a["run_id"])),
   ]);
   const r = analyzeAudits(aud.audits, symbol);
   const eligible = elig.signals;
-  const audited = eligible.filter((s) => r.auditedSignalIds.has(String(s.id)));
-  const realAudited = eligible.filter((s) => r.realSignalIds.has(String(s.id)));
-  const uncovered = eligible.filter((s) => !r.auditedSignalIds.has(String(s.id)));
+  const audited = eligible.filter((s) => r.auditedSignalIds.has(String(s["id"])));
+  const realAudited = eligible.filter((s) => r.realSignalIds.has(String(s["id"])));
+  const uncovered = eligible.filter((s) => !r.auditedSignalIds.has(String(s["id"])));
   const pct = (n: number) => (eligible.length === 0 ? 100 : Math.round((n / eligible.length) * 100));
   return {
     window_minutes: windowMin,
@@ -264,21 +264,21 @@ export async function getExecutionGap(db: ReadOnlyDb, a: Row) {
     coverage_pct: pct(audited.length),
     real_event_coverage_pct: pct(realAudited.length),
     seed_only_signals: audited.length - realAudited.length,
-    uncovered_symbols: [...new Set(uncovered.map((s) => String(s.symbol)))],
-    uncovered_signal_ids: uncovered.map((s) => s.id).slice(0, 100),
+    uncovered_symbols: [...new Set(uncovered.map((s) => String(s["symbol"])))],
+    uncovered_signal_ids: uncovered.map((s) => s["id"]).slice(0, 100),
     audit_counts: r.counts,
     note: "Seed events (details.audit_seed===true) count for presence coverage only, never as real candidate accepts.",
   };
 }
 
 export async function getTradeState(db: ReadOnlyDb, a: Row) {
-  const sym = str(a.symbol, 32);
+  const sym = str(a["symbol"], 32);
   let openQ = db.select("trades").eq("status", "open").order("created_at", { ascending: false }).limit(200);
   let closedQ = db.select("trades").eq("status", "closed").order("closed_at", { ascending: false }).limit(50);
   if (sym) { openQ = openQ.eq("symbol", sym); closedQ = closedQ.eq("symbol", sym); }
   const [open, closed] = await Promise.all([openQ, closedQ]);
   const openRows = (open.data ?? []) as Row[];
-  const openSymbols = [...new Set(openRows.map((r) => String(r.symbol ?? "")).filter(Boolean))];
+  const openSymbols = [...new Set(openRows.map((r) => String(r["symbol"] ?? "")).filter(Boolean))];
 
   // Use the latest stored price snapshot for each open symbol so the diagnostic
   // portfolio RPC can reproduce the dashboard's marked-open PnL instead of
@@ -291,8 +291,8 @@ export async function getTradeState(db: ReadOnlyDb, a: Row) {
   const marks = await markQ;
   const markPrices: Record<string, number> = {};
   for (const row of (marks.data ?? []) as Row[]) {
-    const asset = String(row.asset ?? "");
-    const price = Number(row.price);
+    const asset = String(row["asset"] ?? "");
+    const price = Number(row["price"]);
     const key = `${asset.toUpperCase()}USDT`;
     if (asset && Number.isFinite(price) && markPrices[key] === undefined) markPrices[key] = price;
   }
@@ -309,14 +309,14 @@ export async function getTradeState(db: ReadOnlyDb, a: Row) {
 }
 
 export async function getVariantState(db: ReadOnlyDb, a: Row) {
-  const sym = str(a.symbol, 32);
+  const sym = str(a["symbol"], 32);
   let q = db.select("strategy_variant_signals", "strategy_name,outcome,pnl_pct,symbol")
     .gte("created_at", new Date(Date.now() - 7 * 86400_000).toISOString()).limit(10000);
   if (sym) q = q.eq("symbol", sym);
   const [rows, perf] = await Promise.all([q, db.rpc("get_variant_performance", { days: 7 })]);
   const counts: Record<string, Record<string, number>> = {};
   for (const r of (rows.data ?? []) as Row[]) {
-    const s = String(r.strategy_name), o = String(r.outcome ?? "open");
+    const s = String(r["strategy_name"]), o = String(r["outcome"] ?? "open");
     counts[s] ??= {};
     counts[s][o] = (counts[s][o] ?? 0) + 1;
   }
@@ -329,10 +329,10 @@ export async function getVariantState(db: ReadOnlyDb, a: Row) {
 }
 
 export async function getDiagnosticSnapshot(db: ReadOnlyDb, a: Row) {
-  const windowMin = clampInt(a.window_minutes, 15, 1, 1440);
+  const windowMin = clampInt(a["window_minutes"], 15, 1, 1440);
   const args = { ...a, window_minutes: windowMin };
   const [runs, gap, audit, trades, variants, strategy] = await Promise.all([
-    getPipelineRuns(db, { limit: 20, run_id: a.run_id }),
+    getPipelineRuns(db, { limit: 20, run_id: a["run_id"] }),
     getExecutionGap(db, args),
     getExecutionAudit(db, args),
     getTradeState(db, args),
@@ -400,11 +400,11 @@ export async function handleRpc(msg: RpcReq, db: ReadOnlyDb): Promise<Row | null
     case "tools/list":
       return ok({ tools: Object.entries(TOOLS).map(([name, t]) => ({ name, description: t.description, inputSchema: t.inputSchema, annotations: { readOnlyHint: true, destructiveHint: false } })) });
     case "tools/call": {
-      const name = String(msg.params?.name ?? "");
+      const name = String(msg.params?.["name"] ?? "");
       const tool = TOOLS[name];
       if (!tool) return err(-32602, `Unknown tool: ${name}`);
       try {
-        const data = await tool.run(db, (msg.params?.arguments ?? {}) as Row);
+        const data = await tool.run(db, (msg.params?.["arguments"] ?? {}) as Row);
         const payload = { source: sourceMetadata(), tool: name, data };
         return ok({ content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload, isError: false });
       } catch (e) {
