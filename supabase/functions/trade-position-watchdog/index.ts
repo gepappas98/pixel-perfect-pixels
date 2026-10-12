@@ -157,7 +157,11 @@ Deno.serve(async (req) => {
     resolved: 0,
     price_host: null as string | null,
     errors: [] as string[],
-    auto_close: false,
+    closed: 0,
+    closed_by_reason: {} as Record<string, number>,
+    race_skipped: 0,
+    auto_close_paper: true,
+    auto_close_live: false,
   };
 
   try {
@@ -221,7 +225,54 @@ Deno.serve(async (req) => {
       }
 
       const decision = decideExit(trade, price, settings, nowMs);
-      if (decision.action === "close" || decision.action === "skip_live_requires_exchange") {
+      if (decision.action === "close" && trade.mode === "paper" && trade.side === "buy") {
+        result.exit_due++;
+        const closedAt = now;
+        // Paper-only automatic close. Compare-and-set prevents racing the 10-minute executor.
+        const { data: updated, error: updateError } = await supabase
+          .from("trades")
+          .update({
+            status: "closed",
+            exit_price: decision.exit_price,
+            close_reason: decision.reason,
+            closed_at: closedAt,
+            pnl: decision.net_pnl,
+            gross_pnl: decision.gross_pnl,
+            net_pnl: decision.net_pnl,
+            entry_fee: decision.entry_fee,
+            exit_fee: decision.exit_fee,
+            total_fees: decision.total_fees,
+          })
+          .eq("id", trade.id)
+          .eq("status", "open")
+          .eq("mode", "paper")
+          .eq("side", "buy")
+          .select("id")
+          .maybeSingle();
+        if (updateError) throw updateError;
+        if (updated) {
+          result.closed++;
+          result.open_positions--;
+          openIds.delete(trade.id);
+          result.closed_by_reason[decision.reason] = (result.closed_by_reason[decision.reason] ?? 0) + 1;
+          const { error: tradeAlertError } = await supabase.from("trade_alerts").insert({
+            trade_id: trade.id,
+            symbol: trade.symbol,
+            side: "buy",
+            event_type: decision.reason,
+            entry_price: Number(trade.entry_price),
+            exit_price: decision.exit_price,
+            pnl: decision.net_pnl,
+            pnl_pct: decision.net_pnl_pct,
+            created_at: closedAt,
+          });
+          if (tradeAlertError) result.errors.push(`trade alert ${trade.id}: ${tradeAlertError.message}`);
+          await resolveAlert(supabase, exitKey, now);
+        } else {
+          result.race_skipped++;
+          await resolveAlert(supabase, exitKey, now);
+        }
+      } else if (decision.action === "close" || decision.action === "skip_live_requires_exchange") {
         result.exit_due++;
         const reason = decision.reason;
         const severity = await raiseAlert(supabase, {
@@ -229,7 +280,7 @@ Deno.serve(async (req) => {
           trade_id: trade.id,
           symbol: trade.symbol,
           alert_code: "exit_due_still_open",
-          message: `${trade.symbol}: EXIT CONDITION ${reason.toUpperCase()} is active, but the position is still OPEN. The watchdog is alert-only and has not closed the position.`,
+          message: `${trade.symbol}: EXIT CONDITION ${reason.toUpperCase()} is active, but this position remains OPEN. Automatic closing is limited to paper BUY positions; live positions require a confirmed exchange SELL.`,
           evidence: {
             trade_id: trade.id,
             mode: trade.mode,
