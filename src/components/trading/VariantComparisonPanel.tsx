@@ -188,12 +188,18 @@ export function VariantComparisonPanel() {
             Variant Performance (7d)
           </h2>
           <p className="mt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-            Shadow Variant Performance · canonical benchmark per preset
+            {cohort === "v2"
+              ? "V2 deduplicated samples · isolated benchmark per preset"
+              : "Legacy historical samples · isolated from v2"}
           </p>
         </div>
-        <span className="text-[10px] text-muted-foreground">
-          {totalResolved} resolved
-        </span>
+        <div className="flex flex-col items-end gap-1.5">
+          <div className="flex rounded-md border border-border p-0.5">
+            <button type="button" onClick={() => setCohort("v2")} aria-pressed={cohort === "v2"} className={`rounded px-2 py-1 text-[10px] ${cohort === "v2" ? "bg-accent/15 text-foreground" : "text-muted-foreground"}`}>V2</button>
+            <button type="button" onClick={() => setCohort("legacy")} aria-pressed={cohort === "legacy"} className={`rounded px-2 py-1 text-[10px] ${cohort === "legacy" ? "bg-accent/15 text-foreground" : "text-muted-foreground"}`}>Legacy</button>
+          </div>
+          <span className="text-[10px] text-muted-foreground">{totalResolved} resolved</span>
+        </div>
       </div>
 
       {/* Explanation */}
@@ -213,15 +219,18 @@ export function VariantComparisonPanel() {
           position caps.
           <br />
           <span className="text-muted-foreground/70">
-            Canonical shadow benchmark: open rows are current observations; resolved rows are historical outcomes. Does NOT affect real trades.
+            {cohort === "v2"
+              ? "V2 uses versioned, deduplicated samples only. Legacy rows are excluded. Does NOT affect real trades."
+              : "Legacy historical cohort only; v2 rows are excluded. This cohort may contain repeated market observations and is retained for comparison. Does NOT affect real trades."}
           </span>
         </p>
       </div>
 
       {totalResolved === 0 ? (
         <p className="text-sm text-muted-foreground">
-          No resolved variant signals yet — will populate as signals hit their
-          TP/SL thresholds.
+          {cohort === "v2"
+            ? "No resolved v2 samples yet. The clean cohort will populate after the updated signal-combiner and benchmark migration are deployed and outcomes resolve."
+            : "No resolved legacy variant signals in the selected 7-day window."}
         </p>
       ) : (
         <div className="overflow-x-auto">
