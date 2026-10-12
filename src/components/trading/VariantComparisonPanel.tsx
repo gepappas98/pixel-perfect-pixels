@@ -91,7 +91,7 @@ export function VariantComparisonPanel() {
     queryFn: async () => {
       const [legacyResult, v2Result] = await Promise.all([
         supabase.rpc("get_variant_performance", { days: 7 }),
-        (supabase.rpc as any)("get_variant_performance_v2", { days: 7 }),
+        supabase.rpc("get_variant_performance_v2", { days: 7 }),
       ]);
       if (legacyResult.error) throw legacyResult.error;
       if (v2Result.error) throw v2Result.error;
