@@ -72,7 +72,6 @@ export const updateStrategyConfig = createServerFn({ method: "POST" })
     (data: {
       whale_weight: number;
       technicals_weight: number;
-      prediction_weight: number;
       council_weight: number;
       preset_name: string | null;
       auto_switch_enabled?: boolean;
@@ -86,13 +85,11 @@ export const updateStrategyConfig = createServerFn({ method: "POST" })
       const w = {
         whale_weight: clamp(data.whale_weight),
         technicals_weight: clamp(data.technicals_weight),
-        prediction_weight: clamp(data.prediction_weight),
         council_weight: clamp(data.council_weight),
       };
       if (
         w.whale_weight +
           w.technicals_weight +
-          w.prediction_weight +
           w.council_weight ===
         0
       ) {
@@ -120,7 +117,6 @@ export const updateStrategyConfig = createServerFn({ method: "POST" })
     const update: Record<string, unknown> = {
       whale_weight: data.whale_weight,
       technicals_weight: data.technicals_weight,
-      prediction_weight: data.prediction_weight,
       council_weight: data.council_weight,
       preset_name: data.preset_name,
       updated_at: new Date().toISOString(),
@@ -487,7 +483,7 @@ async function askGroqForPreset(
     "You are a senior trading strategist choosing the best bot strategy preset.",
     "",
     "You receive TWO sources of information:",
-    "1. CURRENT MARKET SNAPSHOT — whale flow, technicals, prediction markets, council consensus",
+    "1. CURRENT MARKET SNAPSHOT — whale flow, technicals, council consensus",
     "2. HISTORICAL SHADOW PERFORMANCE — last 7 days of hypothetical results per preset",
     "",
     "Decision policy:",
@@ -497,7 +493,7 @@ async function askGroqForPreset(
     "- Strongly prefer presets with positive avg_pnl_pct and trustworthy/adequate sample.",
     "- Avoid presets with clearly negative avg_pnl_pct when resolved >= 8, unless the CURRENT market snapshot strongly favors their thesis.",
     "- When resolved < 12 or trustworthy=false, lean harder on the live market snapshot than on history.",
-    "- When presets are close on expectancy, pick the one that best matches current regime (whale/tech/pred/council).",
+    "- When presets are close on expectancy, pick the one that best matches current regime (whale/tech/council).",
     "",
     "Respond with ONLY a minified JSON object. No markdown. No code fences.",
     'Shape: {"preset":"<name>","reasoning":"<one concise sentence that references BOTH regime AND performance>"}',
@@ -516,10 +512,6 @@ async function askGroqForPreset(
       tech_bear: snapshot.technicals.bear,
       tech_neutral: snapshot.technicals.neu,
       tech_breadth_pct: Math.round(snapshot.technicals.breadth * 100),
-      pred_bull: snapshot.predictions.bull,
-      pred_bear: snapshot.predictions.bear,
-      pred_neutral: snapshot.predictions.neu,
-      pred_consensus_pct: Math.round(snapshot.predictions.consensus * 100),
       council_buy: snapshot.council.buy,
       council_sell: snapshot.council.sell,
       council_hold: snapshot.council.hold,
@@ -702,7 +694,6 @@ async function applyPreset(
     .update({
       whale_weight: preset.whale_weight,
       technicals_weight: preset.technicals_weight,
-      prediction_weight: preset.prediction_weight,
       council_weight: preset.council_weight,
       preset_name: preset.preset_name ?? "custom",
       last_auto_switch_at: new Date().toISOString(),
