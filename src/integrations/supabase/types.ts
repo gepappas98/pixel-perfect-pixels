@@ -695,7 +695,6 @@ export type Database = {
           id?: number
           last_auto_reasoning?: string | null
           last_auto_switch_at?: string | null
-          prediction_weight?: number
           preset_name?: string
           technicals_weight?: number
           updated_at?: string
@@ -708,7 +707,6 @@ export type Database = {
           id?: number
           last_auto_reasoning?: string | null
           last_auto_switch_at?: string | null
-          prediction_weight?: number
           preset_name?: string
           technicals_weight?: number
           updated_at?: string
