@@ -346,7 +346,6 @@ export type Database = {
           indicators: number | null
           job_name: string | null
           mode: string | null
-          predictions: number | null
           result: Json | null
           signals: number | null
           started_at: string
@@ -367,7 +366,6 @@ export type Database = {
           indicators?: number | null
           job_name?: string | null
           mode?: string | null
-          predictions?: number | null
           result?: Json | null
           signals?: number | null
           started_at?: string
@@ -388,7 +386,6 @@ export type Database = {
           indicators?: number | null
           job_name?: string | null
           mode?: string | null
-          predictions?: number | null
           result?: Json | null
           signals?: number | null
           started_at?: string
