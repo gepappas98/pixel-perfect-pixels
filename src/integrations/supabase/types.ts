@@ -79,13 +79,6 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "composite_signals_prediction_snapshot_id_fkey"
-            columns: ["prediction_snapshot_id"]
-            isOneToOne: false
-            referencedRelation: "prediction_snapshots"
-            referencedColumns: ["id"]
-          },
-          {
             foreignKeyName: "composite_signals_whale_alert_id_fkey"
             columns: ["whale_alert_id"]
             isOneToOne: false
