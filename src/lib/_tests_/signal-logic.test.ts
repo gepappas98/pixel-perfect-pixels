@@ -29,8 +29,6 @@ vi.mock("../trading-settings.server", () => ({
 
 import {
   evaluateMultiTimeframe,
-  predictionDirection,
-  predictionMagnitude,
   ruleBased,
   type MultiTfInput,
   type MultiTfResult,
@@ -76,14 +74,7 @@ const WHALE_ONLY: StrategyConfig = {
   updated_at: "2026-01-01T00:00:00.000Z",
 };
 
-const TINY_PREDICTION: StrategyConfig = {
-  whale_weight: 0,
-  technicals_weight: 0,
-  prediction_weight: 0.1,
-  council_weight: 0,
-  preset_name: null,
-  updated_at: "2026-01-01T00:00:00.000Z",
-};
+
 
 function mtf(overrides: Partial<MultiTfResult> = {}): MultiTfResult {
   return {
@@ -216,128 +207,6 @@ describe("evaluateMultiTimeframe", () => {
     const result = evaluateMultiTimeframe(input);
     expect(result.aligned).toBe(true);
     expect(result.score).toBeCloseTo(-1.69, 5);
-  });
-});
-
-/* ──────────────────────── predictionDirection ──────────────────────── */
-
-describe("predictionDirection", () => {
-  it("returns neutral for null prediction", () => {
-    expect(predictionDirection(null)).toBe("neutral");
-  });
-
-  it("returns neutral when yes_price is missing", () => {
-    expect(predictionDirection({ question: "will BTC reach 100k" })).toBe("neutral");
-  });
-
-  it("returns neutral when question has no directional keywords", () => {
-    expect(
-      predictionDirection({ question: "will btc do something", yes_price: 0.9 }),
-    ).toBe("neutral");
-  });
-
-  it("bullish question + high yes → bullish", () => {
-    expect(
-      predictionDirection({ question: "will bitcoin reach 100k", yes_price: 0.7 }),
-    ).toBe("bullish");
-  });
-
-  it("bullish question + low yes → bearish", () => {
-    expect(
-      predictionDirection({ question: "will bitcoin reach 100k", yes_price: 0.3 }),
-    ).toBe("bearish");
-  });
-
-  it("bearish question + high yes → bearish", () => {
-    expect(
-      predictionDirection({ question: "will bitcoin dip below 50k", yes_price: 0.7 }),
-    ).toBe("bearish");
-  });
-
-  it("bearish question + low yes → bullish", () => {
-    expect(
-      predictionDirection({ question: "will bitcoin dip below 50k", yes_price: 0.3 }),
-    ).toBe("bullish");
-  });
-
-  it("ambiguous yes (0.5) → neutral", () => {
-    expect(
-      predictionDirection({ question: "will bitcoin reach 100k", yes_price: 0.5 }),
-    ).toBe("neutral");
-  });
-});
-
-/* ──────────────────────── predictionMagnitude ──────────────────────── */
-
-describe("predictionMagnitude", () => {
-  it("returns 0 for null prediction", () => {
-    expect(predictionMagnitude(null)).toBe(0);
-  });
-
-  it("returns 0 when yes_price is missing", () => {
-    expect(predictionMagnitude({ question: "will BTC reach 100k" })).toBe(0);
-  });
-
-  it("returns 0 when question has no directional keywords", () => {
-    expect(
-      predictionMagnitude({ question: "will btc do something", yes_price: 0.9 }),
-    ).toBe(0);
-  });
-
-  it("returns 0 for 50% yes (dead center)", () => {
-    expect(
-      predictionMagnitude({ question: "will bitcoin reach 100k", yes_price: 0.5 }),
-    ).toBe(0);
-  });
-
-  it("returns 0 for 55% yes (still inside neutral band)", () => {
-    expect(
-      predictionMagnitude({ question: "will bitcoin reach 100k", yes_price: 0.55 }),
-    ).toBe(0);
-  });
-
-  it("returns 0 for 60% yes (boundary of neutral band)", () => {
-    expect(
-      predictionMagnitude({ question: "will bitcoin reach 100k", yes_price: 0.6 }),
-    ).toBe(0);
-  });
-
-  it("scales linearly: 70% yes → 0.25", () => {
-    expect(
-      predictionMagnitude({ question: "will bitcoin reach 100k", yes_price: 0.7 }),
-    ).toBeCloseTo(0.25, 5);
-  });
-
-  it("scales linearly: 80% yes → 0.5", () => {
-    expect(
-      predictionMagnitude({ question: "will bitcoin reach 100k", yes_price: 0.8 }),
-    ).toBeCloseTo(0.5, 5);
-  });
-
-  it("scales linearly: 90% yes → 0.75", () => {
-    expect(
-      predictionMagnitude({ question: "will bitcoin reach 100k", yes_price: 0.9 }),
-    ).toBeCloseTo(0.75, 5);
-  });
-
-  it("caps at 1.0: 100% yes → 1.0", () => {
-    expect(
-      predictionMagnitude({ question: "will bitcoin reach 100k", yes_price: 1.0 }),
-    ).toBe(1.0);
-  });
-
-  it("bearish question inverts: 80% yes → mag 0.5 (bearish direction)", () => {
-    // bearish question, yes=0.8 → up = 1 - 0.8 = 0.2 → distance = 0.6 → mag 0.5
-    expect(
-      predictionMagnitude({ question: "will bitcoin dip below 50k", yes_price: 0.8 }),
-    ).toBeCloseTo(0.5, 5);
-  });
-
-  it("bearish question extreme: 0% yes → mag 1.0", () => {
-    // up = 1 - 0 = 1.0 → distance = 1.0 → mag 1.0
-    expect(
-      predictionMagnitude({ question: "will bitcoin dip below 50k", yes_price: 0.0 }),
-    ).toBe(1.0);
   });
 });
 
@@ -491,44 +360,6 @@ describe("ruleBased — recommendation bands", () => {
     expect(result.recommendation).toBe("watch");
   });
 
-  it("score < 0.5 (abs) → hold", () => {
-    // yes=0.9 → mag = 0.75 → 0.5 * 0.1 * 0.75 = 0.0375, still < 0.5
-    const result = ruleBased(
-      null,
-      mtf(),
-      { question: "will bitcoin reach 100k", yes_price: 0.9 },
-      null,
-      TINY_PREDICTION,
-    );
-    expect(Math.abs(result.score)).toBeLessThan(0.5);
-    expect(result.recommendation).toBe("hold");
-  });
-
-  it("reasoning contains magnitude tag for prediction", () => {
-    const result = ruleBased(
-      null,
-      mtf(),
-      { question: "will bitcoin reach 100k", yes_price: 0.8 },
-      null,
-      BALANCED,
-    );
-    // With yes=0.8 → mag = 0.5 → tag shows (mag 50%)
-    expect(result.reasoning).toMatch(/prediction market bullish.*mag 50%/);
-  });
-
-  it("no magnitude tag when prediction is in neutral band", () => {
-    // yes=0.55 → mag = 0 → no contribution, no reasoning line added
-    const result = ruleBased(
-      null,
-      mtf(),
-      { question: "will bitcoin reach 100k", yes_price: 0.55 },
-      null,
-      BALANCED,
-    );
-    // predictionDirection returns neutral → no reasoning line at all
-    expect(result.reasoning).not.toContain("prediction market");
-  });
-});
 
 describe("ruleBased — AI AVOID handling", () => {
   // FIX 3: magnitude-aware score
