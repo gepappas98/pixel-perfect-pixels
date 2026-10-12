@@ -149,3 +149,13 @@ This is a confirmed P1 wiring defect, not a request to optimize strategy perform
 - GitHub commits: `02b5283806af6b3f2fa919f38feb7161ac0908e7`, `1e4d9660237613afed3aafeb2d381fe32dff7795`, `dae3b416b9bb453dda92c869912962f0eea118ec`.
 - No scheduler, combiner, freshness guard, or strategy values were changed. The next canonical run must verify that prediction snapshots are refreshed and then that the combiner consumes them.
 - Council remains a separate P0.2 blocker: the upstream public council feed is currently returning five decisions older than the 30-minute freshness guard, so `council-sync` correctly skips them. We will not weaken that guard; the next investigation is the upstream council producer/freshness path.
+
+
+## 2026-10-12 — Polymarket removal (staged, not deployed)
+
+- Decision: remove prediction-market influence from the Research Lab because long-horizon event probabilities are not a reliable direct input for short-horizon Binance Spot entry scoring.
+- Removed prediction-market collection, scoring, council context, regime inputs, UI panel, strategy-weight controls, and the legacy whale-vs-prediction conflict helper on branch `remove-polymarket-prediction-market`.
+- Reworked the remaining market-regime weights to preserve a normalized score after removing the prediction component: whale flow 0.375, technical breadth 0.5, AI council 0.125.
+- Updated the focused signal/regime tests to cover the prediction-free scoring contract. Build/test execution remains unverified.
+- Production read-only audit: 21 prediction snapshots, 517 composite signals with prediction foreign-key links, 1,454 composite signals with the `prediction_market` entry-context key. Historical composite signal rows are retained; cleanup strips only that key.
+- Rollout is deliberately staged: first apply the non-destructive diagnostic-column default migration, deploy and verify new frontend/Edge code, then promote the destructive cleanup SQL draft and later remove the final diagnostic column. No production migration, deletion, merge, or deployment has been run by this work.
