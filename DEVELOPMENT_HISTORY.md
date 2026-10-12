@@ -163,6 +163,6 @@ This is a confirmed P1 wiring defect, not a request to optimize strategy perform
 ## 2026-10-12 — Isolate legacy and v2 variant benchmark cohorts
 
 - Read-only production audit found 758 rows in `strategy_variant_signals`, with 0 rows carrying the new `v2|` fingerprint prefix. The existing `get_variant_performance(days)` RPC grouped every BUY row by strategy without a fingerprint-version filter, and `strategy-auto-switch` consumed that mixed aggregate.
-- The proposed fix keeps legacy observations queryable through `get_variant_performance()`, adds `get_variant_performance_v2()` for rows whose fingerprint starts with `v2|`, and routes auto-switch decisions through v2 only. With no qualifying v2 samples, auto-switch must remain blocked.
+- The proposed fix keeps legacy observations queryable through `get_variant_performance()`, adds `get_variant_performance_v2()` for rows whose fingerprint starts with `v2|`, and routes both the Edge Function and server-side auto-switch paths through v2 only. With no qualifying v2 samples, auto-switch must remain blocked.
 - Variant Performance gains an explicit V2 / Legacy selector; the two cohorts are fetched and aggregated separately. Legacy rows remain visible for historical context but are not used as v2 evidence.
 - Migration and Edge Function changes are staged in draft PR #93. Deployment order: apply `20261012173000_variant_benchmark_cohorts.sql`, deploy `signal-combiner` and `strategy-auto-switch`, then deploy the frontend. No production migration/deploy or historical data mutation has occurred.
