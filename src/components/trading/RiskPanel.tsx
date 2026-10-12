@@ -137,7 +137,7 @@ const getRiskStatus = createServerFn({ method: "GET" }).handler(
         dailyLossLimit,
         openPositions,
         dataStatus: priceCoverageError ? "partial" : "live",
-        dataError: priceCoverageError,
+        ...(priceCoverageError ? { dataError: priceCoverageError } : {}),
       };
     } catch (err) {
       console.error("[RiskPanel] Failed to fetch live wallet metrics:", err);
