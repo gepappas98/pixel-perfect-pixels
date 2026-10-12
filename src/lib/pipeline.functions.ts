@@ -112,17 +112,27 @@ export const getAiHealthStatus = createServerFn({ method: "GET" }).handler(
       const batchHasGroq = latestBatchRows.some((row) => row.depth === "ai-batch");
       const batchHasFallback = latestBatchRows.some((row) => row.depth === "ai-synthesis");
       const lastSuccess = rows.find((row) => row.depth === "ai-batch");
-      const status = batchHasGroq && !batchHasFallback
-        ? "ok" as const
-        : "degraded_fallback" as const;
+      // The pipeline runs every 10 minutes and the longest AI cooldown is 40
+      // minutes. After two cooldown windows without fresh output, do not keep
+      // presenting an old Groq success as current health.
+      const AI_HEALTH_STALE_AFTER_MS = 80 * 60_000;
+      const outputAgeMs = lastAttemptMs > 0 ? Date.now() - lastAttemptMs : Number.POSITIVE_INFINITY;
+      const isStale = outputAgeMs > AI_HEALTH_STALE_AFTER_MS;
+      const status = isStale
+        ? "stale" as const
+        : batchHasGroq && !batchHasFallback
+          ? "ok" as const
+          : "degraded_fallback" as const;
       return {
         available: true as const,
         status,
-        error: status === "degraded_fallback"
-          ? batchHasGroq
-            ? "Latest council batch mixed Groq results with deterministic fallback."
-            : "Latest council output used deterministic fallback; Groq did not produce a usable row in that batch."
-          : null,
+        error: status === "stale"
+          ? "No fresh council output within the AI health freshness window."
+          : status === "degraded_fallback"
+            ? batchHasGroq
+              ? "Latest council batch mixed Groq results with deterministic fallback."
+              : "Latest council output used deterministic fallback; Groq did not produce a usable row in that batch."
+            : null,
         lastSuccessAt: lastSuccess?.synced_at ?? null,
         lastAttemptAt: lastAttempt.synced_at,
         lessonsGenerated: rows.filter((row) => row.depth === "ai-batch").length,
