@@ -621,7 +621,7 @@ Deno.serve(async (req) => {
               source_fingerprint: [
                 strategy_name, symbol,
                 indicator?.id ?? "", mtf.fast?.id ?? "", mtf.trend?.id ?? "",
-                prediction?.id ?? "", council?.id ?? ""
+                council?.id ?? ""
               ].join("|"),
             };
           });
