@@ -7,7 +7,6 @@ import { SignalFeed } from "@/components/trading/SignalFeed";
 import { WhalePanel } from "@/components/trading/WhalePanel";
 import { EventFlowTransmissionPanel } from "@/components/trading/EventFlowTransmissionPanel";
 import { IndicatorPanel } from "@/components/trading/IndicatorPanel";
-import { PredictionPanel } from "@/components/trading/PredictionPanel";
 import { CouncilPanel } from "@/components/trading/CouncilPanel";
 import { RegimePanel } from "@/components/trading/RegimePanel";
 import { StrategyPanel } from "@/components/trading/StrategyPanel";
@@ -235,7 +234,7 @@ function ResetButton() {
       <PinDialog
         open={showDialog}
         title="Reset pipeline data"
-        description="Deletes signals, whale alerts, technicals, predictions, council verdicts and pipeline runs."
+        description="Deletes signals, whale alerts, technicals, council verdicts and pipeline runs."
         warning="✓ Trades and council lessons are preserved."
         confirmLabel={reset.isPending ? "Clearing…" : "Confirm"}
         confirmVariant="destructive"
@@ -292,7 +291,7 @@ function CommandCenter() {
               Research Lab
             </h1>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Experimental crypto research · whale flow · technicals · prediction markets · AI council.
+              Experimental crypto research · whale flow · technicals · AI council.
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -328,7 +327,6 @@ function CommandCenter() {
         <WhalePanel />
         <EventFlowTransmissionPanel />
         <IndicatorPanel />
-        <PredictionPanel />
         <CouncilPanel />
         <RegimePanel />
         <StrategyPanel />
