@@ -72,6 +72,14 @@ interface CouncilResult {
   reflection: string;
 }
 
+interface GroqBatchOutcome {
+  results: Map<string, CouncilResult>;
+  status: "ok" | "partial" | "missing_api_key" | "http_error" | "timeout" | "empty_response" | "invalid_response";
+  httpStatus: number | null;
+  durationMs: number;
+  error: string | null;
+}
+
 function whaleFloor(symbol: string): number {
   return WHALE_MIN_USD[symbol] ?? DEFAULT_WHALE_MIN;
 }
@@ -207,10 +215,18 @@ async function groqBatch(
   candidates: Candidate[],
   lessons: Map<string, { outcome: string; lesson: string }[]>,
   regime: string,
-): Promise<Map<string, CouncilResult>> {
+): Promise<GroqBatchOutcome> {
   const result = new Map<string, CouncilResult>();
+  const startedAt = Date.now();
   const apiKey = Deno.env.get("GROQ_API_KEY");
-  if (!apiKey || !candidates.length) return result;
+  if (!candidates.length) {
+    return { results: result, status: "empty_response", httpStatus: null, durationMs: Date.now() - startedAt, error: "no_candidates" };
+  }
+  if (!apiKey) {
+    console.error("[TCC_NATIVE_COUNCIL] Groq unavailable: api_key_missing");
+    return { results: result, status: "missing_api_key", httpStatus: null, durationMs: Date.now() - startedAt, error: "api_key_missing" };
+  }
+  let httpStatus: number | null = null;
 
   const payload = candidates.map((c) => ({
     symbol: c.symbol,
@@ -299,6 +315,7 @@ async function groqBatch(
       signal: AbortSignal.timeout(GROQ_TIMEOUT_MS),
     });
 
+    httpStatus = response.status;
     if (!response.ok) throw new Error(`Groq HTTP ${response.status}`);
 
     const body = await response.json() as {
@@ -324,14 +341,21 @@ async function groqBatch(
       });
     }
 
+    const status = result.size === candidates.length ? "ok" : result.size > 0 ? "partial" : "empty_response";
     console.log(
-      `[TCC_NATIVE_COUNCIL] Groq batch model=${GROQ_MODEL} received=${result.size}/${candidates.length} tokens=${body.usage?.total_tokens ?? 0}`,
+      `[TCC_NATIVE_COUNCIL] Groq batch status=${status} model=${GROQ_MODEL} received=${result.size}/${candidates.length} http=${httpStatus ?? "none"} elapsed_ms=${Date.now() - startedAt} tokens=${body.usage?.total_tokens ?? 0}`,
     );
+    return { results: result, status, httpStatus, durationMs: Date.now() - startedAt, error: null };
   } catch (error) {
-    console.error("[TCC_NATIVE_COUNCIL] Groq batch failed:", error);
+    const message = error instanceof Error ? error.message : "unknown_error";
+    const isTimeout = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+    const status = httpStatus !== null ? "http_error" : isTimeout ? "timeout" : message.toLowerCase().includes("json") || message.toLowerCase().includes("empty groq response") ? "invalid_response" : "invalid_response";
+    const safeMessage = message.replace(apiKey, "[redacted]").slice(0, 180);
+    console.error(
+      `[TCC_NATIVE_COUNCIL] Groq batch failed status=${status} model=${GROQ_MODEL} http=${httpStatus ?? "none"} elapsed_ms=${Date.now() - startedAt} error=${safeMessage}`,
+    );
+    return { results: result, status, httpStatus, durationMs: Date.now() - startedAt, error: safeMessage };
   }
-
-  return result;
 }
 
 Deno.serve(async (req) => {
@@ -342,16 +366,18 @@ Deno.serve(async (req) => {
   const db = getServiceClient();
 
   try {
-    const { data: latestAi } = await db
+    // Cool down from the latest persisted native council attempt, not only
+    // successful ai-batch rows. Fallback rows also represent an attempted batch.
+    const { data: latestAttempt } = await db
       .from("council_signals")
-      .select("source_created_at")
-      .eq("depth", "ai-batch")
-      .order("source_created_at", { ascending: false })
+      .select("synced_at,source_id")
+      .like("source_id", "tcc-native%")
+      .order("synced_at", { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    const latestAiAt = latestAi?.source_created_at
-      ? new Date(latestAi.source_created_at).getTime()
+    const latestAttemptAt = latestAttempt?.synced_at
+      ? new Date(latestAttempt.synced_at).getTime()
       : 0;
 
     const { data: latestComposite } = await db
@@ -369,11 +395,12 @@ Deno.serve(async (req) => {
       : null;
 
     const minMinutes = intervalMinutes(regime);
-    if (latestAiAt > 0 && Date.now() - latestAiAt < minMinutes * 60_000) {
+    if (latestAttemptAt > 0 && Date.now() - latestAttemptAt < minMinutes * 60_000) {
       return new Response(JSON.stringify({
         ok: true, native: true, skipped: true,
         reason: "ai_batch_rate_guard",
-        minutes_since_last: Number(((Date.now() - latestAiAt) / 60_000).toFixed(1)),
+        cooldown_basis: "latest_persisted_native_attempt",
+        minutes_since_last: Number(((Date.now() - latestAttemptAt) / 60_000).toFixed(1)),
         min_minutes: minMinutes, regime,
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
@@ -548,7 +575,8 @@ Deno.serve(async (req) => {
     }
 
     const lessons = await loadLessons(db, batch.map((c) => c.symbol));
-    const aiResults = await groqBatch(batch, lessons, effectiveRegime);
+    const groqOutcome = await groqBatch(batch, lessons, effectiveRegime);
+    const aiResults = groqOutcome.results;
     const batchTimestamp = new Date().toISOString();
     const rowsToWrite: Row[] = [];
     let groqCount = 0;
@@ -611,6 +639,10 @@ Deno.serve(async (req) => {
       batch_size: batch.length,
       groq_rows: groqCount,
       fallback_rows: fallbackCount,
+      groq_status: groqOutcome.status,
+      groq_http_status: groqOutcome.httpStatus,
+      groq_attempt_ms: groqOutcome.durationMs,
+      groq_error: groqOutcome.error,
       persisted: data?.length ?? 0,
       duration_ms: Date.now() - startedAt,
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
