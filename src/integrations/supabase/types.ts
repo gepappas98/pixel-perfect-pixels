@@ -995,7 +995,6 @@ export type Database = {
           deleted_council_signals: number
           deleted_indicator_snapshots: number
           deleted_pipeline_runs: number
-          deleted_prediction_snapshots: number
           deleted_trade_alerts: number
           deleted_variant_signals: number
           deleted_whale_alerts: number
