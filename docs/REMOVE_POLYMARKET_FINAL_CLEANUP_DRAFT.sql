@@ -332,24 +332,12 @@ UPDATE public.pipeline_settings
 SET cleanup_config = cleanup_config - 'watch_conflict_fix'
 WHERE cleanup_config ? 'watch_conflict_fix';
 
--- Preserve the rest of each historical signal snapshot, but remove the prediction-only context.
-UPDATE public.composite_signals
-SET entry_context_snapshot = entry_context_snapshot - 'prediction_market'
-WHERE entry_context_snapshot ? 'prediction_market';
-
-ALTER TABLE public.composite_signals
-  DROP CONSTRAINT IF EXISTS composite_signals_prediction_snapshot_id_fkey;
-ALTER TABLE public.composite_signals
-  DROP COLUMN IF EXISTS prediction_snapshot_id;
-ALTER TABLE public.strategy_config
-  DROP COLUMN IF EXISTS prediction_weight;
--- Keep this column temporarily for compatibility with an already-deployed Edge Function.
--- The new function no longer writes it; default 0 allows safe rollout before a follow-up DROP COLUMN.
-ALTER TABLE public.strategy_shadow_diagnostics
-  ALTER COLUMN prediction_weight SET DEFAULT 0;
-ALTER TABLE public.pipeline_runs
-  DROP COLUMN IF EXISTS predictions;
-ALTER TABLE public.whale_flow_transition_context
-  DROP COLUMN IF EXISTS prediction_context;
-
-DROP TABLE IF EXISTS public.prediction_snapshots;
+-- Historical-retention rule:
+-- Do NOT delete or rewrite prediction-era research records during this rollout.
+-- Keep composite_signals.entry_context_snapshot, prediction_snapshot_id,
+-- strategy_config.prediction_weight, pipeline_runs.predictions,
+-- whale_flow_transition_context.prediction_context, and prediction_snapshots intact.
+-- Active application code no longer reads these fields or collects new Polymarket data.
+-- This preserves audit/replay history and foreign-key traceability.
+-- The prediction_snapshots table and its old relationships can be archived or removed
+-- only in a separate, explicitly approved future task after an export/recovery plan.
