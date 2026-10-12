@@ -342,8 +342,7 @@ export default function AIReport() {
           .order("started_at", { ascending: false })
           .limit(30),
         (supabase.rpc as any)("get_research_alerts", { p_limit: 20 }),
-        supabase
-          .from("asset_price_snapshots")
+        (supabase.from as any)("asset_price_snapshots")
           .select("asset,price,observed_at")
           .order("observed_at", { ascending: false })
           .limit(2000),
