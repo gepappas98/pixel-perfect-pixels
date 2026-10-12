@@ -1,6 +1,6 @@
 -- DRAFT ONLY: final destructive cleanup; promote to supabase/migrations only after the prep migration is applied and new frontend/Edge code is deployed.
 -- Do not execute directly from docs.
--- Historical composite signals are retained; only prediction-specific fields/context are removed.
+-- Non-destructive retirement of prediction-market database dependencies; historical data is retained.
 
 -- Final cleanup migration starts below.
 CREATE OR REPLACE FUNCTION public.analyze_whale_waves_by_market_regime(p_hours integer DEFAULT 168)
