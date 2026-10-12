@@ -68,7 +68,7 @@ function validCandidates(value: unknown): value is Candidate[] {
       item !== null
       && typeof item === "object"
       && typeof (item as Candidate).symbol === "string"
-      && /^[A-Z0-9]{2,20}$/.test((item as Candidate).symbol),
+      && /^[A-Z0-9]{1,20}$/.test((item as Candidate).symbol),
     );
 }
 
