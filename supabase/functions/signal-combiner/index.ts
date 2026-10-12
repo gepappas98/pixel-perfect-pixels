@@ -667,7 +667,7 @@ Deno.serve(async (req) => {
           confidence: result.confidence,
           score: result.score,
           reasoning: reasoningParts.join("; "),
-          price_at: Number(indicator?.price ?? 0) > 0 ? Number(indicator.price) : null,
+          price_at: Number(indicator?.price ?? 0) > 0 ? Number(indicator?.price ?? 0) : null,
         },
         technicals: {
           primary: indicator,
@@ -709,7 +709,7 @@ Deno.serve(async (req) => {
             confidence: result.confidence,
             recommendation: gate.recommendation,
             reasoning: reasoningParts.join("; "),
-            price_at: Number(indicator?.price ?? 0) > 0 ? Number(indicator.price) : null,
+            price_at: Number(indicator?.price ?? 0) > 0 ? Number(indicator?.price ?? 0) : null,
             regime_label: productionRegimeLabel,
             market_session: productionMarketSession,
             source_tags: sourceTags,
