@@ -150,6 +150,11 @@ export function VariantComparisonPanel() {
     (sum, s2) => sum + (agg.get(s2)?.resolved ?? 0),
     0,
   );
+  const totalOpen = strategies.reduce(
+    (sum, s2) => sum + (agg.get(s2)?.open ?? 0),
+    0,
+  );
+  const totalObserved = totalResolved + totalOpen;
 
   // ── Best strategy ──
   // A negative total can still be the least-bad preset. Do not label it BEST.
@@ -198,7 +203,7 @@ export function VariantComparisonPanel() {
             <button type="button" onClick={() => setCohort("v2")} aria-pressed={cohort === "v2"} className={`rounded px-2 py-1 text-[10px] ${cohort === "v2" ? "bg-accent/15 text-foreground" : "text-muted-foreground"}`}>V2</button>
             <button type="button" onClick={() => setCohort("legacy")} aria-pressed={cohort === "legacy"} className={`rounded px-2 py-1 text-[10px] ${cohort === "legacy" ? "bg-accent/15 text-foreground" : "text-muted-foreground"}`}>Legacy</button>
           </div>
-          <span className="text-[10px] text-muted-foreground">{totalResolved} resolved</span>
+          <span className="text-[10px] text-muted-foreground">{totalResolved} resolved · {totalOpen} open</span>
         </div>
       </div>
 
@@ -226,11 +231,11 @@ export function VariantComparisonPanel() {
         </p>
       </div>
 
-      {totalResolved === 0 ? (
+      {totalObserved === 0 ? (
         <p className="text-sm text-muted-foreground">
           {cohort === "v2"
-            ? "No resolved v2 samples yet. The clean cohort will populate after the updated signal-combiner and benchmark migration are deployed and outcomes resolve."
-            : "No resolved legacy variant signals in the selected 7-day window."}
+            ? "No v2 samples yet. The clean cohort will populate after the updated signal-combiner and benchmark migration are deployed."
+            : "No legacy variant signals in the selected 7-day window."}
         </p>
       ) : (
         <div className="overflow-x-auto">
