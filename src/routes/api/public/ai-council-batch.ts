@@ -16,9 +16,9 @@ function isServiceRoleJwt(token: string): boolean {
   const parts = token.split(".");
   if (parts.length !== 3) return false;
   try {
-    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as {
-      role?: unknown;
-    };
+    const encoded = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = encoded + "=".repeat((4 - (encoded.length % 4)) % 4);
+    const payload = JSON.parse(atob(padded)) as { role?: unknown };
     return payload.role === "service_role";
   } catch {
     return false;
