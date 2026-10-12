@@ -79,32 +79,40 @@ export const getTradingStatus = createServerFn({ method: "GET" }).handler(
 export const getAiHealthStatus = createServerFn({ method: "GET" }).handler(
   async () => {
     try {
+      // Read the canonical council output itself. pipeline_runs.ai_status is
+      // not populated by council-sync and therefore incorrectly reported
+      // "awaiting" while deterministic fallback rows were being written.
       const { supabase } = await import("@/integrations/supabase/client");
       const { data, error } = await supabase
-        .from("pipeline_runs")
-        .select("ai_status, ai_error, ai_lessons_generated, completed_at, started_at")
-        .not("ai_status", "is", null)
-        .order("started_at", { ascending: false })
-        .limit(10);
+        .from("council_signals")
+        .select("depth, synced_at")
+        .in("depth", ["ai-batch", "ai-synthesis"])
+        .order("synced_at", { ascending: false })
+        .limit(100);
       if (error) throw error;
-      const rows = (data ?? []) as {
-        ai_status: string;
-        ai_error: string | null;
-        ai_lessons_generated: number | null;
-        completed_at: string | null;
-        started_at: string;
-      }[];
+      const rows = (data ?? []) as { depth: string; synced_at: string | null }[];
       if (rows.length === 0) {
-        return { available: true as const, status: "unknown" as const, error: null, lastSuccessAt: null, lessonsGenerated: 0 };
+        return {
+          available: true as const,
+          status: "unknown" as const,
+          error: null,
+          lastSuccessAt: null,
+          lastAttemptAt: null,
+          lessonsGenerated: 0,
+        };
       }
-      const last = rows[0]!;
-      const lastSuccess = rows.find((row) => row.ai_status === "ok");
+      const lastAttempt = rows[0]!;
+      const lastSuccess = rows.find((row) => row.depth === "ai-batch");
+      const status = lastAttempt.depth === "ai-batch" ? "ok" as const : "degraded_fallback" as const;
       return {
         available: true as const,
-        status: last.ai_status as "ok" | "degraded_fallback" | "failed",
-        error: last.ai_error,
-        lastSuccessAt: lastSuccess?.completed_at ?? null,
-        lessonsGenerated: last.ai_lessons_generated ?? 0,
+        status,
+        error: status === "degraded_fallback"
+          ? "Latest council output used deterministic fallback; Groq did not produce a usable row in that batch."
+          : null,
+        lastSuccessAt: lastSuccess?.synced_at ?? null,
+        lastAttemptAt: lastAttempt.synced_at,
+        lessonsGenerated: rows.filter((row) => row.depth === "ai-batch").length,
       };
     } catch (error) {
       return {
@@ -112,6 +120,7 @@ export const getAiHealthStatus = createServerFn({ method: "GET" }).handler(
         status: "unknown" as const,
         error: error instanceof Error ? error.message : String(error),
         lastSuccessAt: null,
+        lastAttemptAt: null,
         lessonsGenerated: 0,
       };
     }
