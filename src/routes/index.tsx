@@ -12,6 +12,7 @@ import { RegimePanel } from "@/components/trading/RegimePanel";
 import { StrategyPanel } from "@/components/trading/StrategyPanel";
 import { LessonsPanel } from "@/components/trading/LessonsPanel";
 import { VariantComparisonPanel } from "@/components/trading/VariantComparisonPanel";
+import { ResolverIntegrityPanel } from "@/components/trading/ResolverIntegrityPanel";
 import { TradesPanel } from "@/components/trading/TradesPanel";
 import { TradeAlertsPanel } from "@/components/trading/TradeAlertsPanel";
 import { CronHealthPanel } from "@/components/trading/CronHealthPanel";
@@ -332,6 +333,7 @@ function CommandCenter() {
         <StrategyPanel />
         <LessonsPanel />
         <VariantComparisonPanel />
+        <div className="lg:col-span-3"><ResolverIntegrityPanel /></div>
   <AIRiskSummary />
   <RiskPanel />
   <CronHealthPanel />
