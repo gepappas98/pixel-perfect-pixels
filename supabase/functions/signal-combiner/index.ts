@@ -286,7 +286,6 @@ function classifyMtf(rows: Record<string, any>[]) {
 function classifyProductionRegime(input: {
   whales: any[];
   indicators: any[];
-  predictions: any[];
   councils: any[];
 }): string {
   let buyUsd=0, sellUsd=0;
@@ -303,17 +302,6 @@ function classifyProductionRegime(input: {
     if(i?.signal==="bullish") tb++; else if(i?.signal==="bearish") tr++; else tn++;
   }
   const techBreadth=(tb+tr+tn)>0?(tb-tr)/(tb+tr+tn):0;
-  const seenPred=new Set<string>(); let pb=0,pr=0,pn=0;
-  for(const p of input.predictions){
-    const slug=String(p?.market_slug); if(seenPred.has(slug)) continue; seenPred.add(slug);
-    const yes=Number(p?.yes_price); if(!Number.isFinite(yes)){pn++;continue;}
-    const q=String(p?.question??"").toLowerCase();
-    const bullish=/\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\b/i.test(q);
-    const bearish=/\b(dip|drop|fall|below|crash|down to|under|bottom)\b/i.test(q);
-    if(!bullish&&!bearish){pn++;continue;}
-    const up=bullish?yes:1-yes; if(up>0.6) pb++; else if(up<0.4) pr++; else pn++;
-  }
-  const predConsensus=(pb+pr+pn)>0?(pb-pr)/(pb+pr+pn):0;
   const seenCouncil=new Set<string>(); let cb=0,cs=0;
   for(const x of input.councils){
     const s=String(x?.symbol); if(seenCouncil.has(s)) continue; seenCouncil.add(s);
@@ -321,7 +309,7 @@ function classifyProductionRegime(input: {
     if(v==="BUY") cb++; else if(v==="SELL") cs++;
   }
   const councilConsensus=seenCouncil.size>0?(cb-cs)/seenCouncil.size:0;
-  const score=whaleNet*0.3+techBreadth*0.4+predConsensus*0.2+councilConsensus*0.1;
+  const score=whaleNet*0.375+techBreadth*0.5+councilConsensus*0.125;
   if(score>=0.5) return "strong_bull";
   if(score>=0.15) return "bull";
   if(score<=-0.5) return "strong_bear";
