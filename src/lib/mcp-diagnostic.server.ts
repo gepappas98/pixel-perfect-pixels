@@ -267,7 +267,7 @@ export async function getExecutionGap(db: ReadOnlyDb, a: Row) {
     uncovered_symbols: [...new Set(uncovered.map((s) => String(s["symbol"])))],
     uncovered_signal_ids: uncovered.map((s) => s["id"]).slice(0, 100),
     audit_counts: r.counts,
-    note: "Seed events (details["audit_seed"]===true) count for presence coverage only, never as real candidate accepts.",
+    note: "Seed events marked audit_seed=true count for presence coverage only, never as real candidate accepts.",
   };
 }
 
