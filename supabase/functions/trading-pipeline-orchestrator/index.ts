@@ -159,7 +159,7 @@ Deno.serve(async (req) => {
     mode: Deno.env.get("TRADING_MODE") || "paper",
     result: {
       architecture: "sequential",
-      interval_minutes: 2,
+      interval_minutes: 10,
       trigger,
       source,
       stages: [],
@@ -184,7 +184,7 @@ Deno.serve(async (req) => {
     await db.from("pipeline_runs").update({
       result: {
         architecture: "sequential",
-        interval_minutes: 2,
+        interval_minutes: 10,
         trigger,
         source,
         stages: compactStagesForStorage(results),
@@ -202,7 +202,7 @@ Deno.serve(async (req) => {
         error_message: name + " failed with HTTP " + stage.status,
         result: {
           architecture: "sequential",
-          interval_minutes: 2,
+          interval_minutes: 10,
           trigger,
           source,
           stages: compactStagesForStorage(results),
@@ -225,7 +225,7 @@ Deno.serve(async (req) => {
       await db.from("pipeline_runs").update({
         result: {
           architecture: "sequential",
-          interval_minutes: 2,
+          interval_minutes: 10,
           trigger,
           source,
           stages: compactStagesForStorage(results),
@@ -260,7 +260,7 @@ Deno.serve(async (req) => {
     duration_ms: Date.now() - started.getTime(),
     result: {
       architecture: "sequential",
-      interval_minutes: 2,
+      interval_minutes: 10,
       trigger,
       source,
       stages: compactStagesForStorage(results),
