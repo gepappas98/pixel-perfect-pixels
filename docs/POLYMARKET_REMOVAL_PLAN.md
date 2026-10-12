@@ -8,16 +8,13 @@ The Research Lab is intended to evaluate short-horizon Binance Spot signals. Pol
 2. Deploy the updated frontend and Edge Functions from this branch. The default makes the new diagnostic inserts safe, while an older deployed Edge Function can still explicitly write zero during rollout.
 3. Recheck the live signal-combiner and scheduled orchestrator logs after deployment. Do not proceed based solely on source review.
 
-## Phase 2 — destructive cleanup (not yet an active migration)
-After Phase 1 is deployed and verified, review and promote `REMOVE_POLYMARKET_FINAL_CLEANUP_DRAFT.sql` into `supabase/migrations` as a new migration. It:
+## Phase 2 — database routine retirement (non-destructive; not yet an active migration)
+After Phase 1 is deployed and verified, review and promote `REMOVE_POLYMARKET_FINAL_CLEANUP_DRAFT.sql` into `supabase/migrations` as a new migration. This replaces database routines and removes a retired feature flag; it does not delete prediction-era rows, columns, or tables. It:
 - Replaces the three database functions that still depend on prediction snapshots so they operate without prediction-market inputs.
 - Removes the retired `watch_conflict_fix` setting from persisted cleanup configuration.
 - Preserves all historical prediction-era records and links: `composite_signals.entry_context_snapshot`, `prediction_snapshot_id`, `strategy_config.prediction_weight`, `pipeline_runs.predictions`, `whale_flow_transition_context.prediction_context`, and `prediction_snapshots` remain intact.
 - Does not drop the historical table or columns. Archival/deletion requires a separate explicit approval and export/recovery plan.
 - Leaves `strategy_shadow_diagnostics.prediction_weight` temporarily in place for backwards compatibility; the preparation migration sets its default to zero.
-
-## Phase 3 — final schema tidy-up
-Only after the new Edge Function is confirmed live, add a separate migration to drop `strategy_shadow_diagnostics.prediction_weight`. Do not include that drop in the same batch as the first deployment, because an older Edge Function may still explicitly write the column.
 
 ## Current verification status
 - Code references to Polymarket/prediction-market fields have been removed from the active and legacy TypeScript paths reviewed on the branch.
