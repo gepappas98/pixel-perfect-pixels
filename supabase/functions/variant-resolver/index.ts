@@ -9,7 +9,7 @@ const MIN_AGE_MS = 60 * 60 * 1000;
 const EXPIRY_TRIGGER_HOURS = 72;
 const CANDLE_LIMIT = 1000;
 const CONCURRENCY = 8;
-const RESOLVER_VERSION = 6;
+const RESOLVER_VERSION = 7;
 function audit(event: string, details: Record<string, unknown>) {
   console.log("[VARIANT_RESOLVER_AUDIT]", JSON.stringify({resolver_version: RESOLVER_VERSION,event,...details}));
 }
@@ -330,10 +330,23 @@ Deno.serve(async () => {
       ? variant.entry_price * (1 - slPct)
       : variant.entry_price * (1 + slPct);
 
+    // Never use the high/low of a candle that started before the signal.
+    // Its wick may have happened before entry and would introduce look-ahead bias.
+    const overlappingEntryCandle = candles.find((c) => c.openTimeMs < entryMs && c.closeTimeMs > entryMs);
+    if (overlappingEntryCandle) {
+      audit("entry_candle_excluded_pre_entry_wick", {
+        variant_id: variant.id,
+        symbol: variant.symbol,
+        entry_time: variant.created_at,
+        candle_open_time: new Date(overlappingEntryCandle.openTimeMs).toISOString(),
+        candle_close_time: new Date(overlappingEntryCandle.closeTimeMs).toISOString(),
+        reason: "candle_started_before_entry",
+      });
+    }
     const relevant = candles.filter((c) =>
-      c.closeTimeMs > entryMs && c.closeTimeMs <= nowMs
+      c.openTimeMs >= entryMs && c.closeTimeMs <= nowMs
     );
-    audit("1h_window",{variant_id:variant.id,symbol:variant.symbol,candle_count:relevant.length,first_candle_open_time:relevant[0]?new Date(relevant[0].openTimeMs).toISOString():null,last_candle_open_time:relevant[relevant.length-1]?new Date(relevant[relevant.length-1].openTimeMs).toISOString():null,tp_price:tpPrice,sl_price:slPrice});
+    audit("1h_window",{variant_id:variant.id,symbol:variant.symbol,candle_count:relevant.length,first_candle_open_time:relevant[0]?new Date(relevant[0].openTimeMs).toISOString():null,last_candle_open_time:relevant[relevant.length-1]?new Date(relevant[relevant.length-1].openTimeMs).toISOString():null,tp_price:tpPrice,sl_price:slPrice,entry_candle_policy:"exclude_candles_started_before_entry"});
 
     let outcome: Outcome | null = null;
     let exitPrice: number | null = null;
