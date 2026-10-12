@@ -169,7 +169,7 @@ async function loadAudits(db: ReadOnlyDb, windowMin: number, runId?: string) {
 
 /** Signal-level audit analysis. Seed events (details.audit_seed===true) are markers only. */
 export function analyzeAudits(
-  audits: Array<{ run: Row; audit?: Row }>,
+  audits: Array<{ run: Row; audit?: Row | undefined }>,
   symbol?: string,
 ) {
   const auditedSignalIds = new Set<string>();
