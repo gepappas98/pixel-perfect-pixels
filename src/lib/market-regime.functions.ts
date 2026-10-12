@@ -24,14 +24,6 @@ export interface MarketRegime {
     breadth: number;
     sample_size: number;
   };
-  predictions: {
-    bullish: number;
-    bearish: number;
-    neutral: number;
-    consensus: number;
-    sample_size: number;
-    excluded_long_horizon: number;
-  };
   council: {
     buy: number;
     sell: number;
@@ -46,31 +38,6 @@ export interface MarketRegime {
   recommended_preset: string;
   reasoning: string;
   generated_at: string;
-}
-
-/* ───────────── Prediction direction helper ───────────── */
-
-const PREDICTION_NEAR_TERM_MS = 7 * 24 * 60 * 60 * 1000;
-
-const BULLISH_QUESTION =
-  /\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\b/i;
-const BEARISH_QUESTION =
-  /\b(dip|drop|fall|below|crash|down to|under|bottom)\b/i;
-
-function predictionDirectionFromSnapshot(
-  question: string | null,
-  yesPrice: number | null,
-): "bullish" | "bearish" | "neutral" {
-  const yes = Number(yesPrice);
-  if (!Number.isFinite(yes)) return "neutral";
-  const q = String(question ?? "").toLowerCase();
-  const isBullishQ = BULLISH_QUESTION.test(q);
-  const isBearishQ = BEARISH_QUESTION.test(q);
-  if (!isBullishQ && !isBearishQ) return "neutral";
-  const up = isBullishQ ? yes : 1 - yes;
-  if (up > 0.6) return "bullish";
-  if (up < 0.4) return "bearish";
-  return "neutral";
 }
 
 /* ───────────── Regime classification ───────────── */
@@ -166,18 +133,12 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
       // Technicals με resilient fetch (έχει το δικό του error handling)
       const techsResult = await fetchTechnicalsResilient(db);
 
-      const [whalesRes, predsRes, councilRes] = await Promise.all([
+      const [whalesRes, councilRes] = await Promise.all([
         db
           .from("whale_alerts")
           .select("direction, usd_value")
           .gte("created_at", sixHoursAgo)
           .limit(5000),
-        db
-          .from("prediction_snapshots")
-          .select("market_slug, question, yes_price, created_at, raw")
-          .gte("created_at", thirtyMinAgo)
-          .order("created_at", { ascending: false })
-          .limit(2000),
         db
           .from("council_signals")
           .select("symbol, final_verdict, source_created_at")
@@ -189,17 +150,9 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
       // Explicit error logging
       if (whalesRes.error)
         console.error("[REGIME] whales query:", serializeError(whalesRes.error));
-      if (predsRes.error)
-        console.error(
-          "[REGIME] predictions query:",
-          serializeError(predsRes.error),
-        );
       if (councilRes.error)
         console.error("[REGIME] council query:", serializeError(councilRes.error));
 
-      console.log(
-        `[REGIME] rows: whales=${whalesRes.data?.length ?? 0} techs=${techsResult.rows.length}(${techsResult.window}) preds=${predsRes.data?.length ?? 0} council=${councilRes.data?.length ?? 0}`,
-      );
 
       // ── Whale aggregates ──
       let buyUsd = 0;
@@ -230,44 +183,6 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
       }
       const totalTech = techBull + techBear + techNeu;
       const techBreadth = totalTech > 0 ? (techBull - techBear) / totalTech : 0;
-
-      // ── Predictions (latest per market) ──
-      const seenPred = new Set<string>();
-      let predBull = 0;
-      let predBear = 0;
-      let predNeu = 0;
-      let predExcludedLongHorizon = 0;
-      for (const p of (predsRes.data ?? []) as {
-        market_slug: string;
-        question: string | null;
-        yes_price: number | null;
-        raw: Record<string, unknown> | null;
-      }[]) {
-        if (seenPred.has(p.market_slug)) continue;
-        seenPred.add(p.market_slug);
-
-        // Spot regime uses only near-term prediction markets.
-        // Long-horizon markets remain informational and do not affect the
-        // immediate market-regime score.
-        const endDateRaw = p.raw?.endDate;
-        const endDateMs =
-          typeof endDateRaw === "string" ? Date.parse(endDateRaw) : NaN;
-        const nearTerm =
-          Number.isFinite(endDateMs) &&
-          endDateMs >= now &&
-          endDateMs <= now + PREDICTION_NEAR_TERM_MS;
-        if (!nearTerm) {
-          predExcludedLongHorizon++;
-          continue;
-        }
-
-        const dir = predictionDirectionFromSnapshot(p.question, p.yes_price);
-        if (dir === "bullish") predBull++;
-        else if (dir === "bearish") predBear++;
-        else predNeu++;
-      }
-      const totalPred = predBull + predBear + predNeu;
-      const predConsensus = totalPred > 0 ? (predBull - predBear) / totalPred : 0;
 
       // ── Council (latest per symbol) ──
       const seenCouncil = new Set<string>();
@@ -345,8 +260,8 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
       if (Math.abs(predConsensus) > 0.15) {
         reasons.push(
           predConsensus > 0
-            ? `${predBull}/${totalPred} prediction markets lean bullish`
-            : `${predBear}/${totalPred} prediction markets lean bearish`,
+            ? "technical breadth is bullish"
+            : "technical breadth is bearish",
         );
       }
       if (Math.abs(councilConsensus) > 0.15) {
@@ -392,14 +307,6 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
           breadth: techBreadth,
           sample_size: totalTech,
         },
-        predictions: {
-          bullish: predBull,
-          bearish: predBear,
-          neutral: predNeu,
-          consensus: predConsensus,
-          sample_size: totalPred,
-          excluded_long_horizon: predExcludedLongHorizon,
-        },
         council: {
           buy: cBuy,
           sell: cSell,
@@ -428,14 +335,6 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
           neutral: 0,
           breadth: 0,
           sample_size: 0,
-        },
-        predictions: {
-          bullish: 0,
-          bearish: 0,
-          neutral: 0,
-          consensus: 0,
-          sample_size: 0,
-          excluded_long_horizon: 0,
         },
         council: {
           buy: 0,
