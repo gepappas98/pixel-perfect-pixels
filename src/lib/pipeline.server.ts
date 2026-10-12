@@ -101,7 +101,6 @@ type ExecutionSignalForSnapshot = {
   source_tags?: string[] | null;
   whale_alert_id?: string | null;
   indicator_snapshot_id?: string | null;
-  prediction_snapshot_id?: string | null;
   council_signal_id?: string | null;
 };
 type CouncilVerdict = "BUY" | "SELL" | "HOLD" | "AVOID";
@@ -240,7 +239,6 @@ const ROTATION_MIN_OPEN_AGE_MINUTES = 30;
 const ROTATION_MAX_WEAKEST_PNL_PCT = 0.5;
 
 const INDICATOR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
-const PREDICTION_MAX_AGE_MS = 30 * 60 * 1000;
 
 const COUNCIL_MAX_AGE_MS = 30 * 60 * 1000;
 const COUNCIL_MAX_AGE_MS_TRENDING = 20 * 60 * 1000;
@@ -1456,7 +1454,7 @@ const GROQ_MODEL = process.env["GROQ_MODEL"] ?? "openai/gpt-oss-20b";
 
 interface AiCandidate {
   symbol: string; whale: Row; mtf: MultiTfResult;
-  mtfRaw: MultiTfInput; prediction: Row; whaleUsd: number;
+  mtfRaw: MultiTfInput; whaleUsd: number;
 }
 
 function qualifiesForAi(whale: Row, mtf: MultiTfResult, symbol?: string): boolean {
@@ -1492,11 +1490,6 @@ async function groqBatchCouncil(candidates: AiCandidate[]): Promise<Map<string, 
       signal_1d: pd?.["signal"] ?? "neutral",
       timeframe_alignment: c.mtf.aligned ? "all-aligned" : c.mtf.conflict ? "conflict" : "partial",
       price: p4?.["price"] ?? null,
-      prediction_direction: predictionDirection(c.prediction),
-      prediction_yes_price: c.prediction?.["yes_price"] ?? null,
-      prediction_question: typeof c.prediction?.["question"] === "string"
-        ? String(c.prediction["question"]).slice(0, 220)
-        : null,
       whale_buy_usd: Math.round(Number(c.whale?.["buy_usd"] ?? 0)),
       whale_sell_usd: Math.round(Number(c.whale?.["sell_usd"] ?? 0)),
       whale_buy_count: Number(c.whale?.["buy_count"] ?? 0),
@@ -1511,7 +1504,7 @@ async function groqBatchCouncil(candidates: AiCandidate[]): Promise<Map<string, 
 
   const systemPrompt = [
     "You are the TCC long-only trading council. You are a decision layer, not the risk engine.",
-    "You receive 4h primary, 1h fast, and 1d trend data plus whale flow, prediction-market context, market regime, and prior lessons.",
+    "You receive 4h primary, 1h fast, and 1d trend data plus whale flow, market regime, and prior lessons.",
     "LONG-ONLY CONTRACT: you may return BUY, HOLD, or AVOID only. Never return SELL, SHORT, leverage, or a bearish trade instruction.",
     "BUY only when there is a defensible long edge. HOLD when the evidence is mixed but not clearly unsafe. AVOID when data quality is poor, inputs conflict materially, or downside risk dominates.",
     "Do not invent missing data. Treat null/missing fields as unavailable evidence.",
@@ -1635,10 +1628,9 @@ export async function collectCouncilSignals(): Promise<number> {
   const sixHoursAgo = new Date(Date.now() - WHALE_LOOKBACK_HOURS * 60 * 60 * 1000).toISOString();
   const aiCacheSince = new Date(Date.now() - AI_VERDICT_TTL_MS).toISOString();
 
-  const [whalesRes, indicatorsRes, predictionsRes, freshAiRes, lastAiRes] = await Promise.all([
+  const [whalesRes, indicatorsRes, freshAiRes, lastAiRes] = await Promise.all([
     db.from("whale_alerts").select("*").in("symbol", symbols).gte("created_at", sixHoursAgo).order("usd_value", { ascending: false }).limit(2000),
     db.from("indicator_snapshots").select("*").in("symbol", binSymbols).order("created_at", { ascending: false }).limit(5000),
-    db.from("prediction_snapshots").select("*").in("related_symbol", symbols).order("created_at", { ascending: false }).limit(1000),
     db.from("council_signals").select("symbol, source_created_at").eq("depth", "ai-batch").in("symbol", symbols).gte("source_created_at", aiCacheSince),
     db.from("council_signals").select("source_created_at").eq("depth", "ai-batch").order("source_created_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
@@ -1659,22 +1651,6 @@ export async function collectCouncilSignals(): Promise<number> {
     if (!indicatorByTf.has(k)) indicatorByTf.set(k, i);
   }
 
-  const latestPrediction = new Map<string, Record<string, unknown>>();
-  for (const p of (predictionsRes.data ?? []) as Record<string, unknown>[]) {
-    const s = p["related_symbol"] as string | undefined;
-    if (!s || !isUsablePredictionRow(p as Row)) continue;
-    const current = latestPrediction.get(s);
-    if (!current) {
-      latestPrediction.set(s, p);
-      continue;
-    }
-    const [currentVolume, currentCreated] = predictionRank(current as Row);
-    const [nextVolume, nextCreated] = predictionRank(p as Row);
-    if (nextVolume > currentVolume || (nextVolume === currentVolume && nextCreated > currentCreated)) {
-      latestPrediction.set(s, p);
-    }
-  }
-
   const freshnessNow = Date.now();
   for (const [k, row] of indicatorByTf) {
     if (!isFreshRow(row, "created_at", INDICATOR_MAX_AGE_MS, freshnessNow)) indicatorByTf.delete(k);
@@ -1689,7 +1665,7 @@ export async function collectCouncilSignals(): Promise<number> {
   const aiMinMinutes = aiBatchIntervalMinutes();
   const aiAllowed = minutesSinceLastAi >= aiMinMinutes;
 
-  const perSymbol = new Map<string, { whale: Row; mtf: MultiTfResult; mtfRaw: MultiTfInput; prediction: Row }>();
+  const perSymbol = new Map<string, { whale: Row; mtf: MultiTfResult; mtfRaw: MultiTfInput }>();
   const aiCandidates: AiCandidate[] = [];
 
   for (const symbol of symbols) {
@@ -1714,16 +1690,14 @@ export async function collectCouncilSignals(): Promise<number> {
       trend: (indicatorByTf.get(`${binSym}:${TREND_TIMEFRAME}`) ?? null) as Row,
     };
     const mtf = evaluateMultiTimeframe(mtfRaw);
-    const prediction = (latestPrediction.get(symbol) ?? null) as Row;
-
-    if (!whale && !mtfRaw.primary && !prediction) continue;
-    perSymbol.set(symbol, { whale, mtf, mtfRaw, prediction });
+    if (!whale && !mtfRaw.primary) continue;
+    perSymbol.set(symbol, { whale, mtf, mtfRaw });
 
     const rsi4hRaw = mtfRaw.primary?.["rsi"];
     if (typeof rsi4hRaw === "number") (mtf as unknown as Record<string, unknown>)["rsi4h"] = rsi4hRaw;
 
     if (!freshAiSymbols.has(symbol) && qualifiesForAi(whale, mtf, symbol)) {
-      aiCandidates.push({ symbol, whale, mtf, mtfRaw, prediction, whaleUsd: whaleUsdTotal });
+      aiCandidates.push({ symbol, whale, mtf, mtfRaw, whaleUsd: whaleUsdTotal });
     }
   }
 
@@ -1741,7 +1715,7 @@ export async function collectCouncilSignals(): Promise<number> {
     if (freshAiSymbols.has(symbol)) continue;
     const aiResult = aiResults.get(symbol);
     const usedAi = !!aiResult;
-  let result = aiResult ?? councilEvaluation(ctx.whale, ctx.mtf, ctx.prediction);
+  let result = aiResult ?? councilEvaluation(ctx.whale, ctx.mtf);
 
   // TCC is Spot/long-only. The legacy deterministic synthesizer still knows
   // about SELL for historical compatibility, but a native council signal must
@@ -1768,13 +1742,12 @@ export async function collectCouncilSignals(): Promise<number> {
       reflection: `${result.reflection} [ASSET_REGIME_FILTER: Long blocked due to ${assetMicroRegime.regime} on 4h]`,
     };
   }
-  const sourceId = [symbol, ctx.whale?.["id"], ctx.mtfRaw.primary?.["id"], ctx.prediction?.["id"], usedAi ? "ai" : "rule", result.final_verdict, String(Math.round(Number(result.conviction) || 0))].join(":");
+  const sourceId = [symbol, ctx.whale?.["id"], ctx.mtfRaw.primary?.["id"], usedAi ? "ai" : "rule", result.final_verdict, String(Math.round(Number(result.conviction) || 0))].join(":");
     const inputSourceTimes = [
       ctx.whale?.["created_at"],
       ctx.mtfRaw.primary?.["created_at"],
       ctx.mtfRaw.fast?.["created_at"],
       ctx.mtfRaw.trend?.["created_at"],
-      ctx.prediction?.["created_at"],
     ]
       .map((value) => new Date(String(value ?? "")).getTime())
       .filter((value) => Number.isFinite(value));
