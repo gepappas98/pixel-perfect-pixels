@@ -472,6 +472,10 @@ Deno.serve(async (req) => {
 
     const freshnessNow = Date.now();
     const freshnessNowIso = new Date(freshnessNow).toISOString();
+    // Versioned research identity: one strategy/symbol sample per 10-minute observation window.
+    // This is separate from council row IDs, which can churn without a new market observation.
+    // The v2 prefix deliberately preserves all existing historical fingerprints unchanged.
+    const variantSampleBucket = Math.floor(freshnessNow / (10 * 60 * 1000));
     const since = new Date(freshnessNow - WHALE_LOOKBACK_MS).toISOString();
     // Regime inputs use the neutral 30-minute council window because the regime
     // itself is derived from those inputs. Per-symbol signals use the resolved regime TTL.
@@ -616,9 +620,7 @@ Deno.serve(async (req) => {
               market_session: productionMarketSession,
               created_at: new Date().toISOString(),
               source_fingerprint: [
-                strategy_name, symbol,
-                indicator?.id ?? "", mtf.fast?.id ?? "", mtf.trend?.id ?? "",
-                council?.id ?? ""
+                "v2", strategy_name, symbol, variantSampleBucket,
               ].join("|"),
             };
           });
@@ -639,7 +641,7 @@ Deno.serve(async (req) => {
             market_session: productionMarketSession,
             created_at: new Date().toISOString(),
             source_fingerprint: [
-              "accumulation", symbol, indicator?.id ?? "", mtf.trend?.id ?? "",
+              "v2", "accumulation", symbol, variantSampleBucket,
             ].join("|"),
           });
         }

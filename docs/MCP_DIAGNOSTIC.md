@@ -4,7 +4,7 @@
   (live: `https://aicombined-trading-command-center.lovable.app/api/public/mcp-diagnostic`)
 - **Protocol:** MCP over HTTP (JSON-RPC 2.0, JSON responses). Methods: `initialize`, `ping`, `tools/list`, `tools/call`.
 - **Required env var / secret:** `MCP_DIAGNOSTIC_TOKEN` (min 16 chars). Header: `Authorization: Bearer <token>`.
-- **Read-only:** all DB access goes through `readOnlyDb` (SELECT on whitelisted tables + read-only RPCs `get_portfolio_summary`, `get_variant_performance`). No writes, no trading.
+- **Read-only:** all DB access goes through `readOnlyDb` (SELECT on whitelisted tables + read-only RPCs `get_portfolio_summary`, `get_variant_performance`, `get_variant_performance_v2`). No writes, no trading.
 
 Tools: `get_diagnostic_snapshot`, `get_pipeline_runs`, `get_execution_audit`, `get_eligible_signals`, `get_execution_gap`, `get_trade_state`, `get_variant_state`. Optional args: `window_minutes`, `limit`, `min_confidence`, `symbol`, `run_id`.
 Every response includes `source` (app, project id, backend URL/ref, `read_only: true`, `generated_at`).
