@@ -270,15 +270,6 @@ export function StrategyPanel() {
           disabled={save.isPending}
         />
         <WeightSlider
-          label="Prediction Markets"
-          description="Polymarket directional signal"
-          value={draft.prediction_weight}
-          onChange={(v) =>
-            setDraft({ ...draft, prediction_weight: v, preset_name: "custom" })
-          }
-          disabled={save.isPending}
-        />
-        <WeightSlider
           label="AI Council"
           description="Groq LLM + deterministic fallback"
           value={draft.council_weight}
