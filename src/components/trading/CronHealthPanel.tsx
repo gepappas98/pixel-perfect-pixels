@@ -38,7 +38,7 @@ export function CronHealthPanel() {
   const { data: health, isLoading, error } = useQuery({
     queryKey: ["cron-health"],
     queryFn: () => healthFn(),
-    refetchInterval: 30_000,
+    refetchInterval: 60_000,
     staleTime: 15_000,
   });
 
@@ -172,7 +172,7 @@ export function CronHealthPanel() {
       </div>
 
       <p className="mt-4 border-t border-border/70 pt-3 text-[10px] text-muted-foreground">
-        Refreshes every 30 seconds · canonical stale threshold {staleAfterMinutes}m
+        Refreshes every 60 seconds · canonical stale threshold {staleAfterMinutes}m
       </p>
     </section>
   );
