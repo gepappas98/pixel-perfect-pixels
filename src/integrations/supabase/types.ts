@@ -24,6 +24,7 @@ export type Database = {
           indicator_snapshot_id: string | null
           market_session: string | null
           pattern_key: string | null
+          prediction_snapshot_id: string | null
           reasoning: string | null
           recommendation: string | null
           regime_label: string | null
@@ -40,6 +41,7 @@ export type Database = {
           indicator_snapshot_id?: string | null
           market_session?: string | null
           pattern_key?: string | null
+          prediction_snapshot_id?: string | null
           reasoning?: string | null
           recommendation?: string | null
           regime_label?: string | null
@@ -56,6 +58,7 @@ export type Database = {
           indicator_snapshot_id?: string | null
           market_session?: string | null
           pattern_key?: string | null
+          prediction_snapshot_id?: string | null
           reasoning?: string | null
           recommendation?: string | null
           regime_label?: string | null
@@ -76,6 +79,13 @@ export type Database = {
             columns: ["indicator_snapshot_id"]
             isOneToOne: false
             referencedRelation: "indicator_snapshots"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "composite_signals_prediction_snapshot_id_fkey"
+            columns: ["prediction_snapshot_id"]
+            isOneToOne: false
+            referencedRelation: "prediction_snapshots"
             referencedColumns: ["id"]
           },
           {
@@ -346,6 +356,7 @@ export type Database = {
           indicators: number | null
           job_name: string | null
           mode: string | null
+          predictions: number | null
           result: Json | null
           signals: number | null
           started_at: string
@@ -366,6 +377,7 @@ export type Database = {
           indicators?: number | null
           job_name?: string | null
           mode?: string | null
+          predictions?: number | null
           result?: Json | null
           signals?: number | null
           started_at?: string
@@ -386,6 +398,7 @@ export type Database = {
           indicators?: number | null
           job_name?: string | null
           mode?: string | null
+          predictions?: number | null
           result?: Json | null
           signals?: number | null
           started_at?: string
@@ -414,6 +427,45 @@ export type Database = {
           id?: number
           interval_minutes?: number
           updated_at?: string
+        }
+        Relationships: []
+      }
+      prediction_snapshots: {
+        Row: {
+          created_at: string
+          id: string
+          market_slug: string
+          no_price: number | null
+          question: string | null
+          raw: Json | null
+          related_symbol: string | null
+          updated_at: string
+          volume_24h: number | null
+          yes_price: number | null
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          market_slug: string
+          no_price?: number | null
+          question?: string | null
+          raw?: Json | null
+          related_symbol?: string | null
+          updated_at?: string
+          volume_24h?: number | null
+          yes_price?: number | null
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          market_slug?: string
+          no_price?: number | null
+          question?: string | null
+          raw?: Json | null
+          related_symbol?: string | null
+          updated_at?: string
+          volume_24h?: number | null
+          yes_price?: number | null
         }
         Relationships: []
       }
@@ -683,6 +735,7 @@ export type Database = {
           id: number
           last_auto_reasoning: string | null
           last_auto_switch_at: string | null
+          prediction_weight: number
           preset_name: string
           technicals_weight: number
           updated_at: string
@@ -695,6 +748,7 @@ export type Database = {
           id?: number
           last_auto_reasoning?: string | null
           last_auto_switch_at?: string | null
+          prediction_weight?: number
           preset_name?: string
           technicals_weight?: number
           updated_at?: string
@@ -707,6 +761,7 @@ export type Database = {
           id?: number
           last_auto_reasoning?: string | null
           last_auto_switch_at?: string | null
+          prediction_weight?: number
           preset_name?: string
           technicals_weight?: number
           updated_at?: string
@@ -995,6 +1050,7 @@ export type Database = {
           deleted_council_signals: number
           deleted_indicator_snapshots: number
           deleted_pipeline_runs: number
+          deleted_prediction_snapshots: number
           deleted_trade_alerts: number
           deleted_variant_signals: number
           deleted_whale_alerts: number
