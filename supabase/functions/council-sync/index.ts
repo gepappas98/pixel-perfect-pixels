@@ -368,13 +368,15 @@ Deno.serve(async (req) => {
   try {
     // Cool down from the latest persisted native council attempt, not only
     // successful ai-batch rows. Fallback rows also represent an attempted batch.
-    const { data: latestAttempt } = await db
+    const { data: latestAttempt, error: latestAttemptError } = await db
       .from("council_signals")
       .select("synced_at,source_id")
       .like("source_id", "tcc-native%")
       .order("synced_at", { ascending: false })
       .limit(1)
       .maybeSingle();
+    // Fail closed: a database read error must not silently disable cooldown.
+    if (latestAttemptError) throw latestAttemptError;
 
     const latestAttemptAt = latestAttempt?.synced_at
       ? new Date(latestAttempt.synced_at).getTime()
