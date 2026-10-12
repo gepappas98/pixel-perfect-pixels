@@ -16,7 +16,9 @@ function isServiceRoleJwt(token: string): boolean {
   const parts = token.split(".");
   if (parts.length !== 3) return false;
   try {
-    const encoded = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const segment = parts[1];
+    if (!segment) return false;
+    const encoded = segment.replace(/-/g, "+").replace(/_/g, "/");
     const padded = encoded + "=".repeat((4 - (encoded.length % 4)) % 4);
     const payload = JSON.parse(atob(padded)) as { role?: unknown };
     return payload.role === "service_role";
@@ -214,17 +216,17 @@ export const Route = createFileRoute("/api/public/ai-council-batch")({
           } => {
             if (!item || typeof item !== "object") return false;
             const row = item as Record<string, unknown>;
-            return typeof row.symbol === "string"
-              && allowedSymbols.has(row.symbol)
-              && (row.verdict === "BUY" || row.verdict === "HOLD" || row.verdict === "AVOID")
-              && typeof row.conviction === "number"
-              && Number.isFinite(row.conviction)
-              && typeof row.reflection === "string";
+            return typeof row["symbol"] === "string"
+              && allowedSymbols.has(row["symbol"])
+              && (row["verdict"] === "BUY" || row["verdict"] === "HOLD" || row["verdict"] === "AVOID")
+              && typeof row["conviction"] === "number"
+              && Number.isFinite(row["conviction"])
+              && typeof row["reflection"] === "string";
           }).map((row) => ({
-            symbol: row.symbol,
-            verdict: row.verdict,
-            conviction: Math.max(0, Math.min(100, row.conviction)),
-            reflection: row.reflection.slice(0, 500),
+            symbol: row["symbol"],
+            verdict: row["verdict"],
+            conviction: Math.max(0, Math.min(100, row["conviction"])),
+            reflection: row["reflection"].slice(0, 500),
           }));
 
           return Response.json({ results, usage: result.usage ?? {} });
