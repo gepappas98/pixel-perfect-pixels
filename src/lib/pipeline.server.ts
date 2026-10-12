@@ -1655,10 +1655,6 @@ export async function collectCouncilSignals(): Promise<number> {
   for (const [k, row] of indicatorByTf) {
     if (!isFreshRow(row, "created_at", INDICATOR_MAX_AGE_MS, freshnessNow)) indicatorByTf.delete(k);
   }
-  for (const [s, row] of latestPrediction) {
-    if (!isFreshRow(row, "created_at", PREDICTION_MAX_AGE_MS, freshnessNow)) latestPrediction.delete(s);
-  }
-
   const freshAiSymbols = new Set(((freshAiRes.data ?? []) as { symbol: string }[]).map((r) => r.symbol));
   const lastAiAt = lastAiRes.data?.source_created_at ? new Date(lastAiRes.data.source_created_at).getTime() : 0;
   const minutesSinceLastAi = lastAiAt > 0 ? (Date.now() - lastAiAt) / 60_000 : Infinity;
@@ -2286,14 +2282,12 @@ export async function combineSignals(): Promise<number> {
   const binSymbols = symbols.map(binanceSymbol);
   const whaleSince = new Date(Date.now() - WHALE_LOOKBACK_HOURS * 60 * 60 * 1000).toISOString();
 
-  const [whalesRes, indicatorsRes, predictionsRes, councilsRes, regimeWhalesRes, regimeIndicatorsRes, regimePredictionsRes, regimeCouncilsRes] = await Promise.all([
+  const [whalesRes, indicatorsRes, councilsRes, regimeWhalesRes, regimeIndicatorsRes, regimeCouncilsRes] = await Promise.all([
     db.from("whale_alerts").select("*").in("symbol", symbols).gte("created_at", whaleSince).order("created_at", { ascending: false }).limit(3000),
     db.from("indicator_snapshots").select("*").in("symbol", binSymbols).order("created_at", { ascending: false }).limit(5000),
-    db.from("prediction_snapshots").select("*").in("related_symbol", symbols).order("created_at", { ascending: false }).limit(1000),
     db.from("council_signals").select("*").in("symbol", symbols).order("source_created_at", { ascending: false }).limit(1000),
     db.from("whale_alerts").select("*").gte("created_at", whaleSince).order("created_at", { ascending: false }).limit(5000),
     db.from("indicator_snapshots").select("*").eq("timeframe", "4h").gte("created_at", new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString()).order("created_at", { ascending: false }).limit(5000),
-    db.from("prediction_snapshots").select("*").gte("created_at", new Date(Date.now() - 30 * 60 * 1000).toISOString()).order("created_at", { ascending: false }).limit(2000),
     db.from("council_signals").select("*").gte("source_created_at", new Date(Date.now() - 30 * 60 * 1000).toISOString()).order("source_created_at", { ascending: false }).limit(5000),
   ]);
 
@@ -2304,8 +2298,6 @@ export async function combineSignals(): Promise<number> {
   const regime = computeRegimeSnapshot({
     whales: (regimeWhalesRes.data ?? []) as Record<string, unknown>[],
     indicators: (regimeIndicatorsRes.data ?? []) as Record<string, unknown>[],
-    predictions: ((regimePredictionsRes.data ?? []) as Record<string, unknown>[]).filter((row) =>
-      isFreshRow(row, "created_at", PREDICTION_MAX_AGE_MS, regimeFreshnessNow)),
     councils: ((regimeCouncilsRes.data ?? []) as Record<string, unknown>[]).filter((row) =>
       isFreshRow(row, "source_created_at", COUNCIL_MAX_AGE_MS, regimeFreshnessNow)),
   });
@@ -2314,7 +2306,6 @@ export async function combineSignals(): Promise<number> {
     `[REGIME] label=${regime.label} score=${regime.score.toFixed(3)} ` +
       `whale_net=${(regime.whaleNet * 100).toFixed(0)}% ` +
       `tech_breadth=${(regime.techBreadth * 100).toFixed(0)}% ` +
-      `pred_consensus=${(regime.predConsensus * 100).toFixed(0)}% ` +
       `council_consensus=${(regime.councilConsensus * 100).toFixed(0)}%`,
   );
 
@@ -2334,12 +2325,6 @@ export async function combineSignals(): Promise<number> {
     if (!indicatorByTf.has(k)) indicatorByTf.set(k, i);
   }
 
-  const latestPrediction = new Map<string, Record<string, unknown>>();
-  for (const p of (predictionsRes.data ?? []) as Record<string, unknown>[]) {
-    const s = p["related_symbol"] as string | undefined;
-    if (s && !latestPrediction.has(s)) latestPrediction.set(s, p);
-  }
-
   const latestCouncil = new Map<string, Record<string, unknown>>();
   for (const c of (councilsRes.data ?? []) as Record<string, unknown>[]) {
     const s = c["symbol"] as string;
@@ -2350,10 +2335,6 @@ export async function combineSignals(): Promise<number> {
   for (const [k, row] of indicatorByTf) {
     if (!isFreshRow(row, "created_at", INDICATOR_MAX_AGE_MS, freshnessNow)) indicatorByTf.delete(k);
   }
-  for (const [s, row] of latestPrediction) {
-    if (!isFreshRow(row, "created_at", PREDICTION_MAX_AGE_MS, freshnessNow)) latestPrediction.delete(s);
-  }
-
   const councilTtlMs = councilMaxAgeMs();
   console.log(`[COUNCIL_TTL] regime=${currentRegimeLabel ?? "unknown"} ttl=${(councilTtlMs / 60_000).toFixed(0)}min`);
   for (const [s, row] of latestCouncil) {
@@ -2392,9 +2373,8 @@ export async function combineSignals(): Promise<number> {
       trend: (indicatorByTf.get(`${binSym}:${TREND_TIMEFRAME}`) ?? null) as Row,
     };
     const mtf = evaluateMultiTimeframe(mtfRaw);
-    const prediction = (latestPrediction.get(symbol) ?? null) as Row;
     const council = (latestCouncil.get(symbol) ?? null) as Row;
-    if (!whale && !mtfRaw.primary && !prediction && !council) continue;
+    if (!whale && !mtfRaw.primary && !council) continue;
 
     // 1. Υπολογισμός 4h Asset Shadow Regime για το συγκεκριμένο asset
     const assetMicroRegime = computeAssetRegime(mtfRaw.primary);
@@ -2422,7 +2402,7 @@ export async function combineSignals(): Promise<number> {
       );
     }
 
-    let result = ruleBased(whale, mtf, prediction, council, weights, {
+    let result = ruleBased(whale, mtf, council, weights, {
       conflictFixEnabled, mtfGateConfig, sessionConfig, symbol,
       hotWhaleAggregate: hotAgg,
       assetRegime: assetMicroRegime.regime as AssetMicroRegime,
@@ -2491,7 +2471,7 @@ export async function combineSignals(): Promise<number> {
     }
 
     if (conflictShadowMode && !conflictFixEnabled) {
-      const shadow = ruleBased(whale, mtf, prediction, council, weights, { conflictFixEnabled: true });
+      const shadow = ruleBased(whale, mtf, council, weights, { conflictFixEnabled: true });
       if (shadow.recommendation !== result.recommendation) {
         shadowConflictBuffer.push({
           symbol,
@@ -2533,7 +2513,7 @@ export async function combineSignals(): Promise<number> {
 
     const mtfPrice = typeof mtfRaw.primary?.["price"] === "number" ? (mtfRaw.primary["price"] as number) : null;
     for (const [presetName, presetWeights] of Object.entries(STRATEGY_PRESETS)) {
-      const altResult = ruleBased(whale, mtf, prediction, council, {
+      const altResult = ruleBased(whale, mtf, council, {
         ...presetWeights,
         updated_at: nowIso,
       }, {
@@ -2614,15 +2594,14 @@ export async function combineSignals(): Promise<number> {
     if (result.recommendation === "watch") {
       const hasWhale = whale?.["direction"] != null;
       const hasTechnical = mtf.direction !== "neutral";
-      const hasPrediction = predictionDirection(prediction) !== "neutral";
       const councilVerdict = String(council?.["final_verdict"] ?? "").toUpperCase();
       const councilConviction = Number(council?.["conviction"] ?? 0);
       const strongAvoid = councilVerdict === "AVOID" && councilConviction >= 60;
-      const signalCount = [hasWhale, hasTechnical, hasPrediction].filter(Boolean).length;
+      const signalCount = [hasWhale, hasTechnical].filter(Boolean).length;
       if (signalCount < 2 && !strongAvoid) continue;
     }
 
-    const fingerprint = signalFingerprint(symbol, whale, mtf, mtfRaw, prediction, council, weights, result);
+    const fingerprint = signalFingerprint(symbol, whale, mtf, mtfRaw, council, weights, result);
     const { data, error } = await db
       .from("composite_signals")
       .upsert(
@@ -2630,7 +2609,6 @@ export async function combineSignals(): Promise<number> {
           symbol,
           whale_alert_id: (whaleRows[0]?.["id"] as string) ?? null,
           indicator_snapshot_id: (mtfRaw.primary?.["id"] as string) ?? null,
-          prediction_snapshot_id: (prediction?.["id"] as string) ?? null,
           council_signal_id: (council?.["id"] as string) ?? null,
           confidence: result.confidence,
           recommendation: result.recommendation,
@@ -4234,10 +4212,6 @@ export async function runFullPipeline() {
       );
     }
 
-    // ─── Predictions ───
-    step = "predictions";
-    const predictions = await collectPredictions();
-
     // ─── Council ───
     step = "council";
     const council = await collectCouncilSignals();
@@ -4330,7 +4304,7 @@ export async function runFullPipeline() {
       completed_at: completedAt.toISOString(),
       duration_ms: completedAt.getTime() - startedAt.getTime(),
       status: finalStatus,
-      whales, indicators, predictions, council, signals, trades,
+      whales, indicators, council, signals, trades,
       variants_resolved: resolvedVariants,
       mode,
       error_message: errorMessage,
@@ -4389,7 +4363,7 @@ export async function runFullPipeline() {
       }
     }
     return {
-      whales, indicators, predictions, council, signals, trades, mode,
+      whales, indicators, council, signals, trades, mode,
       degraded: health.degraded,
       degraded_reasons: health.degradedReasons,
       ...(persistenceError ? { persistence_error: persistenceError } : {}),
