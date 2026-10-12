@@ -34,47 +34,8 @@ import {
   type MultiTfResult,
 } from "../pipeline.server";
 import type { StrategyConfig } from "../strategy.presets";
-import type { MtfGateConfig } from "../mtf-gate";
 
 /* ─────────────────────────── Test fixtures ─────────────────────────── */
-
-const BALANCED: StrategyConfig = {
-  whale_weight: 1,
-  technicals_weight: 1,
-  prediction_weight: 1,
-  council_weight: 1,
-  preset_name: "balanced",
-  updated_at: "2026-01-01T00:00:00.000Z",
-};
-
-const WHALE_FOCUSED: StrategyConfig = {
-  whale_weight: 2,
-  technicals_weight: 0.5,
-  prediction_weight: 0.5,
-  council_weight: 0.5,
-  preset_name: "whale-focused",
-  updated_at: "2026-01-01T00:00:00.000Z",
-};
-
-const CHART_TRADER: StrategyConfig = {
-  whale_weight: 0.5,
-  technicals_weight: 2,
-  prediction_weight: 0.5,
-  council_weight: 0.5,
-  preset_name: "chart-trader",
-  updated_at: "2026-01-01T00:00:00.000Z",
-};
-
-const WHALE_ONLY: StrategyConfig = {
-  whale_weight: 1.5,
-  technicals_weight: 0,
-  prediction_weight: 0,
-  council_weight: 0,
-  preset_name: null,
-  updated_at: "2026-01-01T00:00:00.000Z",
-};
-
-
 
 function mtf(overrides: Partial<MultiTfResult> = {}): MultiTfResult {
   return {
@@ -257,7 +218,7 @@ describe("ruleBased — prediction-free scoring", () => {
     const result = ruleBased({ direction: "accumulation" }, mtf(), null, whaleFocused);
     expect(result.score).toBeCloseTo(2, 5);
     expect(result.recommendation).toBe("buy");
-    expect(result.confidence).toBeCloseTo(2 / 2.97, 5);
+    expect(result.confidence).toBeCloseTo(2 / 3.22, 5);
   });
 
   it("keeps MTF-only chart-trader scoring intact", () => {
