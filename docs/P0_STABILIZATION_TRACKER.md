@@ -556,3 +556,15 @@ Constraints:
 - Updated the dashboard copy to distinguish paper auto-close from live exchange safety.
 - Commits: watchdog `c26c47446386f3b93ff17bad2adf7220f517eea7`; UI copy `ec89e451d4db8ea8a8bedc370fba1026bcdc3b5e`.
 - **Supabase deployment completed:** `trade-position-watchdog` is active at version 2 (`verify_jwt=false`, matching the existing cron invocation pattern). Post-deploy runtime verification is still pending: confirm a new log includes `auto_close_paper=true`, healthy heartbeat, and accurate `closed`/error counts. This reduces missed brief crossings to the watchdog's sampling interval; it cannot guarantee an intrabar fill at the exact stop price.
+
+
+## 2026-10-12 — Council Lessons post-mortem wiring (DEPLOYED / VERIFY)
+
+- Added a secured Lovable server route at `/api/public/council-lessons-batch`; it uses the existing Lovable-side `GROQ_API_KEY`, accepts at most five closed-trade records per batch, and returns evidence-grounded lessons keyed to source trade IDs.
+- Added canonical Supabase Edge Function `council-lessons` (version 1, ACTIVE). It reads closed paper BUY trades with `post_mortem_generated=false`, includes available original signal context, inserts lessons into `council_lessons`, then flags only successfully processed trades.
+- Added `council-lessons` after `trade-executor` in the canonical orchestrator. This is post-trade research only; its provider failure is non-blocking and must not fail market-data or paper-execution stages.
+- GitHub commits: bridge route `4beef735508409d8a03f841895158239e49a7c23`; Edge Function `216face8b6bd6480cafcdaac0479ea1189b116f4`; initial orchestrator stage `daf36cc4466fa5070417009690165ce83f11264a`; non-blocking behavior `2dd714593248d9433ae2d95c2499f942088e588b`.
+- Supabase deployment: `council-lessons` v1 ACTIVE; `trading-pipeline-orchestrator` v14 ACTIVE. Both use the canonical project `yckewtpfttvwiptmmrfq`.
+- Lovable production publish was initiated; deployment response returned `pending`. The published bridge route and first scheduled runtime result are **not yet verified**.
+- Last confirmed DB snapshot before the first new stage run: 0 lessons, 4 closed paper BUY trades, 4 awaiting post-mortem. Do not manually mark these as processed or create synthetic lessons.
+- No trade rows were reset, deleted, or manually closed. No strategy weights, signal thresholds, or live execution behavior changed.
