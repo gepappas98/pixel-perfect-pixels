@@ -4,7 +4,6 @@ import { computeRegimeSnapshot } from "../regime-snapshot";
 const neutralInputs = {
   whales: [],
   indicators: [],
-  predictions: [],
 };
 
 describe("computeRegimeSnapshot — AI Council consensus", () => {
@@ -18,7 +17,7 @@ describe("computeRegimeSnapshot — AI Council consensus", () => {
     const result = computeRegimeSnapshot({ ...neutralInputs, councils });
 
     expect(result.councilConsensus).toBeCloseTo(4 / 17, 8);
-    expect(result.score).toBeCloseTo((4 / 17) * 0.1, 8);
+    expect(result.score).toBeCloseTo((4 / 17) * 0.125, 8);
   });
 
   it("keeps a fully directional 4 BUY / 0 SELL council at +100%", () => {
