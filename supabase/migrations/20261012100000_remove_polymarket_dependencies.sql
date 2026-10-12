@@ -336,8 +336,10 @@ ALTER TABLE public.composite_signals
   DROP COLUMN IF EXISTS prediction_snapshot_id;
 ALTER TABLE public.strategy_config
   DROP COLUMN IF EXISTS prediction_weight;
--- Keep strategy_shadow_diagnostics.prediction_weight temporarily for compatibility with an already-deployed Edge Function.
--- Drop it in a follow-up migration after the new signal-combiner has been deployed.
+-- Keep this column temporarily for compatibility with an already-deployed Edge Function.
+-- The new function no longer writes it; default 0 allows safe rollout before a follow-up DROP COLUMN.
+ALTER TABLE public.strategy_shadow_diagnostics
+  ALTER COLUMN prediction_weight SET DEFAULT 0;
 ALTER TABLE public.pipeline_runs
   DROP COLUMN IF EXISTS predictions;
 ALTER TABLE public.whale_flow_transition_context
