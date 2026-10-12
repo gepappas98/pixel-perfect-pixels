@@ -88,6 +88,9 @@ export interface Trade {
   closed_at?: string | null;
   close_reason?: string | null;
   exit_price?: number | null;
+  entry_source?: "standard" | "early_entry_regime" | "live_exchange" | string;
+  entry_metadata?: Record<string, unknown>;
+  source_tags?: string[];
 }
 
 export interface TradeAlert {
