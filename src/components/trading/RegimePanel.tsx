@@ -268,11 +268,6 @@ export function RegimePanel() {
           detail={`${regime.technicals.bullish} bull · ${regime.technicals.bearish} bear · ${regime.technicals.neutral} neu`}
         />
         <SubSignal
-          label="Predictions"
-          value={regime.predictions.consensus}
-          detail={`${regime.predictions.sample_size} near-term · ${regime.predictions.excluded_long_horizon} long-horizon informational`}
-        />
-        <SubSignal
           label="AI Council"
           value={regime.council.consensus}
           detail={`${regime.council.buy} buy · ${regime.council.sell} sell · ${regime.council.hold} hold · ${regime.council.avoid} avoid`}
