@@ -49,8 +49,19 @@ Deno.serve(async (req) => {
     // Require the actual transition: previous market regime was bearish/sideways,
     // while the current canonical regime has turned bullish. No price confirmation gate.
     const body = await req.json().catch(() => ({}));
-    const regime = String(body.market_regime ?? "unknown").toLowerCase();
-    const score = Number.isFinite(Number(body.market_regime_score)) ? Number(body.market_regime_score) : null;
+    // Prefer the canonical regime already stamped on recent composite signals.
+    // Request-body values are only a fallback for explicitly supplied diagnostics.
+    const { data: regimeRows, error: regimeError } = await db.from("composite_signals")
+      .select("regime_label,created_at")
+      .not("regime_label", "is", null)
+      .gte("created_at", since1h)
+      .order("created_at", { ascending: false })
+      .limit(100);
+    if (regimeError) throw regimeError;
+    const canonicalRegime = (regimeRows ?? []).find((row) => row.regime_label)?.regime_label;
+    const regime = String(canonicalRegime ?? body.market_regime ?? "unknown").toLowerCase();
+    const suppliedScore = Number(body.market_regime_score);
+    const score = Number.isFinite(suppliedScore) ? suppliedScore : null;
     const breadthImproving = !!previous
       && breadth.bullish > Number(previous.technicals_1h_bullish ?? 0)
       && breadth.bearish < Number(previous.technicals_1h_bearish ?? 0);
