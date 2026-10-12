@@ -192,7 +192,7 @@ Deno.serve(async (req) => {
       },
     }).eq("id", id);
 
-    if (!stage.ok) {
+    if (!stage.ok && name !== "council-lessons") {
       await db.from("pipeline_runs").update({
         status: "error",
         completed_at: new Date().toISOString(),
