@@ -17,7 +17,6 @@ const RESET_TABLES = [
   "council_signals",
   "whale_alerts",
   "indicator_snapshots",
-  "prediction_snapshots",
   "pipeline_runs",
 ] as const;
 

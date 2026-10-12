@@ -4,7 +4,6 @@ const URL = Deno.env.get("SUPABASE_URL")!;
 const STAGES: any[] = [
   ["whale-watch", 90000],
   ["tradingview-signals", 120000],
-  ["polymarket-check", 90000],
   ["council-sync", 90000],
   ["strategy-auto-switch", 60000],
   ["signal-combiner", 180000],
@@ -26,8 +25,6 @@ function countBy(items: any[], key: string): Record<string, number> {
  * Keep the complete stage responses in the HTTP response for callers, but do
  * not duplicate large raw payloads in every pipeline_runs JSONB update.
  * whale_alerts.raw is the canonical record for deduplicated whale trades.
- * Polymarket snapshots are intentionally kept in pipeline_runs because
- * prediction_snapshots is upserted by market_slug and only keeps the latest value.
  */
 function compactStageForStorage(stage: any): any {
   const result = stage?.result;
@@ -55,10 +52,6 @@ function compactStageForStorage(stage: any): any {
       },
     };
   }
-
-  // Do not compact polymarket-check snapshots: prediction_snapshots is upserted
-  // by market_slug and does not preserve prior point-in-time prices. The
-  // pipeline_runs payload is currently the only historical series for replay.
 
   return stage;
 }

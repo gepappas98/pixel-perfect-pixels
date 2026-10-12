@@ -25,7 +25,6 @@ const SYMBOL_MAP: Record<string, string> = {
 
 const TIMEFRAMES = ["4h", "1h", "1d"] as const;
 const INDICATOR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
-const PREDICTION_MAX_AGE_MS = 30 * 60 * 1000;
 const COUNCIL_MAX_AGE_MS = 30 * 60 * 1000;
 const COUNCIL_MAX_AGE_MS_TRENDING = 20 * 60 * 1000;
 const COUNCIL_MAX_AGE_MS_CALM = 45 * 60 * 1000;
@@ -51,16 +50,15 @@ interface MtfGateConfig {
   min_timeframes: number;
 }
 
-const VARIANT_PRESETS: Record<string, { whale: number; technicals: number; prediction: number; council: number }> = {
-  balanced: { whale: 1, technicals: 1, prediction: 1, council: 1 },
-  "whale-focused": { whale: 2, technicals: 0.5, prediction: 0.5, council: 0.5 },
-  "chart-trader": { whale: 0.5, technicals: 2, prediction: 0.5, council: 0.5 },
-  "sentiment-first": { whale: 0.5, technicals: 0.5, prediction: 2, council: 0.5 },
-  "ai-driven": { whale: 0.5, technicals: 0.5, prediction: 0.5, council: 2 },
-  conservative: { whale: 1.2, technicals: 1.2, prediction: 1.2, council: 1.2 },
-  "volatility-timing": { whale: 0.3, technicals: 2.2, prediction: 0.5, council: 1 },
-  "vwap-momentum": { whale: 0.5, technicals: 2.2, prediction: 0.5, council: 0.8 },
-  "smc-reversal": { whale: 0.4, technicals: 2.5, prediction: 0.4, council: 0.8 },
+const VARIANT_PRESETS: Record<string, { whale: number; technicals: number; council: number }> = {
+  balanced: { whale: 1, technicals: 1, council: 1 },
+  "whale-focused": { whale: 2, technicals: 0.5, council: 0.5 },
+  "chart-trader": { whale: 0.5, technicals: 2, council: 0.5 },
+  "ai-driven": { whale: 0.5, technicals: 0.5, council: 2 },
+  conservative: { whale: 1.2, technicals: 1.2, council: 1.2 },
+  "volatility-timing": { whale: 0.3, technicals: 2.2, council: 1 },
+  "vwap-momentum": { whale: 0.5, technicals: 2.2, council: 0.8 },
+  "smc-reversal": { whale: 0.4, technicals: 2.5, council: 0.8 },
 };
 
 const DEFAULT_MTF_GATE: MtfGateConfig = {
@@ -72,7 +70,6 @@ const DEFAULT_MTF_GATE: MtfGateConfig = {
 type StrategyWeights = {
   whale: number;
   technicals: number;
-  prediction: number;
   council: number;
 };
 
@@ -84,7 +81,7 @@ type StrategySnapshot = StrategyWeights & {
 async function loadStrategySnapshot(supabase: ReturnType<typeof getServiceClient>): Promise<StrategySnapshot | null> {
   const { data, error } = await supabase
     .from("strategy_config")
-    .select("whale_weight,technicals_weight,prediction_weight,council_weight,preset_name,updated_at")
+    .select("whale_weight,technicals_weight,council_weight,preset_name,updated_at")
     .eq("id", 1)
     .maybeSingle();
 
@@ -96,37 +93,10 @@ async function loadStrategySnapshot(supabase: ReturnType<typeof getServiceClient
   return {
     whale: Number(data.whale_weight),
     technicals: Number(data.technicals_weight),
-    prediction: Number(data.prediction_weight),
     council: Number(data.council_weight),
     preset_name: data.preset_name ?? null,
     updated_at: data.updated_at ?? null,
   };
-}
-
-function predictionDirectionForShadow(prediction: any | null): "bullish" | "bearish" | "neutral" {
-  const yes = Number(prediction?.yes_price);
-  if (!Number.isFinite(yes)) return "neutral";
-  const q = String(prediction?.question ?? "").toLowerCase();
-  const bullish = /\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\b/i.test(q);
-  const bearish = /\b(dip|drop|fall|below|crash|down to|under|bottom)\b/i.test(q);
-  if (!bullish && !bearish) return "neutral";
-  const up = bullish ? yes : 1 - yes;
-  if (up > 0.6) return "bullish";
-  if (up < 0.4) return "bearish";
-  return "neutral";
-}
-
-function predictionMagnitudeForShadow(prediction: any | null): number {
-  const yes = Number(prediction?.yes_price);
-  if (!Number.isFinite(yes)) return 0;
-  const q = String(prediction?.question ?? "").toLowerCase();
-  const bullish = /\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\b/i.test(q);
-  const bearish = /\b(dip|drop|fall|below|crash|down to|under|bottom)\b/i.test(q);
-  if (!bullish && !bearish) return 0;
-  const up = bullish ? yes : 1 - yes;
-  const distance = Math.abs(up - 0.5) * 2;
-  if (distance < 0.2) return 0;
-  return Math.min(1, (distance - 0.2) / 0.8);
 }
 
 /**
@@ -136,10 +106,8 @@ function predictionMagnitudeForShadow(prediction: any | null): number {
  * dimensions available in the canonical Edge combiner:
  * - strategy_config weights are authoritative inputs
  * - MTF score × technical weight
- * - prediction direction + magnitude
  * - council conviction × 0.75 × council weight
  * - historical ±2.2 / 0.5 classification
- * - hard whale/prediction conflict => HOLD
  *
  * It is diagnostic-only for now. The live composite recommendation remains
  * unchanged until parity is verified.
@@ -147,7 +115,6 @@ function predictionMagnitudeForShadow(prediction: any | null): number {
 function calculateConfiguredShadow(
   whale: any | null,
   mtf: ReturnType<typeof classifyMtf> | null,
-  prediction: any | null,
   council: any | null,
   weights: StrategyWeights,
 ) {
@@ -156,8 +123,8 @@ function calculateConfiguredShadow(
   // reaches this helper. Treat a missing MTF context as fully neutral.
   const safeMtf = mtf ?? classifyMtf([]);
   let score = 0;
-  let hardConflict = false;
-  const components = { whale: 0, technicals: 0, prediction: 0, council: 0 };
+  const hardConflict = false;
+  const components = { whale: 0, technicals: 0, council: 0 };
 
   if (whale?.direction === "accumulation") { components.whale = weights.whale; score += components.whale; }
   else if (whale?.direction === "distribution") { components.whale = -weights.whale; score += components.whale; }
@@ -175,11 +142,6 @@ function calculateConfiguredShadow(
     score += components.technicals;
   }
 
-  const predDir = predictionDirectionForShadow(prediction);
-  const predictionContribution = 0.5 * weights.prediction * predictionMagnitudeForShadow(prediction);
-  if (predDir === "bullish") { components.prediction = predictionContribution; score += predictionContribution; }
-  else if (predDir === "bearish") { components.prediction = -predictionContribution; score += components.prediction; }
-
   if (council?.final_verdict) {
     const convictionRaw = Number(council.conviction);
     const conviction = Number.isFinite(convictionRaw) ? Math.max(0, Math.min(100, convictionRaw)) : 50;
@@ -190,9 +152,6 @@ function calculateConfiguredShadow(
   }
 
   const whaleDir = whale?.direction === "accumulation" ? 1 : whale?.direction === "distribution" ? -1 : 0;
-  const predSign = predDir === "bullish" ? 1 : predDir === "bearish" ? -1 : 0;
-  const techSign = safeMtf.p === "bullish" ? 1 : safeMtf.p === "bearish" ? -1 : 0;
-  hardConflict = whaleDir !== 0 && predSign !== 0 && whaleDir !== predSign && techSign === 0;
 
   let recommendation: "buy" | "sell" | "hold" | "watch" = "hold";
   if (hardConflict) recommendation = "hold";
@@ -201,7 +160,7 @@ function calculateConfiguredShadow(
   else if (Math.abs(score) < 0.5) recommendation = "hold";
   else recommendation = "watch";
 
-  const max = weights.whale + weights.technicals * 1.69 + weights.prediction * 0.5 + weights.council * 0.75;
+  const max = weights.whale + weights.technicals * 1.69 + weights.council * 0.75;
   const confidence = max > 0 ? Math.min(1, Math.abs(score) / max) : 0;
   return {
     score,
@@ -286,7 +245,6 @@ function classifyMtf(rows: Record<string, any>[]) {
 function classifyProductionRegime(input: {
   whales: any[];
   indicators: any[];
-  predictions: any[];
   councils: any[];
 }): string {
   let buyUsd=0, sellUsd=0;
@@ -303,17 +261,6 @@ function classifyProductionRegime(input: {
     if(i?.signal==="bullish") tb++; else if(i?.signal==="bearish") tr++; else tn++;
   }
   const techBreadth=(tb+tr+tn)>0?(tb-tr)/(tb+tr+tn):0;
-  const seenPred=new Set<string>(); let pb=0,pr=0,pn=0;
-  for(const p of input.predictions){
-    const slug=String(p?.market_slug); if(seenPred.has(slug)) continue; seenPred.add(slug);
-    const yes=Number(p?.yes_price); if(!Number.isFinite(yes)){pn++;continue;}
-    const q=String(p?.question??"").toLowerCase();
-    const bullish=/\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\b/i.test(q);
-    const bearish=/\b(dip|drop|fall|below|crash|down to|under|bottom)\b/i.test(q);
-    if(!bullish&&!bearish){pn++;continue;}
-    const up=bullish?yes:1-yes; if(up>0.6) pb++; else if(up<0.4) pr++; else pn++;
-  }
-  const predConsensus=(pb+pr+pn)>0?(pb-pr)/(pb+pr+pn):0;
   const seenCouncil=new Set<string>(); let cb=0,cs=0;
   for(const x of input.councils){
     const s=String(x?.symbol); if(seenCouncil.has(s)) continue; seenCouncil.add(s);
@@ -321,7 +268,7 @@ function classifyProductionRegime(input: {
     if(v==="BUY") cb++; else if(v==="SELL") cs++;
   }
   const councilConsensus=seenCouncil.size>0?(cb-cs)/seenCouncil.size:0;
-  const score=whaleNet*0.3+techBreadth*0.4+predConsensus*0.2+councilConsensus*0.1;
+  const score=whaleNet*0.375+techBreadth*0.5+councilConsensus*0.125;
   if(score>=0.5) return "strong_bull";
   if(score>=0.15) return "bull";
   if(score<=-0.5) return "strong_bear";
@@ -340,9 +287,8 @@ function productionSession(): string {
 function calculateVariant(
   whale: any | null,
   mtf: ReturnType<typeof classifyMtf>,
-  prediction: any | null,
   council: any | null,
-  weights: { whale: number; technicals: number; prediction: number; council: number },
+  weights: { whale: number; technicals: number; council: number },
 ) {
   let score = 0;
   const reasons: string[] = [];
@@ -350,17 +296,13 @@ function calculateVariant(
   if (whale?.direction === "distribution") { score -= weights.whale; reasons.push("whale distribution"); }
   if (mtf.p === "bullish") { score += weights.technicals; reasons.push("bullish technicals"); }
   if (mtf.p === "bearish") { score -= weights.technicals; reasons.push("bearish technicals"); }
-  if (prediction?.yes_price != null) {
-    if (Number(prediction.yes_price) > 0.6) { score += 0.5 * weights.prediction; reasons.push("prediction bullish"); }
-    else if (Number(prediction.yes_price) < 0.4) { score -= 0.5 * weights.prediction; reasons.push("prediction bearish"); }
-  }
   if (council?.final_verdict) {
     const conviction = Number(council.conviction ?? 50) / 100;
     const verdict = String(council.final_verdict).toUpperCase();
     if (verdict === "BUY") { score += conviction * 1.5 * weights.council; reasons.push("council BUY"); }
     else if (verdict === "SELL") { score -= conviction * 1.5 * weights.council; reasons.push("council SELL"); }
   }
-  const max = weights.whale + weights.technicals + 0.5 * weights.prediction + 1.5 * weights.council;
+  const max = weights.whale + weights.technicals + 1.5 * weights.council;
   const confidence = max > 0 ? Math.min(1, Math.abs(score) / max) : 0;
   const recommendation = score >= 2.2 ? "buy" : score <= -2.2 ? "sell" : Math.abs(score) < 0.5 ? "hold" : "watch";
   return { recommendation, confidence, score, reasoning: reasons.length ? reasons.join("; ") : "insufficient signal" };
@@ -415,7 +357,7 @@ function applyMtfGate(
 }
 
 function calculateMtfCounterfactual(
-  result: { score: number; components: { whale: number; technicals: number; prediction: number; council: number } },
+  result: { score: number; components: { whale: number; technicals: number; council: number } },
   mtf: ReturnType<typeof classifyMtf>,
   whale: any | null,
   council: any | null,
@@ -425,19 +367,17 @@ function calculateMtfCounterfactual(
   const councilBuy = String(council?.final_verdict ?? "").toUpperCase() === "BUY"
     && Number(council?.conviction ?? 0) > 0
     && result.components.council > 0;
-  const noHardConflict = !(whalePositive && result.components.prediction < 0 && mtf.p === "neutral");
-  const eligible = rejectedBuy && mtf.bullCount === 1 && result.score >= 2.5 && whalePositive && councilBuy && noHardConflict;
+  const eligible = rejectedBuy && mtf.bullCount === 1 && result.score >= 2.5 && whalePositive && councilBuy;
 
   let reason = "not_eligible";
   if (eligible) {
-    reason = "score>=2.5 + 1/3 bullish MTF + whale accumulation + council BUY + no hard conflict";
+    reason = "score>=2.5 + 1/3 bullish MTF + whale accumulation + council BUY";
   } else if (rejectedBuy) {
     const missing: string[] = [];
     if (mtf.bullCount !== 1) missing.push("exactly 1 bullish timeframe");
     if (result.score < 2.5) missing.push("score>=2.5");
     if (!whalePositive) missing.push("positive whale accumulation");
     if (!councilBuy) missing.push("council BUY");
-    if (!noHardConflict) missing.push("no hard conflict");
     reason = missing.length ? "rejected_by_counterfactual: " + missing.join(", ") : "rejected_by_counterfactual";
   }
 
@@ -447,13 +387,12 @@ function calculateMtfCounterfactual(
 function ruleBasedRecommendation(
   whale: any | null,
   indicator: any | null,
-  prediction: any | null,
   council: any | null,
   weights: StrategyWeights,
-): { recommendation: string; confidence: number; reasoning: string; score: number; components: { whale: number; technicals: number; prediction: number; council: number } } {
+): { recommendation: string; confidence: number; reasoning: string; score: number; components: { whale: number; technicals: number; council: number } } {
   let score = 0;
   const reasons: string[] = [];
-  const components = { whale: 0, technicals: 0, prediction: 0, council: 0 };
+  const components = { whale: 0, technicals: 0, council: 0 };
 
   if (whale?.direction === "accumulation") {
     score += weights.whale;
@@ -477,21 +416,6 @@ function ruleBasedRecommendation(
     reasons.push("bearish technicals (4h)");
   }
 
-  if (prediction?.yes_price != null) {
-    if (Number(prediction.yes_price) > 0.6) {
-      const contribution = 0.5 * weights.prediction;
-      score += contribution;
-      components.prediction = contribution;
-      reasons.push("prediction market leaning yes");
-    }
-    if (Number(prediction.yes_price) < 0.4) {
-      const contribution = 0.5 * weights.prediction;
-      score -= contribution;
-      components.prediction = -contribution;
-      reasons.push("prediction market leaning no");
-    }
-  }
-
   if (council?.final_verdict) {
     const weight = (Number(council.conviction ?? 50) / 100) * 1.5 * weights.council;
     const verdict = String(council.final_verdict).toUpperCase();
@@ -510,7 +434,7 @@ function ruleBasedRecommendation(
     }
   }
 
-  const max = weights.whale + weights.technicals + 0.5 * weights.prediction + 1.5 * weights.council;
+  const max = weights.whale + weights.technicals + 1.5 * weights.council;
   const confidence = max > 0 ? Math.min(1, Math.abs(score) / max) : 0;
   let recommendation: "buy" | "sell" | "hold" | "watch" = "watch";
   if (score >= 1.5) recommendation = "buy";
@@ -549,7 +473,6 @@ Deno.serve(async (req) => {
     const freshnessNow = Date.now();
     const freshnessNowIso = new Date(freshnessNow).toISOString();
     const since = new Date(freshnessNow - WHALE_LOOKBACK_MS).toISOString();
-    const predictionSince = new Date(freshnessNow - PREDICTION_MAX_AGE_MS).toISOString();
     // Regime inputs use the neutral 30-minute council window because the regime
     // itself is derived from those inputs. Per-symbol signals use the resolved regime TTL.
     const regimeCouncilSince = new Date(freshnessNow - COUNCIL_MAX_AGE_MS).toISOString();
@@ -559,15 +482,13 @@ Deno.serve(async (req) => {
       supabase.from("whale_alerts").select("symbol").gte("created_at", since),
     ]);
 
-    const [{ data: regimeWhales }, { data: regimeIndicators }, { data: regimePredictions }, { data: regimeCouncils }] = await Promise.all([
+    const [{ data: regimeWhales }, { data: regimeIndicators }, { data: regimeCouncils }] = await Promise.all([
       supabase.from("whale_alerts").select("symbol,direction,usd_value").gte("created_at", new Date(Date.now()-60*60*1000).toISOString()).limit(3000),
       supabase.from("indicator_snapshots").select("symbol,timeframe,signal,created_at").eq("timeframe","4h").order("created_at",{ascending:false}).limit(1000),
-      supabase.from("prediction_snapshots").select("market_slug,question,yes_price,created_at").gte("created_at", predictionSince).lte("created_at", freshnessNowIso).order("created_at",{ascending:false}).limit(1000),
       supabase.from("council_signals").select("symbol,final_verdict,source_created_at").gte("source_created_at", regimeCouncilSince).lte("source_created_at", freshnessNowIso).order("source_created_at",{ascending:false}).limit(1000),
     ]);
     const productionRegimeLabel = classifyProductionRegime({
       whales: regimeWhales ?? [], indicators: regimeIndicators ?? [],
-      predictions: (regimePredictions ?? []).filter((row: any) => isFreshTimestamp(row?.created_at, PREDICTION_MAX_AGE_MS, freshnessNow)),
       councils: (regimeCouncils ?? []).filter((row: any) => isFreshTimestamp(row?.source_created_at, COUNCIL_MAX_AGE_MS, freshnessNow)),
     });
     const productionMarketSession = productionSession();
@@ -584,41 +505,37 @@ Deno.serve(async (req) => {
     for (const symbol of symbols) {
       const dbSymbol = indicatorSymbol(symbol);
 
-      const [{ data: whales }, { data: indicators }, { data: predictions }, { data: councils }] =
+      const [{ data: whales }, { data: indicators }, { data: councils }] =
         await Promise.all([
           supabase.from("whale_alerts").select("*").eq("symbol", symbol).gte("created_at", since)
             .order("created_at", { ascending: false }).limit(20),
           supabase.from("indicator_snapshots").select("*").eq("symbol", dbSymbol)
             .in("timeframe", [...TIMEFRAMES])
             .order("created_at", { ascending: false }).limit(10),
-          supabase.from("prediction_snapshots").select("*").eq("related_symbol", symbol).gte("created_at", predictionSince).lte("created_at", freshnessNowIso)
-            .order("created_at", { ascending: false }).limit(1),
           supabase.from("council_signals").select("*").eq("symbol", symbol).gte("source_created_at", councilSince).lte("source_created_at", freshnessNowIso)
             .order("source_created_at", { ascending: false }).limit(1),
         ]);
 
       const whaleRows = whales ?? [];
       const whale = whaleRows[0] ?? null;
-      const prediction = predictions?.[0] ?? null;
       const council = councils?.[0] ?? null;
       const mtf = classifyMtf((indicators ?? []) as Record<string, any>[]);
       const indicator = mtf.primary;
 
-      if (!whale && !indicator && !prediction && !council) continue;
+      if (!whale && !indicator && !council) continue;
 
       const productionWeights: StrategyWeights = strategySnapshot ?? {
         whale: 1,
         technicals: 1,
-        prediction: 1,
         council: 1,
         preset_name: null,
         updated_at: null,
       };
-      const result = ruleBasedRecommendation(whale, indicator, prediction, council, productionWeights);
+      const result = ruleBasedRecommendation(whale, indicator, council, productionWeights);
       const gate = applyMtfGate(result.recommendation, mtf, mtfGate);
 
       if (strategySnapshot) {
-        const shadow = calculateConfiguredShadow(whale, mtf, prediction, council, strategySnapshot);
+        const shadow = calculateConfiguredShadow(whale, mtf, council, strategySnapshot);
         const { error: shadowError } = await supabase
           .from("strategy_shadow_diagnostics")
           .insert({
@@ -627,7 +544,6 @@ Deno.serve(async (req) => {
             strategy_updated_at: strategySnapshot.updated_at,
             whale_weight: strategySnapshot.whale,
             technicals_weight: strategySnapshot.technicals,
-            prediction_weight: strategySnapshot.prediction,
             council_weight: strategySnapshot.council,
             current_score: result.score,
             current_recommendation: gate.recommendation,
@@ -660,7 +576,7 @@ Deno.serve(async (req) => {
       const sourceTags = [
         whale ? "whale" : null,
         indicator ? "technicals" : null,
-        prediction ? "prediction" : null,
+
         council ? "council" : null,
         mtf.primary || mtf.fast || mtf.trend ? "mtf" : null,
       ].filter((tag): tag is string => Boolean(tag));
@@ -674,7 +590,7 @@ Deno.serve(async (req) => {
         symbol,
         whale?.id ?? "",
         indicator?.id ?? "",
-        prediction?.id ?? "",
+
         productionRegimeLabel,
         gate.recommendation,
       ].join("|");
@@ -685,7 +601,7 @@ Deno.serve(async (req) => {
       if (variantEntryPrice > 0 && spotTradingSymbols?.has(dbSymbol)) {
         const variantRows = Object.entries(VARIANT_PRESETS)
           .map(([strategy_name, weights]) => {
-            const vr = calculateVariant(whale, mtf, prediction, council, weights);
+            const vr = calculateVariant(whale, mtf, council, weights);
             return {
               strategy_name,
               symbol,
@@ -702,7 +618,7 @@ Deno.serve(async (req) => {
               source_fingerprint: [
                 strategy_name, symbol,
                 indicator?.id ?? "", mtf.fast?.id ?? "", mtf.trend?.id ?? "",
-                prediction?.id ?? "", council?.id ?? ""
+                council?.id ?? ""
               ].join("|"),
             };
           });
@@ -751,7 +667,7 @@ Deno.serve(async (req) => {
           confidence: result.confidence,
           score: result.score,
           reasoning: reasoningParts.join("; "),
-          price_at: Number(indicator?.price ?? 0) > 0 ? Number(indicator.price) : null,
+          price_at: Number(indicator?.price ?? 0) > 0 ? Number(indicator?.price ?? 0) : null,
         },
         technicals: {
           primary: indicator,
@@ -766,12 +682,6 @@ Deno.serve(async (req) => {
           id: whale.id, symbol: whale.symbol, chain: whale.chain,
           direction: whale.direction, usd_value: whale.usd_value,
           source: whale.source, created_at: whale.created_at,
-        } : null,
-        prediction_market: prediction ? {
-          id: prediction.id, market_slug: prediction.market_slug,
-          question: prediction.question, related_symbol: prediction.related_symbol,
-          yes_price: prediction.yes_price, no_price: prediction.no_price,
-          volume_24h: prediction.volume_24h, created_at: prediction.created_at,
         } : null,
         ai_council: council ? {
           id: council.id, symbol: council.symbol, depth: council.depth,
@@ -795,12 +705,11 @@ Deno.serve(async (req) => {
             symbol,
             whale_alert_id: whale?.id ?? null,
             indicator_snapshot_id: indicator?.id ?? null,
-            prediction_snapshot_id: prediction?.id ?? null,
             council_signal_id: council?.id ?? null,
             confidence: result.confidence,
             recommendation: gate.recommendation,
             reasoning: reasoningParts.join("; "),
-            price_at: Number(indicator?.price ?? 0) > 0 ? Number(indicator.price) : null,
+            price_at: Number(indicator?.price ?? 0) > 0 ? Number(indicator?.price ?? 0) : null,
             regime_label: productionRegimeLabel,
             market_session: productionMarketSession,
             source_tags: sourceTags,

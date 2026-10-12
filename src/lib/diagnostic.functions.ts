@@ -40,7 +40,6 @@ export const getWatchDiagnostic = createServerFn({ method: "GET" }).handler(
       created_at: w.created_at,
       has_whale: w.whale_alert_id != null,
       has_indicator: w.indicator_snapshot_id != null,
-      has_prediction: w.prediction_snapshot_id != null,
       has_council: w.council_signal_id != null,
       council_signal_id: w.council_signal_id,
     }));
@@ -48,7 +47,7 @@ export const getWatchDiagnostic = createServerFn({ method: "GET" }).handler(
     const { data: allWatches } = await db
       .from("composite_signals")
       .select(
-        "symbol, whale_alert_id, indicator_snapshot_id, prediction_snapshot_id",
+        "symbol, whale_alert_id, indicator_snapshot_id",
       )
       .eq("recommendation", "watch")
       .in("symbol", targetSymbols)
@@ -61,10 +60,9 @@ export const getWatchDiagnostic = createServerFn({ method: "GET" }).handler(
     for (const w of (allWatches ?? []) as any[]) {
       const count =
         (w.whale_alert_id != null ? 1 : 0) +
-        (w.indicator_snapshot_id != null ? 1 : 0) +
-        (w.prediction_snapshot_id != null ? 1 : 0);
+        (w.indicator_snapshot_id != null ? 1 : 0);
       const entry =
-        sourceMatrix.get(w.symbol) ?? { c0: 0, c1: 0, c2: 0, c3: 0 };
+        sourceMatrix.get(w.symbol) ?? { c0: 0, c1: 0, c2: 0 };
       entry[`c${count}` as "c0"]++;
       sourceMatrix.set(w.symbol, entry);
     }
@@ -197,7 +195,7 @@ export const getShadowConflicts = createServerFn({ method: "GET" }).handler(
       const { data, error } = await supabase
         .from("composite_signals")
         .select(
-          "symbol, recommendation, confidence, reasoning, created_at, whale_alert_id, indicator_snapshot_id, prediction_snapshot_id, council_signal_id",
+          "symbol, recommendation, confidence, reasoning, created_at, whale_alert_id, indicator_snapshot_id, council_signal_id",
         )
         .gte("created_at", since30m)
         .order("created_at", { ascending: false })
@@ -211,7 +209,7 @@ export const getShadowConflicts = createServerFn({ method: "GET" }).handler(
         created_at: r.created_at,
         has_whale: r.whale_alert_id != null,
         has_indicator: r.indicator_snapshot_id != null,
-        has_prediction: r.prediction_snapshot_id != null,
+        
         has_council: r.council_signal_id != null,
       }));
     } catch (e) {

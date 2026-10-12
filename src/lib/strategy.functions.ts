@@ -30,7 +30,6 @@ function rowToConfig(row: Record<string, unknown>): StrategyConfigFull {
   return {
     whale_weight: Number(row["whale_weight"]),
     technicals_weight: Number(row["technicals_weight"]),
-    prediction_weight: Number(row["prediction_weight"]),
     council_weight: Number(row["council_weight"]),
     preset_name: (row["preset_name"] as string | null) ?? null,
     updated_at: String(row["updated_at"]),
@@ -73,7 +72,6 @@ export const updateStrategyConfig = createServerFn({ method: "POST" })
     (data: {
       whale_weight: number;
       technicals_weight: number;
-      prediction_weight: number;
       council_weight: number;
       preset_name: string | null;
       auto_switch_enabled?: boolean;
@@ -87,13 +85,11 @@ export const updateStrategyConfig = createServerFn({ method: "POST" })
       const w = {
         whale_weight: clamp(data.whale_weight),
         technicals_weight: clamp(data.technicals_weight),
-        prediction_weight: clamp(data.prediction_weight),
         council_weight: clamp(data.council_weight),
       };
       if (
         w.whale_weight +
           w.technicals_weight +
-          w.prediction_weight +
           w.council_weight ===
         0
       ) {
@@ -121,7 +117,6 @@ export const updateStrategyConfig = createServerFn({ method: "POST" })
     const update: Record<string, unknown> = {
       whale_weight: data.whale_weight,
       technicals_weight: data.technicals_weight,
-      prediction_weight: data.prediction_weight,
       council_weight: data.council_weight,
       preset_name: data.preset_name,
       updated_at: new Date().toISOString(),
@@ -159,7 +154,6 @@ const SWITCH_SCORE_MARGIN = 1.12;
 interface MarketSnapshot {
   whale: { buy_usd: number; sell_usd: number; net_pct: number; sample: number };
   technicals: { bull: number; bear: number; neu: number; breadth: number };
-  predictions: { bull: number; bear: number; neu: number; consensus: number };
   council: { buy: number; sell: number; hold: number; avoid: number };
   regime_score: number;
 }
@@ -195,7 +189,7 @@ async function gatherSnapshot(): Promise<MarketSnapshot> {
   const sixHoursAgo = new Date(now - 6 * 60 * 60 * 1000).toISOString();
   const thirtyMinAgo = new Date(now - 30 * 60 * 1000).toISOString();
 
-  const [whalesRes, techsRes, predsRes, councilRes] = await Promise.all([
+  const [whalesRes, techsRes, councilRes] = await Promise.all([
     db
       .from("whale_alerts")
       .select("direction, usd_value")
@@ -207,11 +201,6 @@ async function gatherSnapshot(): Promise<MarketSnapshot> {
       .gte("created_at", sixHoursAgo)
       .order("created_at", { ascending: false })
       .limit(5000),
-    db
-      .from("prediction_snapshots")
-      .select("market_slug, question, yes_price")
-      .order("created_at", { ascending: false })
-      .limit(2000),
     db
       .from("council_signals")
       .select("symbol, final_verdict")
@@ -228,20 +217,12 @@ async function gatherSnapshot(): Promise<MarketSnapshot> {
       "[AUTO_SWITCH] technicals query:",
       serializeError(techsRes.error),
     );
-  if (predsRes.error)
-    console.error(
-      "[AUTO_SWITCH] predictions query:",
-      serializeError(predsRes.error),
-    );
   if (councilRes.error)
     console.error(
       "[AUTO_SWITCH] council query:",
       serializeError(councilRes.error),
     );
 
-  console.log(
-    `[AUTO_SWITCH] snapshot rows: whales=${whalesRes.data?.length ?? 0} techs=${techsRes.data?.length ?? 0} preds=${predsRes.data?.length ?? 0} council=${councilRes.data?.length ?? 0}`,
-  );
 
   let buyUsd = 0,
     sellUsd = 0;
@@ -273,40 +254,6 @@ async function gatherSnapshot(): Promise<MarketSnapshot> {
   const totalTech = tBull + tBear + tNeu;
   const techBreadth = totalTech > 0 ? (tBull - tBear) / totalTech : 0;
 
-  const BULL =
-    /\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\b/i;
-  const BEAR = /\b(dip|drop|fall|below|crash|down to|under|bottom)\b/i;
-  const seenPred = new Set<string>();
-  let pBull = 0,
-    pBear = 0,
-    pNeu = 0;
-  for (const p of (predsRes.data ?? []) as {
-    market_slug: string;
-    question: string | null;
-    yes_price: number | null;
-  }[]) {
-    if (seenPred.has(p.market_slug)) continue;
-    seenPred.add(p.market_slug);
-    const yes = Number(p.yes_price);
-    if (!Number.isFinite(yes)) {
-      pNeu++;
-      continue;
-    }
-    const q = String(p.question ?? "").toLowerCase();
-    const isBq = BULL.test(q),
-      isBeq = BEAR.test(q);
-    if (!isBq && !isBeq) {
-      pNeu++;
-      continue;
-    }
-    const up = isBq ? yes : 1 - yes;
-    if (up > 0.6) pBull++;
-    else if (up < 0.4) pBear++;
-    else pNeu++;
-  }
-  const totalPred = pBull + pBear + pNeu;
-  const predConsensus = totalPred > 0 ? (pBull - pBear) / totalPred : 0;
-
   const seenCouncil = new Set<string>();
   let cBuy = 0,
     cSell = 0,
@@ -332,7 +279,6 @@ async function gatherSnapshot(): Promise<MarketSnapshot> {
   const regime_score =
     whaleNet * 0.3 +
     techBreadth * 0.4 +
-    predConsensus * 0.2 +
     councilConsensus * 0.1;
 
   return {
@@ -343,12 +289,6 @@ async function gatherSnapshot(): Promise<MarketSnapshot> {
       sample: (whalesRes.data ?? []).length,
     },
     technicals: { bull: tBull, bear: tBear, neu: tNeu, breadth: techBreadth },
-    predictions: {
-      bull: pBull,
-      bear: pBear,
-      neu: pNeu,
-      consensus: predConsensus,
-    },
     council: { buy: cBuy, sell: cSell, hold: cHold, avoid: cAvoid },
     regime_score,
   };
@@ -543,7 +483,7 @@ async function askGroqForPreset(
     "You are a senior trading strategist choosing the best bot strategy preset.",
     "",
     "You receive TWO sources of information:",
-    "1. CURRENT MARKET SNAPSHOT — whale flow, technicals, prediction markets, council consensus",
+    "1. CURRENT MARKET SNAPSHOT — whale flow, technicals, council consensus",
     "2. HISTORICAL SHADOW PERFORMANCE — last 7 days of hypothetical results per preset",
     "",
     "Decision policy:",
@@ -553,7 +493,7 @@ async function askGroqForPreset(
     "- Strongly prefer presets with positive avg_pnl_pct and trustworthy/adequate sample.",
     "- Avoid presets with clearly negative avg_pnl_pct when resolved >= 8, unless the CURRENT market snapshot strongly favors their thesis.",
     "- When resolved < 12 or trustworthy=false, lean harder on the live market snapshot than on history.",
-    "- When presets are close on expectancy, pick the one that best matches current regime (whale/tech/pred/council).",
+    "- When presets are close on expectancy, pick the one that best matches current regime (whale/tech/council).",
     "",
     "Respond with ONLY a minified JSON object. No markdown. No code fences.",
     'Shape: {"preset":"<name>","reasoning":"<one concise sentence that references BOTH regime AND performance>"}',
@@ -572,10 +512,6 @@ async function askGroqForPreset(
       tech_bear: snapshot.technicals.bear,
       tech_neutral: snapshot.technicals.neu,
       tech_breadth_pct: Math.round(snapshot.technicals.breadth * 100),
-      pred_bull: snapshot.predictions.bull,
-      pred_bear: snapshot.predictions.bear,
-      pred_neutral: snapshot.predictions.neu,
-      pred_consensus_pct: Math.round(snapshot.predictions.consensus * 100),
       council_buy: snapshot.council.buy,
       council_sell: snapshot.council.sell,
       council_hold: snapshot.council.hold,
@@ -758,7 +694,6 @@ async function applyPreset(
     .update({
       whale_weight: preset.whale_weight,
       technicals_weight: preset.technicals_weight,
-      prediction_weight: preset.prediction_weight,
       council_weight: preset.council_weight,
       preset_name: preset.preset_name ?? "custom",
       last_auto_switch_at: new Date().toISOString(),

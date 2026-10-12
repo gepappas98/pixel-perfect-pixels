@@ -9,12 +9,6 @@
 const CACHE_TTL_MS = 60_000;
 
 export interface CleanupConfig {
-  // ─── Watch conflict (whale vs prediction) ───
-  watch_conflict_fix: {
-    enabled: boolean;
-    shadow_mode: boolean;
-  };
-
   // ─── Regime panel resilient fetch ───
   regime_panel_fix: {
     enabled: boolean;
@@ -58,10 +52,6 @@ export interface CleanupConfig {
 }
 
 export const DEFAULT_CLEANUP_CONFIG: CleanupConfig = {
-  watch_conflict_fix: {
-    enabled: false,
-    shadow_mode: true,
-  },
   regime_panel_fix: {
     enabled: false,
     shadow_mode: true,
@@ -121,10 +111,6 @@ export async function fetchCleanupConfig(): Promise<CleanupConfig> {
     // so that a partially-populated config (e.g. missing a newly added flag)
     // still returns a complete CleanupConfig.
     const config: CleanupConfig = {
-      watch_conflict_fix: {
-        ...DEFAULT_CLEANUP_CONFIG.watch_conflict_fix,
-        ...(stored.watch_conflict_fix ?? {}),
-      },
       regime_panel_fix: {
         ...DEFAULT_CLEANUP_CONFIG.regime_panel_fix,
         ...(stored.regime_panel_fix ?? {}),

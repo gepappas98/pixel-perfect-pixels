@@ -2,7 +2,7 @@
  * Market regime snapshot — pure function, no DB access.
  *
  * Uses the same scoring formula as market-regime.functions.ts:
- *   score = whaleNet × 0.3 + techBreadth × 0.4 + predConsensus × 0.2 + councilConsensus × 0.1
+ *   score = whaleNet × 0.375 + techBreadth × 0.5 + councilConsensus × 0.125
  *
  * The computed label is stored on every signal and trade so we can later
  * answer questions like:
@@ -23,14 +23,8 @@ export interface RegimeSnapshot {
   score: number;
   whaleNet: number;
   techBreadth: number;
-  predConsensus: number;
   councilConsensus: number;
 }
-
-const BULLISH_QUESTION =
-  /\b(reach|hit|above|surpass|exceed|break|all[- ]time high|ath|top)\b/i;
-const BEARISH_QUESTION =
-  /\b(dip|drop|fall|below|crash|down to|under|bottom)\b/i;
 
 export function classifyRegime(score: number): RegimeLabel {
   if (score >= 0.5) return "strong_bull";
@@ -43,7 +37,6 @@ export function classifyRegime(score: number): RegimeLabel {
 export function computeRegimeSnapshot(input: {
   whales: Record<string, unknown>[];
   indicators: Record<string, unknown>[];
-  predictions: Record<string, unknown>[];
   councils: Record<string, unknown>[];
 }): RegimeSnapshot {
   // ── Whale aggregates ──
@@ -74,35 +67,6 @@ export function computeRegimeSnapshot(input: {
   const totalTech = tBull + tBear + tNeu;
   const techBreadth = totalTech > 0 ? (tBull - tBear) / totalTech : 0;
 
-  // ── Predictions (latest per market) ──
-  const seenPred = new Set<string>();
-  let pBull = 0;
-  let pBear = 0;
-  let pNeu = 0;
-  for (const p of input.predictions) {
-    const slug = String(p["market_slug"]);
-    if (seenPred.has(slug)) continue;
-    seenPred.add(slug);
-    const yes = Number(p["yes_price"]);
-    if (!Number.isFinite(yes)) {
-      pNeu++;
-      continue;
-    }
-    const q = String(p["question"] ?? "").toLowerCase();
-    const isBq = BULLISH_QUESTION.test(q);
-    const isBeq = BEARISH_QUESTION.test(q);
-    if (!isBq && !isBeq) {
-      pNeu++;
-      continue;
-    }
-    const up = isBq ? yes : 1 - yes;
-    if (up > 0.6) pBull++;
-    else if (up < 0.4) pBear++;
-    else pNeu++;
-  }
-  const totalPred = pBull + pBear + pNeu;
-  const predConsensus = totalPred > 0 ? (pBull - pBear) / totalPred : 0;
-
   // ── Council (latest per symbol) ──
   const seenCouncil = new Set<string>();
   let cBuy = 0;
@@ -122,18 +86,17 @@ export function computeRegimeSnapshot(input: {
   const councilConsensus =
     totalCouncil > 0 ? (cBuy - cSell) / totalCouncil : 0;
 
+  // Normalize remaining independent sources to preserve a -1..+1 score.
   const score =
-    whaleNet * 0.3 +
-    techBreadth * 0.4 +
-    predConsensus * 0.2 +
-    councilConsensus * 0.1;
+    whaleNet * 0.375 +
+    techBreadth * 0.5 +
+    councilConsensus * 0.125;
 
   return {
     label: classifyRegime(score),
     score,
     whaleNet,
     techBreadth,
-    predConsensus,
     councilConsensus,
   };
 }

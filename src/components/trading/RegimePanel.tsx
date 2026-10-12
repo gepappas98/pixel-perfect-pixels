@@ -167,7 +167,6 @@ export function RegimePanel() {
         data: {
           whale_weight: p.whale_weight,
           technicals_weight: p.technicals_weight,
-          prediction_weight: p.prediction_weight,
           council_weight: p.council_weight,
           preset_name: p.preset_name,
         },
@@ -267,11 +266,6 @@ export function RegimePanel() {
           label="Technicals (4h)"
           value={regime.technicals.breadth}
           detail={`${regime.technicals.bullish} bull · ${regime.technicals.bearish} bear · ${regime.technicals.neutral} neu`}
-        />
-        <SubSignal
-          label="Predictions"
-          value={regime.predictions.consensus}
-          detail={`${regime.predictions.sample_size} near-term · ${regime.predictions.excluded_long_horizon} long-horizon informational`}
         />
         <SubSignal
           label="AI Council"
