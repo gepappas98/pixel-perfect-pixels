@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: Build and tests
+    name: Type-check, build and tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -30,6 +30,9 @@ jobs:
 
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
+
+      - name: TypeScript strict type-check
+        run: bunx tsc --noEmit
 
       - name: Run unit tests
         run: bun run test
