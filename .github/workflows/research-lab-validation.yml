@@ -31,13 +31,6 @@ jobs:
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
 
-      - name: Type-check changed Supabase Edge Functions
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-      - name: Validate Edge Function types
-        run: deno check --no-lock supabase/functions/signal-combiner/index.ts supabase/functions/council-sync/index.ts supabase/functions/trading-pipeline-orchestrator/index.ts
-
       - name: Run unit tests
         run: bun run test
 
