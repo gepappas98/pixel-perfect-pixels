@@ -1022,11 +1022,11 @@ Interpretation rules:
           ? (() => {
               const e = cause as Record<string, unknown>;
               return (
-                (typeof e.message === "string" && e.message) ||
-                (typeof e.error_description === "string" && e.error_description) ||
-                (typeof e.details === "string" && e.details) ||
-                (typeof e.hint === "string" && e.hint) ||
-                (typeof e.code === "string" && e.code) ||
+                (typeof e["message"] === "string" && e["message"]) ||
+                (typeof e["error_description"] === "string" && e["error_description"]) ||
+                (typeof e["details"] === "string" && e["details"]) ||
+                (typeof e["hint"] === "string" && e["hint"]) ||
+                (typeof e["code"] === "string" && e["code"]) ||
                 "Unknown diagnostic error"
               );
             })()
@@ -1103,14 +1103,14 @@ Interpretation rules:
                 {researchAlerts.map((a) => {
                   const e = a.evidence ?? {};
                   const ready = a.alert_type === "WHALE_WAVE_REGIME_DATA_READY";
-                  const total = Number(e.total_usable_waves);
-                  const bear = Number(e.bear_waves);
-                  const sideways = Number(e.sideways_waves);
-                  const bull = Number(e.bull_waves);
-                  const coverage = Number(e.one_hour_price_coverage_pct);
-                  const latency = Number(e.latency_min);
-                  const magnitude = Number(e.whale_delta_pp);
-                  const shock = Number(e.shock_score);
+                  const total = Number(e["total_usable_waves"]);
+                  const bear = Number(e["bear_waves"]);
+                  const sideways = Number(e["sideways_waves"]);
+                  const bull = Number(e["bull_waves"]);
+                  const coverage = Number(e["one_hour_price_coverage_pct"]);
+                  const latency = Number(e["latency_min"]);
+                  const magnitude = Number(e["whale_delta_pp"]);
+                  const shock = Number(e["shock_score"]);
                   return (
                     <div key={a.id} className="rounded border border-amber-300 bg-white/70 p-3">
                       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-amber-950">
