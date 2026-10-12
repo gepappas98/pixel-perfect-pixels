@@ -24,7 +24,6 @@ export type Database = {
           indicator_snapshot_id: string | null
           market_session: string | null
           pattern_key: string | null
-          prediction_snapshot_id: string | null
           reasoning: string | null
           recommendation: string | null
           regime_label: string | null
