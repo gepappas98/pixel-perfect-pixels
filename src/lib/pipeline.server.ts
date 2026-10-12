@@ -493,7 +493,7 @@ async function persistEntryContextSnapshot(
       return Number.isFinite(ts) && ts <= entryMs ? row : null;
     };
     const compositeAtEntry = atEntry(compositeRes.data);
-    const signalEntryContextCandidate = (compositeRes.data as Record<string, any> | null)?["entry_context_snapshot"] ?? null;
+    const signalEntryContextCandidate = (compositeRes.data as Record<string, any> | null)?.["entry_context_snapshot"] ?? null;
     const signalEntryContext = signalEntryContextCandidate
       && atEntry({ created_at: signalEntryContextCandidate.captured_at })
       ? signalEntryContextCandidate
