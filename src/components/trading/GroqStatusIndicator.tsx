@@ -41,7 +41,7 @@ export function GroqStatusIndicator() {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-muted px-2.5 py-1 text-[10px] font-mono text-muted-foreground">
         <Bot className="h-3 w-3" />
-        AI: awaiting
+        AI: no telemetry
       </span>
     );
   }
@@ -66,6 +66,18 @@ export function GroqStatusIndicator() {
       >
         <AlertTriangle className="h-3 w-3" />
         AI: fallback
+      </span>
+    );
+  }
+
+  if (status === "stale") {
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 rounded-full border border-warn/40 bg-warn/10 px-2.5 py-1 text-[10px] font-mono font-semibold text-warn"
+        title={`Last council output: ${timeAgo(data.lastAttemptAt)}. ${data.error ?? "AI telemetry is stale."}`}
+      >
+        <AlertTriangle className="h-3 w-3" />
+        AI: stale
       </span>
     );
   }

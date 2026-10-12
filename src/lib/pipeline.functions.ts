@@ -79,32 +79,63 @@ export const getTradingStatus = createServerFn({ method: "GET" }).handler(
 export const getAiHealthStatus = createServerFn({ method: "GET" }).handler(
   async () => {
     try {
+      // Read the canonical council output itself. pipeline_runs.ai_status is
+      // not populated by council-sync and therefore incorrectly reported
+      // "awaiting" while deterministic fallback rows were being written.
       const { supabase } = await import("@/integrations/supabase/client");
       const { data, error } = await supabase
-        .from("pipeline_runs")
-        .select("ai_status, ai_error, ai_lessons_generated, completed_at, started_at")
-        .not("ai_status", "is", null)
-        .order("started_at", { ascending: false })
-        .limit(10);
+        .from("council_signals")
+        .select("depth, synced_at")
+        .in("depth", ["ai-batch", "ai-synthesis"])
+        .order("synced_at", { ascending: false })
+        .limit(100);
       if (error) throw error;
-      const rows = (data ?? []) as {
-        ai_status: string;
-        ai_error: string | null;
-        ai_lessons_generated: number | null;
-        completed_at: string | null;
-        started_at: string;
-      }[];
+      const rows = (data ?? []) as { depth: string; synced_at: string | null }[];
       if (rows.length === 0) {
-        return { available: true as const, status: "unknown" as const, error: null, lastSuccessAt: null, lessonsGenerated: 0 };
+        return {
+          available: true as const,
+          status: "unknown" as const,
+          error: null,
+          lastSuccessAt: null,
+          lastAttemptAt: null,
+          lessonsGenerated: 0,
+        };
       }
-      const last = rows[0]!;
-      const lastSuccess = rows.find((row) => row.ai_status === "ok");
+      const lastAttempt = rows[0]!;
+      const lastAttemptMs = lastAttempt.synced_at ? new Date(lastAttempt.synced_at).getTime() : 0;
+      // Council batch rows are persisted together. Consider rows synced within
+      // 30 seconds of the newest row part of that batch, including partial AI batches.
+      const latestBatchRows = rows.filter((row) => {
+        const syncedMs = row.synced_at ? new Date(row.synced_at).getTime() : 0;
+        return lastAttemptMs > 0 && syncedMs > 0 && lastAttemptMs - syncedMs <= 30_000;
+      });
+      const batchHasGroq = latestBatchRows.some((row) => row.depth === "ai-batch");
+      const batchHasFallback = latestBatchRows.some((row) => row.depth === "ai-synthesis");
+      const lastSuccess = rows.find((row) => row.depth === "ai-batch");
+      // The pipeline runs every 10 minutes and the longest AI cooldown is 40
+      // minutes. After two cooldown windows without fresh output, do not keep
+      // presenting an old Groq success as current health.
+      const AI_HEALTH_STALE_AFTER_MS = 80 * 60_000;
+      const outputAgeMs = lastAttemptMs > 0 ? Date.now() - lastAttemptMs : Number.POSITIVE_INFINITY;
+      const isStale = outputAgeMs > AI_HEALTH_STALE_AFTER_MS;
+      const status = isStale
+        ? "stale" as const
+        : batchHasGroq && !batchHasFallback
+          ? "ok" as const
+          : "degraded_fallback" as const;
       return {
         available: true as const,
-        status: last.ai_status as "ok" | "degraded_fallback" | "failed",
-        error: last.ai_error,
-        lastSuccessAt: lastSuccess?.completed_at ?? null,
-        lessonsGenerated: last.ai_lessons_generated ?? 0,
+        status,
+        error: status === "stale"
+          ? "No fresh council output within the AI health freshness window."
+          : status === "degraded_fallback"
+            ? batchHasGroq
+              ? "Latest council batch mixed Groq results with deterministic fallback."
+              : "Latest council output used deterministic fallback; Groq did not produce a usable row in that batch."
+            : null,
+        lastSuccessAt: lastSuccess?.synced_at ?? null,
+        lastAttemptAt: lastAttempt.synced_at,
+        lessonsGenerated: rows.filter((row) => row.depth === "ai-batch").length,
       };
     } catch (error) {
       return {
@@ -112,6 +143,7 @@ export const getAiHealthStatus = createServerFn({ method: "GET" }).handler(
         status: "unknown" as const,
         error: error instanceof Error ? error.message : String(error),
         lastSuccessAt: null,
+        lastAttemptAt: null,
         lessonsGenerated: 0,
       };
     }
