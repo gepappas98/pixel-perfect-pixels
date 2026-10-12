@@ -144,7 +144,7 @@ export function PositionWatchdogPanel() {
       )}
 
       <p className="mt-3 text-[10px] text-muted-foreground">
-        Expected check cadence: every minute. A warning escalates to critical after 3 minutes; missing heartbeat for 2.5 minutes is shown as unverified. Alert-only: no position is automatically closed by this watchdog.
+        Expected check cadence: every minute. Paper BUY positions are closed when a configured exit condition is detected; live positions are never closed without a confirmed exchange SELL. A warning escalates to critical after 3 minutes if an exit is due but the position remains open.
       </p>
     </div>
   );
