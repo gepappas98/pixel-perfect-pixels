@@ -9,7 +9,9 @@ function isServiceRoleJwt(token: string): boolean {
   const parts = token.split(".");
   if (parts.length !== 3) return false;
   try {
-    const encoded = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const segment = parts[1];
+    if (!segment) return false;
+    const encoded = segment.replace(/-/g, "+").replace(/_/g, "/");
     const padded = encoded + "=".repeat((4 - encoded.length % 4) % 4);
     return JSON.parse(atob(padded)).role === "service_role";
   } catch { return false; }
