@@ -21,6 +21,6 @@ Only after the new Edge Function is confirmed live, add a separate migration to 
 
 ## Current verification status
 - Code references to Polymarket/prediction-market fields have been removed from the active and legacy TypeScript paths reviewed on the branch.
-- Read-only production inspection found 21 rows in `prediction_snapshots`, 517 composite signals linked through `prediction_snapshot_id`, and 1,454 composite signals whose entry context includes the `prediction_market` key. The cleanup removes only that key and retains the composite signal rows.
+- Read-only production inspection found 21 rows in `prediction_snapshots`, 520 composite signals linked through `prediction_snapshot_id`, and 1,462 composite signals whose entry context includes the `prediction_market` key (520 non-null object contexts, 942 null contexts at the audit snapshot). Counts can change while the live pipeline continues running. The cleanup removes only that key and retains the composite signal rows.
 - No production migration, table drop, data update, merge, or deployment has been executed by this work.
 - A successful build/test run has not yet been obtained; GitHub Actions returned no workflow runs for the inspected commit. The pending Vercel status is not treated as a validation result.
