@@ -12,7 +12,6 @@ import {
 } from "./strategy.presets";
 import { maybeAutoSwitchStrategy } from "./strategy.functions";
 import { fetchCleanupConfig } from "./cleanup-config.server";
-import { detectHardConflict } from "./watch-conflict";
 import { serializeError } from "./error-serialize";
 import { checkMtfGate, type MtfCounts, type MtfGateConfig } from "./mtf-gate";
 import { computeRegimeSnapshot } from "./regime-snapshot";
@@ -1822,7 +1821,6 @@ export function ruleBased(
   whale: Row, mtf: MultiTfResult, council: Row,
   weights: StrategyConfig,
   options?: {
-    conflictFixEnabled?: boolean;
     mtfGateConfig?: MtfGateConfig;
     sessionConfig?: MarketSessionConfig;
     symbol?: string;
@@ -1833,8 +1831,6 @@ export function ruleBased(
   let score = 0;
   const reasons: string[] = [];
   let aiAvoid = false;
-
-  const conflict = detectHardConflict(whale, mtf.direction, "neutral");
 
   const whaleWeight = effectiveWhaleWeight(weights.whale_weight, options?.assetRegime);
   if (whale?.["direction"] === "accumulation") {
@@ -1902,17 +1898,12 @@ export function ruleBased(
   let recommendation: "buy" | "sell" | "hold" | "watch" = "hold";
   let mtfGateDecision: ReturnType<typeof checkMtfGate> | null = null;
 
-  if (conflict.hardConflict && options?.conflictFixEnabled) {
-    recommendation = "hold";
-    reasons.push(`hard conflict (whale=${conflict.whaleDir}, technicals=${mtf.direction}) → hold`);
-  } else {
-    if (score >= buyThreshold) recommendation = "buy";
-    else if (score <= sellThreshold) recommendation = "sell";
-    else if (Math.abs(score) < holdThreshold) recommendation = "hold";
-    else recommendation = "watch";
+  if (score >= buyThreshold) recommendation = "buy";
+  else if (score <= sellThreshold) recommendation = "sell";
+  else if (Math.abs(score) < holdThreshold) recommendation = "hold";
+  else recommendation = "watch";
 
-    if (aiAvoid) recommendation = "watch";
-  }
+  if (aiAvoid) recommendation = "watch";
 
   if (options?.mtfGateConfig && (recommendation === "buy" || recommendation === "sell")) {
     const mtfCounts: MtfCounts = {
@@ -2256,8 +2247,6 @@ export async function combineSignals(): Promise<number> {
   const db = await admin();
   const weights = await fetchStrategy();
   const cleanupCfg = await fetchCleanupConfig();
-  const conflictFixEnabled = cleanupCfg.watch_conflict_fix.enabled;
-  const conflictShadowMode = cleanupCfg.watch_conflict_fix.shadow_mode;
   const mtfGateConfig = cleanupCfg.mtf_confirmation_gate;
   const vwapGate = cleanupCfg.vwap_regime_gate;
   const sessionConfig = cleanupCfg.market_session_fix;
@@ -2344,7 +2333,6 @@ export async function combineSignals(): Promise<number> {
   let created = 0;
   const nowIso = new Date().toISOString();
   const variantRows: Record<string, unknown>[] = [];
-  const shadowConflictBuffer: Record<string, unknown>[] = [];
   const shadowMtfGateBuffer: Record<string, unknown>[] = [];
   const mtfRejectionBuffer: Record<string, unknown>[] = [];
 
@@ -2403,7 +2391,7 @@ export async function combineSignals(): Promise<number> {
     }
 
     let result = ruleBased(whale, mtf, council, weights, {
-      conflictFixEnabled, mtfGateConfig, sessionConfig, symbol,
+      mtfGateConfig, sessionConfig, symbol,
       hotWhaleAggregate: hotAgg,
       assetRegime: assetMicroRegime.regime as AssetMicroRegime,
     });
@@ -2470,20 +2458,6 @@ export async function combineSignals(): Promise<number> {
       });
     }
 
-    if (conflictShadowMode && !conflictFixEnabled) {
-      const shadow = ruleBased(whale, mtf, council, weights, { conflictFixEnabled: true });
-      if (shadow.recommendation !== result.recommendation) {
-        shadowConflictBuffer.push({
-          symbol,
-          current_recommendation: result.recommendation,
-          would_be_recommendation: shadow.recommendation,
-          score: result.score, confidence: result.confidence,
-          reasoning: shadow.reasoning,
-          detected_at: nowIso,
-        });
-      }
-    }
-
     if (
       mtfGateConfig &&
       !mtfGateConfig.enabled &&
@@ -2520,7 +2494,6 @@ export async function combineSignals(): Promise<number> {
         assetRegime: assetMicroRegime.regime as AssetMicroRegime,
         symbol,
         hotWhaleAggregate: hotAgg,
-        conflictFixEnabled,
         mtfGateConfig,
         sessionConfig,
       });
@@ -2634,11 +2607,6 @@ export async function combineSignals(): Promise<number> {
 
   // Shadow V2 observer: isolated from V1 metrics and real/paper execution.
   await runShadowV2Observer(variantRows);
-
-  if (shadowConflictBuffer.length > 0) {
-    const { error: shadowErr } = await db.from("shadow_conflicts" as never).insert(shadowConflictBuffer as never);
-    if (shadowErr) console.error("[SHADOW_CONFLICTS] insert failed:", shadowErr);
-  }
 
   if (shadowMtfGateBuffer.length > 0) {
     const { error: mtfErr } = await db.from("shadow_mtf_gates" as never).insert(shadowMtfGateBuffer as never);
