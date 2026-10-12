@@ -123,7 +123,7 @@ function calculateConfiguredShadow(
   // reaches this helper. Treat a missing MTF context as fully neutral.
   const safeMtf = mtf ?? classifyMtf([]);
   let score = 0;
-  let hardConflict = false;
+  const hardConflict = false;
   const components = { whale: 0, technicals: 0, council: 0 };
 
   if (whale?.direction === "accumulation") { components.whale = weights.whale; score += components.whale; }
@@ -152,8 +152,6 @@ function calculateConfiguredShadow(
   }
 
   const whaleDir = whale?.direction === "accumulation" ? 1 : whale?.direction === "distribution" ? -1 : 0;
-  const techSign = safeMtf.p === "bullish" ? 1 : safeMtf.p === "bearish" ? -1 : 0;
-  hardConflict = false;
 
   let recommendation: "buy" | "sell" | "hold" | "watch" = "hold";
   if (hardConflict) recommendation = "hold";
