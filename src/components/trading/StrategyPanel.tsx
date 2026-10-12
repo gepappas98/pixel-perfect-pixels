@@ -73,7 +73,7 @@ export function StrategyPanel() {
         data: {
           whale_weight: cfg.whale_weight,
           technicals_weight: cfg.technicals_weight,
-          prediction_weight: cfg.prediction_weight,
+          prediction_weight: 0,
           council_weight: cfg.council_weight,
           preset_name: cfg.preset_name,
           auto_switch_enabled: cfg.auto_switch_enabled,
