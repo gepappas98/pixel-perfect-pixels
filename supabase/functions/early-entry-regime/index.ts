@@ -99,7 +99,7 @@ Deno.serve(async (req) => {
             const response = await fetch(`${host}/api/v3/ticker/price`, { signal: AbortSignal.timeout(8000) });
             if (!response.ok) continue;
             const rows = await response.json() as Array<{ symbol: string; price: string }>;
-            prices = new Map(rows.map((row) => [row.symbol, Number(row.price)]).filter((row) => Number.isFinite(row[1]) && row[1] > 0));
+            prices = new Map(rows.map((row) => [row.symbol, Number(row.price)] as const).filter((row) => Number.isFinite(row[1]) && row[1] > 0));
             if (prices.size) break;
           } catch { /* Try the next public Binance Spot endpoint. */ }
         }
