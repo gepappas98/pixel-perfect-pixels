@@ -50,16 +50,61 @@ interface MtfGateConfig {
   min_timeframes: number;
 }
 
-const VARIANT_PRESETS: Record<string, { whale: number; technicals: number; council: number }> = {
-  balanced: { whale: 1, technicals: 1, council: 1 },
-  "whale-focused": { whale: 2, technicals: 0.5, council: 0.5 },
-  "chart-trader": { whale: 0.5, technicals: 2, council: 0.5 },
-  "ai-driven": { whale: 0.5, technicals: 0.5, council: 2 },
-  conservative: { whale: 1.2, technicals: 1.2, council: 1.2 },
-  "volatility-timing": { whale: 0.3, technicals: 2.2, council: 1 },
-  "vwap-momentum": { whale: 0.5, technicals: 2.2, council: 0.8 },
-  "smc-reversal": { whale: 0.4, technicals: 2.5, council: 0.8 },
+interface MarketSentiment {
+  value: number;
+  classification: string;
+  direction: Direction;
+  normalizedScore: number;
+  observedAt: string | null;
+  source: "alternative.me" | "fallback";
+}
+
+const VARIANT_PRESETS: Record<string, { whale: number; technicals: number; sentiment: number; council: number }> = {
+  balanced: { whale: 1, technicals: 1, sentiment: 0, council: 1 },
+  "whale-focused": { whale: 2, technicals: 0.5, sentiment: 0, council: 0.5 },
+  "chart-trader": { whale: 0.5, technicals: 2, sentiment: 0, council: 0.5 },
+  "sentiment-first": { whale: 0.5, technicals: 0.5, sentiment: 2, council: 0.5 },
+  "ai-driven": { whale: 0.5, technicals: 0.5, sentiment: 0, council: 2 },
+  conservative: { whale: 1.2, technicals: 1.2, sentiment: 0, council: 1.2 },
+  "volatility-timing": { whale: 0.3, technicals: 2.2, sentiment: 0, council: 1 },
+  "vwap-momentum": { whale: 0.5, technicals: 2.2, sentiment: 0, council: 0.8 },
+  "smc-reversal": { whale: 0.4, technicals: 2.5, sentiment: 0, council: 0.8 },
 };
+
+async function fetchCryptoMarketSentiment(): Promise<MarketSentiment> {
+  try {
+    const response = await fetch("https://api.alternative.me/fng/?limit=1", {
+      signal: AbortSignal.timeout(5_000),
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) throw new Error(`Fear & Greed HTTP ${response.status}`);
+    const payload = await response.json();
+    const item = payload?.data?.[0];
+    const value = Number(item?.value);
+    if (!Number.isFinite(value) || value < 0 || value > 100) {
+      throw new Error("Fear & Greed response contained an invalid value");
+    }
+    const direction: Direction = value >= 55 ? "bullish" : value <= 45 ? "bearish" : "neutral";
+    return {
+      value,
+      classification: String(item?.value_classification ?? "Unknown"),
+      direction,
+      normalizedScore: (value - 50) / 50,
+      observedAt: item?.timestamp ? new Date(Number(item.timestamp) * 1000).toISOString() : null,
+      source: "alternative.me",
+    };
+  } catch (error) {
+    console.warn("[SENTIMENT_SHADOW] Fear & Greed fetch failed; using neutral fallback:", String(error));
+    return {
+      value: 50,
+      classification: "Neutral (fallback)",
+      direction: "neutral",
+      normalizedScore: 0,
+      observedAt: null,
+      source: "fallback",
+    };
+  }
+}
 
 const DEFAULT_MTF_GATE: MtfGateConfig = {
   enabled: false,
@@ -288,7 +333,8 @@ function calculateVariant(
   whale: any | null,
   mtf: ReturnType<typeof classifyMtf>,
   council: any | null,
-  weights: { whale: number; technicals: number; council: number },
+  sentiment: MarketSentiment,
+  weights: { whale: number; technicals: number; sentiment: number; council: number },
 ) {
   let score = 0;
   const reasons: string[] = [];
@@ -296,13 +342,22 @@ function calculateVariant(
   if (whale?.direction === "distribution") { score -= weights.whale; reasons.push("whale distribution"); }
   if (mtf.p === "bullish") { score += weights.technicals; reasons.push("bullish technicals"); }
   if (mtf.p === "bearish") { score -= weights.technicals; reasons.push("bearish technicals"); }
+
+  // Sentiment is enabled only for the isolated sentiment-first research variant.
+  if (weights.sentiment > 0) {
+    const sentimentScore = sentiment.normalizedScore * weights.sentiment;
+    score += sentimentScore;
+    reasons.push(`Fear & Greed ${sentiment.value}/100 (${sentiment.classification}; ${sentiment.source}; score ${sentimentScore.toFixed(3)})`);
+  }
+
   if (council?.final_verdict) {
-    const conviction = Number(council.conviction ?? 50) / 100;
+    const convictionRaw = Number(council.conviction ?? 50);
+    const conviction = Number.isFinite(convictionRaw) ? Math.max(0, Math.min(100, convictionRaw)) / 100 : 0.5;
     const verdict = String(council.final_verdict).toUpperCase();
     if (verdict === "BUY") { score += conviction * 1.5 * weights.council; reasons.push("council BUY"); }
     else if (verdict === "SELL") { score -= conviction * 1.5 * weights.council; reasons.push("council SELL"); }
   }
-  const max = weights.whale + weights.technicals + 1.5 * weights.council;
+  const max = weights.whale + weights.technicals + weights.sentiment + 1.5 * weights.council;
   const confidence = max > 0 ? Math.min(1, Math.abs(score) / max) : 0;
   const recommendation = score >= 2.2 ? "buy" : score <= -2.2 ? "sell" : Math.abs(score) < 0.5 ? "hold" : "watch";
   return { recommendation, confidence, score, reasoning: reasons.length ? reasons.join("; ") : "insufficient signal" };
@@ -501,6 +556,8 @@ Deno.serve(async (req) => {
     const councilSymbols = [...new Set((councilSymbolRows ?? []).map((r: any) => r.symbol))];
     const whaleSymbols = [...new Set((whaleSymbolRows ?? []).map((r: any) => r.symbol))];
     const symbols = [...new Set([...WATCHLIST, ...councilSymbols, ...whaleSymbols])];
+    // Fetched once per run and consumed only by the isolated strategy-variant research path.
+    const marketSentiment = await fetchCryptoMarketSentiment();
     // Validate once per invocation; composite signals and paper execution are untouched.
     const spotTradingSymbols = await loadBinanceSpotTradingSymbols();
 
@@ -605,7 +662,7 @@ Deno.serve(async (req) => {
       if (variantEntryPrice > 0 && spotTradingSymbols?.has(dbSymbol)) {
         const variantRows = Object.entries(VARIANT_PRESETS)
           .map(([strategy_name, weights]) => {
-            const vr = calculateVariant(whale, mtf, council, weights);
+            const vr = calculateVariant(whale, mtf, council, marketSentiment, weights);
             return {
               strategy_name,
               symbol,
