@@ -102,13 +102,26 @@ export const getAiHealthStatus = createServerFn({ method: "GET" }).handler(
         };
       }
       const lastAttempt = rows[0]!;
+      const lastAttemptMs = lastAttempt.synced_at ? new Date(lastAttempt.synced_at).getTime() : 0;
+      // Council batch rows are persisted together. Consider rows synced within
+      // 30 seconds of the newest row part of that batch, including partial AI batches.
+      const latestBatchRows = rows.filter((row) => {
+        const syncedMs = row.synced_at ? new Date(row.synced_at).getTime() : 0;
+        return lastAttemptMs > 0 && syncedMs > 0 && lastAttemptMs - syncedMs <= 30_000;
+      });
+      const batchHasGroq = latestBatchRows.some((row) => row.depth === "ai-batch");
+      const batchHasFallback = latestBatchRows.some((row) => row.depth === "ai-synthesis");
       const lastSuccess = rows.find((row) => row.depth === "ai-batch");
-      const status = lastAttempt.depth === "ai-batch" ? "ok" as const : "degraded_fallback" as const;
+      const status = batchHasGroq && !batchHasFallback
+        ? "ok" as const
+        : "degraded_fallback" as const;
       return {
         available: true as const,
         status,
         error: status === "degraded_fallback"
-          ? "Latest council output used deterministic fallback; Groq did not produce a usable row in that batch."
+          ? batchHasGroq
+            ? "Latest council batch mixed Groq results with deterministic fallback."
+            : "Latest council output used deterministic fallback; Groq did not produce a usable row in that batch."
           : null,
         lastSuccessAt: lastSuccess?.synced_at ?? null,
         lastAttemptAt: lastAttempt.synced_at,
