@@ -73,6 +73,91 @@ Deno.serve(async (req) => {
     const finalTransition = !!previous && priorWasBearishOrSideways && currentIsBullish
       && breadthImproving && whaleTurningPositive ? "EARLY_ENTRY_ACTIVE" : "STRICT";
 
+    // A transition opens paper research positions on the currently bullish 1h symbols.
+    // This is deliberately separate from composite-signal execution and never submits
+    // exchange orders. The existing trade-executor watchdog manages exits from trades.
+    const activationKey = previous
+      ? `${previous.id}:${regime}:${breadth.bullish}:${breadth.bearish}:${whaleState}`
+      : "";
+    const opened: Array<{ id: string; symbol: string; entry_price: number }> = [];
+    const entryErrors: Array<{ symbol: string; error: string }> = [];
+    if (finalTransition === "EARLY_ENTRY_ACTIVE" && activationKey) {
+      const candidates = [...latest.values()].filter((row) => row.signal === "bullish");
+      const { data: alreadyOpened, error: duplicateError } = await db.from("trades")
+        .select("id,entry_metadata")
+        .eq("entry_source", "early_entry_regime")
+        .eq("mode", "paper")
+        .limit(5000);
+      if (duplicateError) throw duplicateError;
+      const duplicateKeys = new Set((alreadyOpened ?? [])
+        .map((row) => String(row.entry_metadata?.activation_key ?? "")));
+      if (!duplicateKeys.has(activationKey) && candidates.length > 0) {
+        const hosts = ["https://api.binance.com", "https://data-api.binance.vision", "https://api1.binance.com"];
+        let prices = new Map<string, number>();
+        for (const host of hosts) {
+          try {
+            const response = await fetch(`${host}/api/v3/ticker/price`, { signal: AbortSignal.timeout(8000) });
+            if (!response.ok) continue;
+            const rows = await response.json() as Array<{ symbol: string; price: string }>;
+            prices = new Map(rows.map((row) => [row.symbol, Number(row.price)]).filter((row) => Number.isFinite(row[1]) && row[1] > 0));
+            if (prices.size) break;
+          } catch { /* Try the next public Binance Spot endpoint. */ }
+        }
+        for (const candidate of candidates) {
+          const rawSymbol = String(candidate.symbol).replace(/[^A-Z0-9]/gi, "").toUpperCase();
+          const base = rawSymbol.endsWith("USDT") ? rawSymbol.slice(0, -4) : rawSymbol;
+          const mappedBase = base === "MATIC" ? "POL" : base === "RNDR" ? "RENDER" : base;
+          const price = prices.get(`${mappedBase}USDT`);
+          if (!price || !Number.isFinite(price) || price <= 0) {
+            entryErrors.push({ symbol: candidate.symbol, error: "No valid Binance Spot USDT price" });
+            continue;
+          }
+          const notional = 1000;
+          const quantity = notional / price;
+          const entryFee = notional * 0.0005;
+          const { data: trade, error: tradeError } = await db.from("trades").insert({
+            composite_signal_id: null,
+            symbol: base,
+            side: "buy",
+            quantity,
+            entry_price: price,
+            stop_loss: price * 0.97,
+            take_profit: price * 1.06,
+            mode: "paper",
+            status: "open",
+            entry_fee: entryFee,
+            exit_fee: 0,
+            total_fees: entryFee,
+            regime_label: regime,
+            market_session: null,
+            exchange_order_id: null,
+            source_tags: ["paper", "early-entry-regime", "spot-long-only", "research-unbounded"],
+            entry_source: "early_entry_regime",
+            entry_metadata: {
+              activation_key: activationKey,
+              entry_reason: "bearish_or_sideways_to_bullish_regime_transition",
+              market_regime: regime,
+              market_regime_score: score,
+              whale_flow_state: whaleState,
+              whale_net: whaleNet,
+              whale_buy_usd_1h: buyUsd,
+              whale_sell_usd_1h: sellUsd,
+              technicals_1h_bullish: breadth.bullish,
+              technicals_1h_bearish: breadth.bearish,
+              technicals_1h_neutral: breadth.neutral,
+              breadth_baseline_at: previous?.observed_at ?? null,
+              breadth_baseline_bullish: previous?.technicals_1h_bullish ?? null,
+              breadth_baseline_bearish: previous?.technicals_1h_bearish ?? null,
+              price_confirmation_required: false,
+              research_only: true,
+            },
+          }).select("id,symbol,entry_price").single();
+          if (tradeError) entryErrors.push({ symbol: candidate.symbol, error: tradeError.message });
+          else opened.push(trade);
+        }
+      }
+    }
+
     const { error: obsError } = await db.from("early_entry_regime_observations").insert({
       observed_at: now.toISOString(), market_regime: regime, market_regime_score: score,
       whale_flow_state: whaleState, whale_flow_delta_pp: previous ? (whaleNet - Number(previous.details?.whale_net ?? 0)) * 100 : null,
@@ -81,13 +166,21 @@ Deno.serve(async (req) => {
       breadth_baseline_bullish: previous?.technicals_1h_bullish ?? null,
       breadth_baseline_bearish: previous?.technicals_1h_bearish ?? null,
       transition_state: finalTransition,
-      details: { buy_usd: buyUsd, sell_usd: sellUsd, whale_net: whaleNet, breadth_improving: breadthImproving, whale_turning_positive: whaleTurningPositive, prior_regime: priorRegime, current_regime: regime },
+      details: {
+        buy_usd: buyUsd, sell_usd: sellUsd, whale_net: whaleNet,
+        breadth_improving: breadthImproving, whale_turning_positive: whaleTurningPositive,
+        prior_regime: priorRegime, current_regime: regime,
+        early_entry_opened: opened.length, early_entry_errors: entryErrors.length,
+      },
     });
     if (obsError) throw obsError;
 
-    // This function deliberately does not place exchange orders. Position creation is
-    // wired only after the existing trade insertion contract and UI/watchdog are verified.
-    return new Response(JSON.stringify({ status: "observed", transition_state: finalTransition, breadth, whale_state: whaleState, note: "No trade opened by this observation endpoint." }), {
+    return new Response(JSON.stringify({
+      status: entryErrors.length ? "partial" : "observed",
+      transition_state: finalTransition, breadth, whale_state: whaleState,
+      opened_count: opened.length, opened, entry_errors: entryErrors,
+      live_orders_submitted: 0,
+    }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
