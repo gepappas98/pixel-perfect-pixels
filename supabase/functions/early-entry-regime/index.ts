@@ -70,7 +70,7 @@ Deno.serve(async (req) => {
       breadth_baseline_bullish: previous?.technicals_1h_bullish ?? null,
       breadth_baseline_bearish: previous?.technicals_1h_bearish ?? null,
       transition_state: finalTransition,
-      details: { buy_usd: buyUsd, sell_usd: sellUsd, whale_net: whaleNet, breadth_improving: breadthImproving, whale_turning_positive: whaleTurningPositive, regime_improving: regimeImproving },
+      details: { buy_usd: buyUsd, sell_usd: sellUsd, whale_net: whaleNet, breadth_improving: breadthImproving, whale_turning_positive: whaleTurningPositive, prior_regime: priorRegime, current_regime: regime },
     });
     if (obsError) throw obsError;
 
