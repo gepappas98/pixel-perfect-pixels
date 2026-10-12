@@ -401,12 +401,43 @@ Deno.serve(async (req) => {
       : null;
 
     const minMinutes = intervalMinutes(regime);
-    if (latestAttemptAt > 0 && Date.now() - latestAttemptAt < minMinutes * 60_000) {
+    let cooldownAt = latestAttemptAt;
+    let cooldownBasis = "latest_persisted_native_attempt";
+
+    // If council output persistence failed, reuse the orchestrator's existing
+    // pipeline_runs record as a low-frequency fallback. Do not create a new
+    // row/table or treat intentional skips as Groq attempts.
+    if (!(cooldownAt > 0 && Date.now() - cooldownAt < minMinutes * 60_000)) {
+      const { data: recentRuns, error: recentRunsError } = await db
+        .from("pipeline_runs")
+        .select("started_at,completed_at,result")
+        .eq("job_name", "trading-pipeline-orchestrator")
+        .order("started_at", { ascending: false })
+        .limit(30);
+      if (recentRunsError) throw recentRunsError;
+
+      for (const run of recentRuns ?? []) {
+        const result = run.result as { stages?: Array<{ name?: string; ok?: boolean; result?: { skipped?: boolean; reason?: string } }> } | null;
+        const councilStage = result?.stages?.find((stage) => stage.name === "council-sync");
+        if (!councilStage || councilStage.ok !== false) continue;
+        if (councilStage.result?.skipped === true || councilStage.result?.reason === "no_ai_candidates") continue;
+
+        const failedAt = new Date(String(run.completed_at ?? run.started_at ?? "")).getTime();
+        if (Number.isFinite(failedAt) && failedAt > cooldownAt) {
+          cooldownAt = failedAt;
+          cooldownBasis = "existing_pipeline_run_failed_council_stage";
+        }
+        // Runs are newest-first; only the newest failed council stage is relevant.
+        break;
+      }
+    }
+
+    if (cooldownAt > 0 && Date.now() - cooldownAt < minMinutes * 60_000) {
       return new Response(JSON.stringify({
         ok: true, native: true, skipped: true,
         reason: "ai_batch_rate_guard",
-        cooldown_basis: "latest_persisted_native_attempt",
-        minutes_since_last: Number(((Date.now() - latestAttemptAt) / 60_000).toFixed(1)),
+        cooldown_basis: cooldownBasis,
+        minutes_since_last: Number(((Date.now() - cooldownAt) / 60_000).toFixed(1)),
         min_minutes: minMinutes, regime,
       }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
