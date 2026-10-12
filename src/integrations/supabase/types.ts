@@ -420,45 +420,6 @@ export type Database = {
         }
         Relationships: []
       }
-      prediction_snapshots: {
-        Row: {
-          created_at: string
-          id: string
-          market_slug: string
-          no_price: number | null
-          question: string | null
-          raw: Json | null
-          related_symbol: string | null
-          updated_at: string
-          volume_24h: number | null
-          yes_price: number | null
-        }
-        Insert: {
-          created_at?: string
-          id?: string
-          market_slug: string
-          no_price?: number | null
-          question?: string | null
-          raw?: Json | null
-          related_symbol?: string | null
-          updated_at?: string
-          volume_24h?: number | null
-          yes_price?: number | null
-        }
-        Update: {
-          created_at?: string
-          id?: string
-          market_slug?: string
-          no_price?: number | null
-          question?: string | null
-          raw?: Json | null
-          related_symbol?: string | null
-          updated_at?: string
-          volume_24h?: number | null
-          yes_price?: number | null
-        }
-        Relationships: []
-      }
       runtime_identity: {
         Row: {
           expected_project_ref: string
