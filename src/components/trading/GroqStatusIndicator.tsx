@@ -70,6 +70,18 @@ export function GroqStatusIndicator() {
     );
   }
 
+  if (status === "stale") {
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 rounded-full border border-warn/40 bg-warn/10 px-2.5 py-1 text-[10px] font-mono font-semibold text-warn"
+        title={`Last council output: ${timeAgo(data.lastAttemptAt)}. ${data.error ?? "AI telemetry is stale."}`}
+      >
+        <AlertTriangle className="h-3 w-3" />
+        AI: stale
+      </span>
+    );
+  }
+
   return (
     <span
       className="inline-flex items-center gap-1.5 rounded-full border border-destructive/40 bg-destructive/10 px-2.5 py-1 text-[10px] font-mono font-semibold text-destructive"
