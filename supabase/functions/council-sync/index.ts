@@ -349,7 +349,11 @@ async function groqBatch(
   } catch (error) {
     const message = error instanceof Error ? error.message : "unknown_error";
     const isTimeout = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
-    const status = httpStatus !== null ? "http_error" : isTimeout ? "timeout" : message.toLowerCase().includes("json") || message.toLowerCase().includes("empty groq response") ? "invalid_response" : "invalid_response";
+    const status = httpStatus !== null && (httpStatus < 200 || httpStatus >= 300)
+      ? "http_error"
+      : isTimeout
+        ? "timeout"
+        : "invalid_response";
     const safeMessage = message.replace(apiKey, "[redacted]").slice(0, 180);
     console.error(
       `[TCC_NATIVE_COUNCIL] Groq batch failed status=${status} model=${GROQ_MODEL} http=${httpStatus ?? "none"} elapsed_ms=${Date.now() - startedAt} error=${safeMessage}`,
