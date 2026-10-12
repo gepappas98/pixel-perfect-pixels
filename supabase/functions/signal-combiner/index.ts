@@ -544,7 +544,6 @@ Deno.serve(async (req) => {
             strategy_updated_at: strategySnapshot.updated_at,
             whale_weight: strategySnapshot.whale,
             technicals_weight: strategySnapshot.technicals,
-            prediction_weight: 0,
             council_weight: strategySnapshot.council,
             current_score: result.score,
             current_recommendation: gate.recommendation,
