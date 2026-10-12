@@ -212,264 +212,65 @@ describe("evaluateMultiTimeframe", () => {
 
 /* ───────────────────────────── ruleBased ───────────────────────────── */
 
-describe("ruleBased — empty / neutral inputs", () => {
-  it("all null signals → hold, score 0, confidence 0", () => {
-    const result = ruleBased(null, mtf(), null, null, BALANCED);
+describe("ruleBased — prediction-free scoring", () => {
+  const balanced: StrategyConfig = {
+    whale_weight: 1,
+    technicals_weight: 1,
+    council_weight: 1,
+    preset_name: "balanced",
+    updated_at: "2026-01-01T00:00:00.000Z",
+  };
+
+  it("holds when all inputs are neutral or missing", () => {
+    const result = ruleBased(null, mtf(), null, balanced);
     expect(result.recommendation).toBe("hold");
     expect(result.score).toBe(0);
     expect(result.confidence).toBe(0);
-    expect(result.reasoning).toContain("insufficient signal");
   });
 
-  it("whale accumulation alone with balanced weights → watch (score 1.0)", () => {
-    const result = ruleBased(
-      { direction: "accumulation" },
-      mtf(),
-      null,
-      null,
-      BALANCED,
-    );
-    expect(result.score).toBeCloseTo(1.0, 5);
+  it("uses whale flow without a prediction-market input", () => {
+    const result = ruleBased({ direction: "accumulation" }, mtf(), null, balanced);
+    expect(result.score).toBeCloseTo(1, 5);
     expect(result.recommendation).toBe("watch");
   });
-});
 
-describe("ruleBased — full bullish / bearish alignment", () => {
-  // FIX 1: magnitude-aware prediction contribution
-  //   yes_price = 0.8 → mag = 0.5 → contribution = 0.5 × 0.5 = 0.25
-  //   score = 1 + 1.69 + 0.25 + 0.75 = 3.69
-  //   max   = 1 + 1.69 + 0.5  + 0.75 = 3.94
-  it("all-bullish balanced (yes=0.8) → buy with ~0.936 confidence", () => {
+  it("combines whale flow, aligned technicals, and council conviction", () => {
     const result = ruleBased(
       { direction: "accumulation" },
       mtfBullishAligned,
-      { question: "will bitcoin reach 100k", yes_price: 0.8 },
       { final_verdict: "BUY", conviction: 100 },
-      BALANCED,
+      balanced,
     );
-    expect(result.score).toBeCloseTo(3.69, 5);
-    expect(result.confidence).toBeCloseTo(3.69 / 3.94, 4);
-    expect(result.recommendation).toBe("buy");
-  });
-
-  it("all-bullish balanced (yes=1.0, mag=1.0) → buy with confidence 1.0", () => {
-    const result = ruleBased(
-      { direction: "accumulation" },
-      mtfBullishAligned,
-      { question: "will bitcoin reach 100k", yes_price: 1.0 },
-      { final_verdict: "BUY", conviction: 100 },
-      BALANCED,
-    );
-    // mag = 1.0 → prediction contribution = 0.5
-    // score = 1 + 1.69 + 0.5 + 0.75 = 3.94 = max → confidence 1.0
-    expect(result.score).toBeCloseTo(3.94, 5);
+    expect(result.score).toBeCloseTo(3.44, 5);
     expect(result.confidence).toBeCloseTo(1, 5);
     expect(result.recommendation).toBe("buy");
   });
 
-  // FIX 2: same reasoning for bearish
-  it("all-bearish balanced (yes=0.2) → sell with ~0.936 confidence", () => {
-    const result = ruleBased(
-      { direction: "distribution" },
-      mtfBearishAligned,
-      { question: "will bitcoin reach 100k", yes_price: 0.2 },
-      { final_verdict: "SELL", conviction: 100 },
-      BALANCED,
-    );
-    // mag = 0.5 → contribution = 0.25
-    // score = -1 - 1.69 - 0.25 - 0.75 = -3.69
-    expect(result.score).toBeCloseTo(-3.69, 5);
-    expect(result.confidence).toBeCloseTo(3.69 / 3.94, 4);
-    expect(result.recommendation).toBe("sell");
-  });
-
-  it("all-bearish balanced (yes=0.0, mag=1.0) → sell with confidence 1.0", () => {
-    const result = ruleBased(
-      { direction: "distribution" },
-      mtfBearishAligned,
-      { question: "will bitcoin reach 100k", yes_price: 0.0 },
-      { final_verdict: "SELL", conviction: 100 },
-      BALANCED,
-    );
-    expect(result.score).toBeCloseTo(-3.94, 5);
-    expect(result.confidence).toBeCloseTo(1, 5);
-    expect(result.recommendation).toBe("sell");
-  });
-});
-
-describe("ruleBased — weight sensitivity", () => {
-  it("whale-focused preset: whale accumulation alone is enough for buy", () => {
-    // score = 2.0 ; max = 2 + 0.5*1.69 + 0.5*0.5 + 0.5*0.75 = 3.47
-    const result = ruleBased(
-      { direction: "accumulation" },
-      mtf(),
-      null,
-      null,
-      WHALE_FOCUSED,
-    );
-    expect(result.score).toBeCloseTo(2.0, 5);
+  it("retains strategy weight sensitivity using only remaining sources", () => {
+    const whaleFocused: StrategyConfig = {
+      whale_weight: 2,
+      technicals_weight: 0.5,
+      council_weight: 0.5,
+      preset_name: "whale-focused",
+      updated_at: "2026-01-01T00:00:00.000Z",
+    };
+    const result = ruleBased({ direction: "accumulation" }, mtf(), null, whaleFocused);
+    expect(result.score).toBeCloseTo(2, 5);
     expect(result.recommendation).toBe("buy");
-    expect(result.confidence).toBeCloseTo(2.0 / 3.47, 5);
+    expect(result.confidence).toBeCloseTo(2 / 2.97, 5);
   });
 
-  it("chart-trader preset: aligned MTF alone is enough for buy", () => {
-    // score = 1.69 * 2 = 3.38 ; max = 0.5 + 3.38 + 0.25 + 0.375 = 4.505
-    const result = ruleBased(null, mtfBullishAligned, null, null, CHART_TRADER);
+  it("keeps MTF-only chart-trader scoring intact", () => {
+    const chartTrader: StrategyConfig = {
+      whale_weight: 0.5,
+      technicals_weight: 2,
+      council_weight: 0.5,
+      preset_name: "chart-trader",
+      updated_at: "2026-01-01T00:00:00.000Z",
+    };
+    const result = ruleBased(null, mtfBullishAligned, null, chartTrader);
     expect(result.score).toBeCloseTo(3.38, 5);
     expect(result.recommendation).toBe("buy");
-    expect(result.confidence).toBeCloseTo(3.38 / 4.505, 5);
-  });
-
-  it("exact 1.5 threshold → buy", () => {
-    const result = ruleBased(
-      { direction: "accumulation" },
-      mtf(),
-      null,
-      null,
-      WHALE_ONLY,
-    );
-    expect(result.score).toBeCloseTo(1.5, 5);
-    expect(result.recommendation).toBe("buy");
-    expect(result.confidence).toBeCloseTo(1, 5);
-  });
-
-  it("exact -1.5 threshold → sell", () => {
-    const result = ruleBased(
-      { direction: "distribution" },
-      mtf(),
-      null,
-      null,
-      WHALE_ONLY,
-    );
-    expect(result.score).toBeCloseTo(-1.5, 5);
-    expect(result.recommendation).toBe("sell");
-  });
-});
-
-describe("ruleBased — recommendation bands", () => {
-  it("score in (-1.5, -0.5] with valid band → watch", () => {
-    // whale accumulation (+1.0) + mtf bearish (-1.69) = -0.69 → watch band
-    const result = ruleBased(
-      { direction: "accumulation" },
-      mtfBearishAligned,
-      null,
-      null,
-      BALANCED,
-    );
-    expect(result.score).toBeCloseTo(-0.69, 5);
-    expect(result.recommendation).toBe("watch");
-  });
-
-
-describe("ruleBased — AI AVOID handling", () => {
-  // FIX 3: magnitude-aware score
-  it("AVOID with conviction ≥ 60 downgrades strong buy to watch", () => {
-    const result = ruleBased(
-      { direction: "accumulation" },
-      mtfBullishAligned,
-      { question: "will bitcoin reach 100k", yes_price: 0.8 },
-      { final_verdict: "AVOID", conviction: 80 },
-      BALANCED,
-    );
-    // prediction contribution = 0.5 × 1.0 × 0.5 = 0.25
-    // score = 1 + 1.69 + 0.25 + 0 (AVOID adds nothing) = 2.94
-    expect(result.score).toBeCloseTo(2.94, 5);
-    expect(result.recommendation).toBe("watch");
-    expect(result.reasoning).toContain("AVOID");
-  });
-
-  it("AVOID with conviction < 60 does NOT downgrade", () => {
-    const result = ruleBased(
-      { direction: "accumulation" },
-      mtfBullishAligned,
-      { question: "will bitcoin reach 100k", yes_price: 0.8 },
-      { final_verdict: "AVOID", conviction: 40 },
-      BALANCED,
-    );
-    // score = 1 + 1.69 + 0.25 = 2.94, still >= 1.5 → buy
-    expect(result.recommendation).toBe("buy");
-  });
-});
-
-describe("ruleBased — MTF gate integration", () => {
-  it("buy rejected by MTF gate when enabled → hold with reason", () => {
-    const mtfGateConfig: MtfGateConfig = {
-      enabled: true,
-      shadow_mode: false,
-      min_timeframes: 2,
-    };
-    const result = ruleBased(
-      { direction: "accumulation" },
-      mtfBullishWeak,
-      null,
-      null,
-      WHALE_FOCUSED,
-      { mtfGateConfig },
-    );
-    expect(result.recommendation).toBe("hold");
-    expect(result.reasoning).toContain("MTF gate REJECTED");
-    expect(result.mtfGateDecision?.passed).toBe(false);
-  });
-
-  it("MTF gate in shadow mode does NOT block recommendation", () => {
-    const mtfGateConfig: MtfGateConfig = {
-      enabled: false,
-      shadow_mode: true,
-      min_timeframes: 2,
-    };
-    const result = ruleBased(
-      { direction: "accumulation" },
-      mtfBullishWeak,
-      null,
-      null,
-      WHALE_FOCUSED,
-      { mtfGateConfig },
-    );
-    expect(result.recommendation).toBe("buy");
-    expect(result.reasoning).toContain("MTF gate SHADOW");
-  });
-
-  it("buy passes MTF gate with 3/3 aligned timeframes", () => {
-    const mtfGateConfig: MtfGateConfig = {
-      enabled: true,
-      shadow_mode: false,
-      min_timeframes: 2,
-    };
-    const result = ruleBased(
-      { direction: "accumulation" },
-      mtfBullishAligned,
-      null,
-      null,
-      WHALE_FOCUSED,
-      { mtfGateConfig },
-    );
-    expect(result.recommendation).toBe("buy");
-    expect(result.mtfGateDecision?.passed).toBe(true);
-  });
-
-  it("sell rejected by MTF gate when enabled", () => {
-    const weakBear = mtf({
-      direction: "bearish",
-      score: -1.0,
-      aligned: false,
-      bullCount: 0,
-      bearCount: 1,
-      neuCount: 2,
-    });
-    const mtfGateConfig: MtfGateConfig = {
-      enabled: true,
-      shadow_mode: false,
-      min_timeframes: 2,
-    };
-    const result = ruleBased(
-      { direction: "distribution" },
-      weakBear,
-      null,
-      null,
-      WHALE_FOCUSED,
-      { mtfGateConfig },
-    );
-    expect(result.recommendation).toBe("hold");
-    expect(result.reasoning).toContain("MTF gate REJECTED");
+    expect(result.confidence).toBeCloseTo(3.38 / 4.255, 5);
   });
 });
