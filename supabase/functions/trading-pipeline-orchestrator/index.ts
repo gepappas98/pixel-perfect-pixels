@@ -9,6 +9,7 @@ const STAGES: any[] = [
   ["signal-combiner", 180000],
   ["variant-resolver", 90000],
   ["trade-executor", 120000],
+  ["council-lessons", 60000],
 ];
 
 function countBy(items: any[], key: string): Record<string, number> {
