@@ -3592,10 +3592,7 @@ export async function executeTrades(opts?: {
      *
      * Do NOT reject 1d-bear/conflict here.
      *
-     * Downstream execution already contains the correct conditional:
-     * 1d bear + conflict is allowed when there is whale accumulation
-     * OR bullish prediction support.
-     *
+     * The downstream quality gate is handled separately from AI risk evaluation.
      * Filtering it here would prevent evaluateAIRiskBatch() from ever
      * evaluating the signal and would incorrectly trigger the later
      * fail-closed "no AI risk decision" path.
