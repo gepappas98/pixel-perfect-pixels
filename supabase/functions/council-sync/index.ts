@@ -21,9 +21,8 @@ const AI_MIN_MINUTES_TRENDING = 15;
 const AI_MIN_MINUTES_CALM = 40;
 const WHALE_LOOKBACK_MS = 6 * 60 * 60 * 1000;
 const INDICATOR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
-const GROQ_TIMEOUT_MS = 15_000;
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-const GROQ_MODEL = Deno.env.get("GROQ_MODEL") ?? "openai/gpt-oss-20b";
+const GROQ_TIMEOUT_MS = 20_000;
+const GROQ_MODEL = "openai/gpt-oss-20b";
 
 const CORE_FALLBACK = [
   "BTC","ETH","SOL","XRP","DOGE","ADA","BNB","AVAX","LINK","ARB",
