@@ -325,6 +325,11 @@ BEGIN
 END;
 $function$;
 
+-- Remove the now-unused conflict feature flag from persisted JSON configuration.
+UPDATE public.pipeline_settings
+SET cleanup_config = cleanup_config - 'watch_conflict_fix'
+WHERE cleanup_config ? 'watch_conflict_fix';
+
 -- Preserve the rest of each historical signal snapshot, but remove the prediction-only context.
 UPDATE public.composite_signals
 SET entry_context_snapshot = entry_context_snapshot - 'prediction_market'
