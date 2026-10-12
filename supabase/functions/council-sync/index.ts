@@ -74,7 +74,7 @@ interface CouncilResult {
 
 interface GroqBatchOutcome {
   results: Map<string, CouncilResult>;
-  status: "ok" | "partial" | "missing_api_key" | "http_error" | "timeout" | "empty_response" | "invalid_response";
+  status: "ok" | "partial" | "missing_api_key" | "bridge_auth_missing" | "http_error" | "timeout" | "empty_response" | "invalid_response";
   httpStatus: number | null;
   durationMs: number;
   error: string | null;
@@ -218,13 +218,13 @@ async function groqBatch(
 ): Promise<GroqBatchOutcome> {
   const result = new Map<string, CouncilResult>();
   const startedAt = Date.now();
-  const apiKey = Deno.env.get("GROQ_API_KEY");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!candidates.length) {
     return { results: result, status: "empty_response", httpStatus: null, durationMs: Date.now() - startedAt, error: "no_candidates" };
   }
-  if (!apiKey) {
-    console.error("[TCC_NATIVE_COUNCIL] Groq unavailable: api_key_missing");
-    return { results: result, status: "missing_api_key", httpStatus: null, durationMs: Date.now() - startedAt, error: "api_key_missing" };
+  if (!serviceRoleKey) {
+    console.error("[TCC_NATIVE_COUNCIL] Lovable AI bridge unavailable: service_role_key_missing");
+    return { results: result, status: "bridge_auth_missing", httpStatus: null, durationMs: Date.now() - startedAt, error: "service_role_key_missing" };
   }
   let httpStatus: number | null = null;
 
@@ -252,81 +252,26 @@ async function groqBatch(
       .map((l) => `[${l.outcome}] ${l.lesson.slice(0, 180)}`),
   }));
 
-  const systemPrompt = [
-    "You are the TCC long-only trading council.",
-    "You are a decision layer, not the risk engine.",
-    "Return BUY, HOLD, or AVOID only. Never return SELL, SHORT, leverage, or a bearish trade instruction.",
-    "BUY only when there is a defensible long edge. HOLD when evidence is mixed. AVOID when data quality is poor, conflict is material, or downside risk dominates.",
-    "Do not invent missing data. Null means unavailable evidence.",
-    "Timeframe alignment increases conviction; conflicts reduce it.",
-    "Past lessons are evidence, not guarantees.",
-    "Return exactly one object per supplied symbol.",
-    "Conviction is 0-100 and reflects evidence quality, not certainty.",
-    "Reflection is one concise evidence-based sentence.",
-  ].join("\n");
-
   try {
-    const response = await fetch(GROQ_URL, {
+    const bridgeUrl = "https://aicombined-trading-command-center.lovable.app/api/public/ai-council-batch";
+    const response = await fetch(bridgeUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${serviceRoleKey}`,
       },
-      body: JSON.stringify({
-        model: GROQ_MODEL,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: JSON.stringify(payload) },
-        ],
-        temperature: 0.2,
-        service_tier: Deno.env.get("GROQ_SERVICE_TIER") ?? "on_demand",
-        ...(/gpt-oss/i.test(GROQ_MODEL)
-          ? { reasoning_effort: "low", max_completion_tokens: 2048 }
-          : { max_tokens: 2048 }),
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "tcc_long_only_council_batch",
-            strict: true,
-            schema: {
-              type: "object",
-              properties: {
-                results: {
-                  type: "array",
-                  items: {
-                    type: "object",
-                    properties: {
-                      symbol: { type: "string" },
-                      verdict: { type: "string", enum: ["BUY", "HOLD", "AVOID"] },
-                      conviction: { type: "number" },
-                      reflection: { type: "string" },
-                    },
-                    required: ["symbol", "verdict", "conviction", "reflection"],
-                    additionalProperties: false,
-                  },
-                },
-              },
-              required: ["results"],
-              additionalProperties: false,
-            },
-          },
-        },
-      }),
+      body: JSON.stringify({ candidates: payload }),
       signal: AbortSignal.timeout(GROQ_TIMEOUT_MS),
     });
 
     httpStatus = response.status;
-    if (!response.ok) throw new Error(`Groq HTTP ${response.status}`);
+    if (!response.ok) throw new Error(`Lovable AI bridge HTTP ${response.status}`);
 
     const body = await response.json() as {
-      choices?: { message?: { content?: string } }[];
+      results?: { symbol: string; verdict: string; conviction: number; reflection: string }[];
       usage?: { total_tokens?: number };
     };
-    const raw = body.choices?.[0]?.message?.content ?? "";
-    if (!raw) throw new Error("empty Groq response");
-
-    const parsedBody = JSON.parse(raw) as { results?: { symbol: string; verdict: string; conviction: number; reflection: string }[] };
-    const parsed = Array.isArray(parsedBody) ? parsedBody : (parsedBody.results ?? []);
+    const parsed = Array.isArray(body.results) ? body.results : [];
 
     for (const item of parsed) {
       const symbol = String(item.symbol ?? "").toUpperCase();
@@ -343,7 +288,7 @@ async function groqBatch(
 
     const status = result.size === candidates.length ? "ok" : result.size > 0 ? "partial" : "empty_response";
     console.log(
-      `[TCC_NATIVE_COUNCIL] Groq batch status=${status} model=${GROQ_MODEL} received=${result.size}/${candidates.length} http=${httpStatus ?? "none"} elapsed_ms=${Date.now() - startedAt} tokens=${body.usage?.total_tokens ?? 0}`,
+      `[TCC_NATIVE_COUNCIL] Lovable bridge status=${status} model=${GROQ_MODEL} received=${result.size}/${candidates.length} http=${httpStatus ?? "none"} elapsed_ms=${Date.now() - startedAt} tokens=${body.usage?.total_tokens ?? 0}`,
     );
     return { results: result, status, httpStatus, durationMs: Date.now() - startedAt, error: null };
   } catch (error) {
@@ -354,9 +299,9 @@ async function groqBatch(
       : isTimeout
         ? "timeout"
         : "invalid_response";
-    const safeMessage = message.replace(apiKey, "[redacted]").slice(0, 180);
+    const safeMessage = message.replace(serviceRoleKey, "[redacted]").slice(0, 180);
     console.error(
-      `[TCC_NATIVE_COUNCIL] Groq batch failed status=${status} model=${GROQ_MODEL} http=${httpStatus ?? "none"} elapsed_ms=${Date.now() - startedAt} error=${safeMessage}`,
+      `[TCC_NATIVE_COUNCIL] Lovable bridge failed status=${status} model=${GROQ_MODEL} http=${httpStatus ?? "none"} elapsed_ms=${Date.now() - startedAt} error=${safeMessage}`,
     );
     return { results: result, status, httpStatus, durationMs: Date.now() - startedAt, error: safeMessage };
   }
