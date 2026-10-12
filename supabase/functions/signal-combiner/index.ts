@@ -25,7 +25,6 @@ const SYMBOL_MAP: Record<string, string> = {
 
 const TIMEFRAMES = ["4h", "1h", "1d"] as const;
 const INDICATOR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
-const PREDICTION_MAX_AGE_MS = 30 * 60 * 1000;
 const COUNCIL_MAX_AGE_MS = 30 * 60 * 1000;
 const COUNCIL_MAX_AGE_MS_TRENDING = 20 * 60 * 1000;
 const COUNCIL_MAX_AGE_MS_CALM = 45 * 60 * 1000;
@@ -537,7 +536,6 @@ Deno.serve(async (req) => {
     const freshnessNow = Date.now();
     const freshnessNowIso = new Date(freshnessNow).toISOString();
     const since = new Date(freshnessNow - WHALE_LOOKBACK_MS).toISOString();
-    const predictionSince = new Date(freshnessNow - PREDICTION_MAX_AGE_MS).toISOString();
     // Regime inputs use the neutral 30-minute council window because the regime
     // itself is derived from those inputs. Per-symbol signals use the resolved regime TTL.
     const regimeCouncilSince = new Date(freshnessNow - COUNCIL_MAX_AGE_MS).toISOString();
@@ -547,15 +545,13 @@ Deno.serve(async (req) => {
       supabase.from("whale_alerts").select("symbol").gte("created_at", since),
     ]);
 
-    const [{ data: regimeWhales }, { data: regimeIndicators }, { data: regimePredictions }, { data: regimeCouncils }] = await Promise.all([
+    const [{ data: regimeWhales }, { data: regimeIndicators }, { data: regimeCouncils }] = await Promise.all([
       supabase.from("whale_alerts").select("symbol,direction,usd_value").gte("created_at", new Date(Date.now()-60*60*1000).toISOString()).limit(3000),
       supabase.from("indicator_snapshots").select("symbol,timeframe,signal,created_at").eq("timeframe","4h").order("created_at",{ascending:false}).limit(1000),
-      supabase.from("prediction_snapshots").select("market_slug,question,yes_price,created_at").gte("created_at", predictionSince).lte("created_at", freshnessNowIso).order("created_at",{ascending:false}).limit(1000),
       supabase.from("council_signals").select("symbol,final_verdict,source_created_at").gte("source_created_at", regimeCouncilSince).lte("source_created_at", freshnessNowIso).order("source_created_at",{ascending:false}).limit(1000),
     ]);
     const productionRegimeLabel = classifyProductionRegime({
       whales: regimeWhales ?? [], indicators: regimeIndicators ?? [],
-      predictions: (regimePredictions ?? []).filter((row: any) => isFreshTimestamp(row?.created_at, PREDICTION_MAX_AGE_MS, freshnessNow)),
       councils: (regimeCouncils ?? []).filter((row: any) => isFreshTimestamp(row?.source_created_at, COUNCIL_MAX_AGE_MS, freshnessNow)),
     });
     const productionMarketSession = productionSession();
@@ -572,27 +568,25 @@ Deno.serve(async (req) => {
     for (const symbol of symbols) {
       const dbSymbol = indicatorSymbol(symbol);
 
-      const [{ data: whales }, { data: indicators }, { data: predictions }, { data: councils }] =
+      const [{ data: whales }, { data: indicators }, { data: councils }] =
         await Promise.all([
           supabase.from("whale_alerts").select("*").eq("symbol", symbol).gte("created_at", since)
             .order("created_at", { ascending: false }).limit(20),
           supabase.from("indicator_snapshots").select("*").eq("symbol", dbSymbol)
             .in("timeframe", [...TIMEFRAMES])
             .order("created_at", { ascending: false }).limit(10),
-          supabase.from("prediction_snapshots").select("*").eq("related_symbol", symbol).gte("created_at", predictionSince).lte("created_at", freshnessNowIso)
-            .order("created_at", { ascending: false }).limit(1),
           supabase.from("council_signals").select("*").eq("symbol", symbol).gte("source_created_at", councilSince).lte("source_created_at", freshnessNowIso)
             .order("source_created_at", { ascending: false }).limit(1),
         ]);
 
       const whaleRows = whales ?? [];
       const whale = whaleRows[0] ?? null;
-      const prediction = predictions?.[0] ?? null;
+      const prediction = null;
       const council = councils?.[0] ?? null;
       const mtf = classifyMtf((indicators ?? []) as Record<string, any>[]);
       const indicator = mtf.primary;
 
-      if (!whale && !indicator && !prediction && !council) continue;
+      if (!whale && !indicator && !council) continue;
 
       const productionWeights: StrategyWeights = strategySnapshot ?? {
         whale: 1,
@@ -602,11 +596,11 @@ Deno.serve(async (req) => {
         preset_name: null,
         updated_at: null,
       };
-      const result = ruleBasedRecommendation(whale, indicator, prediction, council, productionWeights);
+      const result = ruleBasedRecommendation(whale, indicator, null, council, productionWeights);
       const gate = applyMtfGate(result.recommendation, mtf, mtfGate);
 
       if (strategySnapshot) {
-        const shadow = calculateConfiguredShadow(whale, mtf, prediction, council, strategySnapshot);
+        const shadow = calculateConfiguredShadow(whale, mtf, null, council, strategySnapshot);
         const { error: shadowError } = await supabase
           .from("strategy_shadow_diagnostics")
           .insert({
@@ -755,12 +749,6 @@ Deno.serve(async (req) => {
           direction: whale.direction, usd_value: whale.usd_value,
           source: whale.source, created_at: whale.created_at,
         } : null,
-        prediction_market: prediction ? {
-          id: prediction.id, market_slug: prediction.market_slug,
-          question: prediction.question, related_symbol: prediction.related_symbol,
-          yes_price: prediction.yes_price, no_price: prediction.no_price,
-          volume_24h: prediction.volume_24h, created_at: prediction.created_at,
-        } : null,
         ai_council: council ? {
           id: council.id, symbol: council.symbol, depth: council.depth,
           final_verdict: council.final_verdict, conviction: council.conviction,
@@ -783,7 +771,6 @@ Deno.serve(async (req) => {
             symbol,
             whale_alert_id: whale?.id ?? null,
             indicator_snapshot_id: indicator?.id ?? null,
-            prediction_snapshot_id: prediction?.id ?? null,
             council_signal_id: council?.id ?? null,
             confidence: result.confidence,
             recommendation: gate.recommendation,
