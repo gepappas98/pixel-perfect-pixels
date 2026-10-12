@@ -51,7 +51,7 @@ async function authorizeCanonicalCaller(request: Request): Promise<boolean> {
 
   try {
     const response = await fetch(
-      `${CANONICAL_SUPABASE_URL}/rest/v1/council_signals?select=symbol&limit=0`,
+      `${CANONICAL_SUPABASE_URL}/rest/v1/council_signals?select=symbol&limit=1`,
       { method: "GET", headers, signal: AbortSignal.timeout(3_000) },
     );
     return response.ok;
