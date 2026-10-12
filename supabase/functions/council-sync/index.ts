@@ -7,7 +7,7 @@
 // - batch Groq evaluation, rate guarded
 // - dynamic watchlist + hot-whale candidates
 // - 4h / 1h / 1d technical context
-// - whale flow + prediction context
+// - whale flow + technical context
 // - prior council lessons
 // - deterministic synthesis fallback when Groq is unavailable
 // - fresh AI rows are written as depth=ai-batch; fallback rows are ai-synthesis
@@ -21,7 +21,6 @@ const AI_MIN_MINUTES_TRENDING = 15;
 const AI_MIN_MINUTES_CALM = 40;
 const WHALE_LOOKBACK_MS = 6 * 60 * 60 * 1000;
 const INDICATOR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
-const PREDICTION_MAX_AGE_MS = 30 * 60 * 1000;
 const GROQ_TIMEOUT_MS = 15_000;
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_MODEL = Deno.env.get("GROQ_MODEL") ?? "openai/gpt-oss-20b";
@@ -233,8 +232,6 @@ async function groqBatch(
     vwap_4h: Number.isFinite(Number((c.primary?.raw as Row | undefined)?.vwap))
       ? Number((c.primary?.raw as Row).vwap)
       : null,
-    prediction_yes_price: c.prediction?.yes_price ?? null,
-    prediction_question: String(c.prediction?.question ?? "").slice(0, 220) || null,
     market_regime: regime,
     past_lessons: (lessons.get(c.symbol) ?? []).slice(0, 3)
       .map((l) => `[${l.outcome}] ${l.lesson.slice(0, 180)}`),
@@ -408,7 +405,7 @@ Deno.serve(async (req) => {
     const whaleSince = new Date(Date.now() - WHALE_LOOKBACK_MS).toISOString();
     const binSymbols = symbols.map(binanceSymbol);
 
-    const [whaleRes, indicatorRes, predictionRes] = await Promise.all([
+    const [whaleRes, indicatorRes] = await Promise.all([
       db.from("whale_alerts")
         .select("id,symbol,direction,usd_value,created_at")
         .in("symbol", symbols)
@@ -421,21 +418,13 @@ Deno.serve(async (req) => {
         .gte("created_at", new Date(Date.now() - INDICATOR_MAX_AGE_MS).toISOString())
         .order("created_at", { ascending: false })
         .limit(5000),
-      db.from("prediction_snapshots")
-        .select("id,related_symbol,created_at,yes_price,question")
-        .in("related_symbol", symbols)
-        .gte("created_at", new Date(Date.now() - PREDICTION_MAX_AGE_MS).toISOString())
-        .order("created_at", { ascending: false })
-        .limit(1000),
     ]);
 
     if (whaleRes.error) throw whaleRes.error;
     if (indicatorRes.error) throw indicatorRes.error;
-    if (predictionRes.error) throw predictionRes.error;
 
     const whales = (whaleRes.data ?? []) as Row[];
     const indicators = (indicatorRes.data ?? []) as Row[];
-    const predictions = (predictionRes.data ?? []) as Row[];
     const effectiveRegime = regime ?? deriveRegime(indicators, whales);
 
     const bySymbol = new Map<string, Row[]>();
@@ -452,12 +441,6 @@ Deno.serve(async (req) => {
       const bucket = whaleBySymbol.get(symbol) ?? [];
       if (bucket.length < 30) bucket.push(row);
       whaleBySymbol.set(symbol, bucket);
-    }
-
-    const predictionBySymbol = new Map<string, Row>();
-    for (const row of predictions) {
-      const symbol = String(row.related_symbol ?? "").toUpperCase();
-      if (symbol && !predictionBySymbol.has(symbol)) predictionBySymbol.set(symbol, row);
     }
 
     const candidates: Candidate[] = [];
@@ -499,7 +482,6 @@ Deno.serve(async (req) => {
         symbol,
         whale: { direction, usd: whaleUsd, buyUsd, sellUsd, buyCount, sellCount },
         primary, fast, trend,
-        prediction: predictionBySymbol.get(symbol) ?? null,
         conflict, whaleUsd,
       });
     }
