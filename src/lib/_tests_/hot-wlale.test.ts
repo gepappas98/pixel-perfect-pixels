@@ -230,7 +230,7 @@ describe("qualifiesForConvictionBoost", () => {
       buy_usd: 0,
       sell_usd: 0,
       alert_count: overrides.alert_count ?? 10,
-      direction: overrides.direction ?? "accumulation",
+      direction: overrides.direction === undefined ? "accumulation" : overrides.direction,
       buy_ratio: overrides.buy_ratio ?? 0.8,
       confidence: overrides.confidence ?? 0.8,
       last_seen_at: "2026-10-02T13:00:00Z",
