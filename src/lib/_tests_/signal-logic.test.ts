@@ -59,24 +59,6 @@ const mtfBullishAligned = mtf({
   detail: "4h bull · 1h bull · 1d bull",
 });
 
-const mtfBearishAligned = mtf({
-  direction: "bearish",
-  score: -1.69,
-  aligned: true,
-  bearCount: 3,
-  neuCount: 0,
-  detail: "4h bear · 1h bear · 1d bear",
-});
-
-const mtfBullishWeak = mtf({
-  direction: "bullish",
-  score: 1.0,
-  aligned: false,
-  bullCount: 1,
-  neuCount: 2,
-  detail: "4h bull · 1h neu · 1d neu",
-});
-
 /* ─────────────────────── evaluateMultiTimeframe ─────────────────────── */
 
 describe("evaluateMultiTimeframe", () => {
