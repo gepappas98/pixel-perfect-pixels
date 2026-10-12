@@ -167,7 +167,6 @@ export function RegimePanel() {
         data: {
           whale_weight: p.whale_weight,
           technicals_weight: p.technicals_weight,
-          prediction_weight: p.prediction_weight,
           council_weight: p.council_weight,
           preset_name: p.preset_name,
         },
