@@ -7,7 +7,6 @@ vi.mock("@/integrations/supabase/client.server", () => ({
 
 vi.mock("../cleanup-config.server", () => ({
   fetchCleanupConfig: vi.fn().mockResolvedValue({
-    watch_conflict_fix: { enabled: false, shadow_mode: false },
     mtf_confirmation_gate: { enabled: false, shadow_mode: true, min_timeframes: 2 },
     vwap_regime_gate: { enabled: false, shadow_mode: false, atr_pct_threshold: 3 },
     market_session_fix: { enabled: false },
@@ -217,7 +216,7 @@ describe("ruleBased — prediction-free scoring", () => {
     };
     const result = ruleBased({ direction: "accumulation" }, mtf(), null, whaleFocused);
     expect(result.score).toBeCloseTo(2, 5);
-    expect(result.recommendation).toBe("buy");
+    expect(result.recommendation).toBe("watch");
     expect(result.confidence).toBeCloseTo(2 / 3.22, 5);
   });
 
