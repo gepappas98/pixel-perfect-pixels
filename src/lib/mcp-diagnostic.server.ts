@@ -179,8 +179,8 @@ export function analyzeAudits(
   const executionErrors: Row[] = [];
   const events: Row[] = [];
   for (const { run, audit } of audits) {
-    opened += Number(((audit?.["summary"] ?? {}) as Row)["opened"] ?? 0);
-    for (const ev of ((audit?.["events"] ?? []) as Row[])) {
+    opened += Number(((audit?["summary"] ?? {}) as Row)["opened"] ?? 0);
+    for (const ev of ((audit?["events"] ?? []) as Row[])) {
       if (symbol && ev["symbol"] !== symbol) continue;
       const details = (ev["details"] ?? {}) as Row;
       const isSeed = details["audit_seed"] === true;
@@ -400,11 +400,11 @@ export async function handleRpc(msg: RpcReq, db: ReadOnlyDb): Promise<Row | null
     case "tools/list":
       return ok({ tools: Object.entries(TOOLS).map(([name, t]) => ({ name, description: t.description, inputSchema: t.inputSchema, annotations: { readOnlyHint: true, destructiveHint: false } })) });
     case "tools/call": {
-      const name = String(msg.params?.["name"] ?? "");
+      const name = String(msg.params?["name"] ?? "");
       const tool = TOOLS[name];
       if (!tool) return err(-32602, `Unknown tool: ${name}`);
       try {
-        const data = await tool.run(db, (msg.params?.["arguments"] ?? {}) as Row);
+        const data = await tool.run(db, (msg.params?["arguments"] ?? {}) as Row);
         const payload = { source: sourceMetadata(), tool: name, data };
         return ok({ content: [{ type: "text", text: JSON.stringify(payload) }], structuredContent: payload, isError: false });
       } catch (e) {
