@@ -219,7 +219,7 @@ export async function canOpenTrade(db: Admin, req: TradeRequest): Promise<RiskDe
     const stopDistance = Math.abs(entryPrice - stopLoss);
     if (stopDistance <= 0) return reject("invalid_stop", `${req.symbol} ${side}: stopDistance is zero`);
     if (side === "buy" && stopLoss >= entryPrice) return reject("invalid_stop", `${req.symbol} BUY: stopLoss must be below entryPrice`);
-    if ((side as string) === "sell" && stopLoss <= entryPrice) return reject("invalid_stop", `${req.symbol} SELL: stopLoss must be above entryPrice`);
+    if (side === "sell" && stopLoss <= entryPrice) return reject("invalid_stop", `${req.symbol} SELL: stopLoss must be above entryPrice`);
 
     const currentPrices = req.currentPrices ?? new Map<string, number>();
     const [equity, currentPortfolioRisk, dailyPnL, openPositions] = await Promise.all([

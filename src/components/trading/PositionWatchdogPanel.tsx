@@ -113,8 +113,8 @@ export function PositionWatchdogPanel() {
           {alerts.map((alert) => {
             const critical = alert.severity === "critical";
             const evidence = alert.evidence ?? {};
-            const currentPrice = Number(evidence["current_price"]);
-            const reason = typeof evidence["reason"] === "string" ? evidence["reason"].replaceAll("_", " ") : null;
+            const currentPrice = Number(evidence.current_price);
+            const reason = typeof evidence.reason === "string" ? evidence.reason.replaceAll("_", " ") : null;
             return (
               <div key={alert.id} role="alert" className={`rounded-md border p-3 ${critical ? "border-destructive/50 bg-destructive/10" : "border-warn/40 bg-warn/5"}`}>
                 <div className="flex flex-wrap items-start justify-between gap-2">

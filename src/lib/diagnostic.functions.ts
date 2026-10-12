@@ -62,7 +62,7 @@ export const getWatchDiagnostic = createServerFn({ method: "GET" }).handler(
         (w.whale_alert_id != null ? 1 : 0) +
         (w.indicator_snapshot_id != null ? 1 : 0);
       const entry =
-        sourceMatrix.get(w.symbol) ?? { c0: 0, c1: 0, c2: 0, c3: 0 };
+        sourceMatrix.get(w.symbol) ?? { c0: 0, c1: 0, c2: 0 };
       entry[`c${count}` as "c0"]++;
       sourceMatrix.set(w.symbol, entry);
     }
