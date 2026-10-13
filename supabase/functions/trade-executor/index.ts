@@ -339,7 +339,7 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
       .in("symbol", symbols)
       .eq("entry_source", "whale_shock")
       .gte("created_at", cooldownIso);
-    if (cooldownErr) throw new Error(`whale_shock cooldown query: ${cooldownErr.message`);
+    if (cooldownErr) throw new Error(`whale_shock cooldown query: ${cooldownErr.message}`);
 
     const onCooldown = new Set((recentTrades ?? []).map((trade) => String(trade.symbol).toUpperCase()));
     const { data: latestSignals, error: regimeErr } = await supabase
