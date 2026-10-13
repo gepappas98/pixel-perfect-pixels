@@ -168,6 +168,142 @@ async function getEligibleSignals(supabase: ReturnType<typeof getServiceClient>)
     .limit(MAX_AUDIT_SIGNALS);
 }
 
+/**
+ * Completes the DB-trigger placeholder using only context carried by the selected
+ * composite signal. Updates pending rows only; a completed snapshot is immutable
+ * to this helper. Enrichment failure never rolls back a successfully inserted trade.
+ */
+async function enrichEntryContextSnapshot(
+  supabase: ReturnType<typeof getServiceClient>,
+  trade: Record<string, any>,
+  signal: Record<string, any>,
+): Promise<void> {
+  const tradeId = String(trade?.id ?? "");
+  const signalId = String(signal?.id ?? "");
+  const symbol = String(trade?.symbol ?? signal?.symbol ?? "");
+  const capturedAt = trade?.created_at ?? new Date().toISOString();
+
+  if (!tradeId || !signalId || !symbol || String(trade?.composite_signal_id ?? "") !== signalId) {
+    console.error("[ENTRY_CONTEXT] enrichment rejected: trade/signal identity mismatch", {
+      tradeId, signalId, tradeSignalId: trade?.composite_signal_id ?? null, symbol,
+    });
+    return;
+  }
+
+  // This is a signal-time copy only when the selected signal actually contains it.
+  const signalCtx = signal.entry_context_snapshot &&
+      typeof signal.entry_context_snapshot === "object" &&
+      !Array.isArray(signal.entry_context_snapshot)
+    ? signal.entry_context_snapshot as Record<string, any>
+    : null;
+  const signalContext = signalCtx?.signal && typeof signalCtx.signal === "object"
+    ? signalCtx.signal as Record<string, any>
+    : null;
+
+  const enrichedSnapshot = {
+    schema_version: 2,
+    capture_status: "complete",
+    captured_at: capturedAt,
+    capture_provenance: signalCtx ? "signal_record_context_copy" : "signal_record_fields_only",
+    trade: {
+      id: trade.id,
+      composite_signal_id: signalId,
+      symbol,
+      side: trade.side,
+      quantity: trade.quantity,
+      entry_price: trade.entry_price,
+      stop_loss: trade.stop_loss,
+      take_profit: trade.take_profit,
+      mode: trade.mode,
+      status: trade.status,
+      entry_fee: trade.entry_fee,
+      exchange_order_id: trade.exchange_order_id,
+      regime_label: trade.regime_label,
+      market_session: trade.market_session,
+      source_tags: trade.source_tags,
+      created_at: trade.created_at,
+    },
+    signal: {
+      id: signalId,
+      recommendation: signal.recommendation ?? null,
+      confidence: signal.confidence == null ? null : Number(signal.confidence),
+      score: signalContext?.score ?? null,
+      reasoning: signal.reasoning ?? null,
+      price_at: signal.price_at ?? signalContext?.price_at ?? null,
+      created_at: signal.created_at ?? null,
+    },
+    upstream: {
+      whale_flow: signalCtx?.whale_flow ?? null,
+      technicals: signalCtx?.technicals ?? null,
+      ai_council: signalCtx?.ai_council ?? null,
+      market_regime: {
+        label: trade.regime_label ?? signal.regime_label ?? signalCtx?.market_regime ?? null,
+        source: trade.regime_label != null || signal.regime_label != null
+          ? "persisted_signal_or_trade_field"
+          : signalCtx?.market_regime != null ? "signal_context_copy" : "unavailable",
+      },
+      strategy: signalCtx?.strategy ?? null,
+      source_tags: signal.source_tags ?? signalCtx?.source_tags ?? [],
+    },
+    execution_context: {
+      mode: trade.mode,
+      entry_price: trade.entry_price,
+      quantity: trade.quantity,
+      stop_loss: trade.stop_loss,
+      take_profit: trade.take_profit,
+      entry_fee: trade.entry_fee,
+      executed_at: capturedAt,
+    },
+  };
+
+  try {
+    // Conditional update protects completed historical snapshots from replacement.
+    const { data, error } = await supabase
+      .from("entry_context_snapshots")
+      .update({
+        composite_signal_id: signalId,
+        symbol,
+        captured_at: capturedAt,
+        snapshot: enrichedSnapshot,
+      })
+      .eq("trade_id", tradeId)
+      .eq("snapshot->>capture_status", "pending")
+      .select("trade_id")
+      .maybeSingle();
+
+    if (error) {
+      console.error("[ENTRY_CONTEXT] enrichment update failed", {
+        tradeId, signalId, symbol, error: error.message,
+      });
+      return;
+    }
+
+    if (!data) {
+      const { data: existing, error: lookupError } = await supabase
+        .from("entry_context_snapshots")
+        .select("trade_id,snapshot")
+        .eq("trade_id", tradeId)
+        .maybeSingle();
+
+      console.warn("[ENTRY_CONTEXT] no pending snapshot updated", {
+        tradeId,
+        signalId,
+        symbol,
+        existingStatus: existing?.snapshot?.capture_status ?? null,
+        lookupError: lookupError?.message ?? null,
+      });
+      return;
+    }
+
+    console.log("[ENTRY_CONTEXT] snapshot enriched", { tradeId, signalId, symbol });
+  } catch (err) {
+    console.error("[ENTRY_CONTEXT] unexpected enrichment failure", {
+      tradeId, signalId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 Deno.serve(async (req) => {
   const preflight = handleOptions(req);
   if (preflight) return preflight;
@@ -317,6 +453,10 @@ Deno.serve(async (req) => {
         if (tradeError) throw new Error(tradeError.message);
 
         opened.push(trade);
+
+        // Complete the trigger-created placeholder without risking the inserted trade.
+        await enrichEntryContextSnapshot(supabase, trade as Record<string, any>, signal as Record<string, any>);
+
         await supabase.from("repeated_buy_research_ledger")
           .update({
             research_decision: "opened",
