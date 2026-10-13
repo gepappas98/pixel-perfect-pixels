@@ -1,5 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { binancePair, decideExit, normalizeExitSettings, type OpenTradeRow } from "../_shared/trade-exit.ts";
+import { aggregateWhaleShocks, DEFAULT_WHALE_SHOCK_CONFIG } from "./_shared/whale-shock.ts";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -304,6 +305,191 @@ async function enrichEntryContextSnapshot(
   }
 }
 
+/**
+ * Separate paper-only entry path for clustered whale accumulation.
+ * Failure is isolated: it must never prevent the standard signal pipeline from running.
+ */
+async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServiceClient>) {
+  const config = DEFAULT_WHALE_SHOCK_CONFIG;
+  const now = Date.now();
+  const sinceIso = new Date(now - config.windowMinutes * 60_000).toISOString();
+  const cooldownIso = new Date(now - config.cooldownMinutes * 60_000).toISOString();
+  const result: Record<string, unknown> = {
+    status: "ok", opened: 0, candidates: 0, skipped: 0, trades: [], errors: [],
+  };
+  const errors = result.errors as string[];
+
+  try {
+    const { data: alerts, error: alertErr } = await supabase
+      .from("whale_alerts")
+      .select("symbol,direction,usd_value,source,created_at")
+      .gte("created_at", sinceIso)
+      .order("created_at", { ascending: false })
+      .limit(1000);
+    if (alertErr) throw new Error(`whale_alerts query: ${alertErr.message}`);
+
+    const candidates = aggregateWhaleShocks(alerts ?? [], config);
+    result.candidates = candidates.length;
+    if (!candidates.length) return result;
+
+    const symbols = candidates.map((candidate) => candidate.symbol);
+    const { data: recentTrades, error: cooldownErr } = await supabase
+      .from("trades")
+      .select("symbol,created_at")
+      .in("symbol", symbols)
+      .eq("entry_source", "whale_shock")
+      .gte("created_at", cooldownIso);
+    if (cooldownErr) throw new Error(`whale_shock cooldown query: ${cooldownErr.message}`);
+
+    const onCooldown = new Set((recentTrades ?? []).map((trade) => String(trade.symbol).toUpperCase()));
+    const { data: latestSignals, error: regimeErr } = await supabase
+      .from("composite_signals")
+      .select("regime_label")
+      .not("regime_label", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    if (regimeErr) throw new Error(`market regime query: ${regimeErr.message}`);
+    const regime = String(latestSignals?.[0]?.regime_label ?? "neutral");
+    const normalizedRegime = regime.toLowerCase().replace(/[ -]+/g, "_");
+    const isExtremeBear = normalizedRegime.includes("strong_bear") || normalizedRegime.includes("extreme_bear");
+
+    const { prices, host, errors: priceErrors } = await fetchAllSpotPrices();
+    result.price_host = host;
+    if (!prices.size) throw new Error(`no valid Binance Spot prices: ${priceErrors.join("; ")}`);
+
+    const openedTrades: Record<string, unknown>[] = [];
+    for (const candidate of candidates) {
+      if (onCooldown.has(candidate.symbol)) {
+        result.skipped = Number(result.skipped) + 1;
+        console.log("[WHALE_SHOCK] skipped on cooldown", candidate.symbol);
+        continue;
+      }
+      if (isExtremeBear) {
+        result.skipped = Number(result.skipped) + 1;
+        console.log("[WHALE_SHOCK] skipped due to extreme bear regime", { symbol: candidate.symbol, regime });
+        continue;
+      }
+
+      const price = prices.get(binancePair(candidate.symbol));
+      if (!price || !Number.isFinite(price) || price <= 0) {
+        errors.push(`no valid Binance Spot USDT price for ${binancePair(candidate.symbol)}`);
+        result.skipped = Number(result.skipped) + 1;
+        continue;
+      }
+
+      const quantity = config.paperPositionUsd / price;
+      const entryFee = config.paperPositionUsd * TRADING_FEE_RATE;
+      const stopLoss = price * (1 - config.stopLossPct);
+      const takeProfit = price * (1 + config.takeProfitPct);
+      const entryAt = new Date().toISOString();
+      const sourceTags = ["paper", "whale-shock", "spot-long-only", "cluster-trigger", "research-only"];
+      const entryMetadata = {
+        shock_volume_usd: candidate.buyUsd,
+        total_volume_usd: candidate.totalUsd,
+        sell_volume_usd: candidate.sellUsd,
+        buy_ratio: candidate.buyRatio,
+        alert_count: candidate.alertCount,
+        trigger_window_minutes: candidate.windowMinutes,
+        sources: candidate.sources,
+        required_volume_floor_usd: config.tierFloors[candidate.symbol] ?? config.defaultFloorUsd,
+        min_buy_ratio: config.minBuyRatio,
+        min_alerts: config.minAlerts,
+        cooldown_minutes: config.cooldownMinutes,
+        strategy_version: "whale-shock-v1",
+        captured_at: entryAt,
+      };
+
+      const { data: trade, error: insertErr } = await supabase
+        .from("trades")
+        .insert({
+          symbol: candidate.symbol,
+          side: "buy",
+          quantity,
+          entry_price: price,
+          stop_loss: stopLoss,
+          take_profit: takeProfit,
+          mode: "paper",
+          status: "open",
+          entry_fee: entryFee,
+          exit_fee: 0,
+          total_fees: entryFee,
+          regime_label: regime,
+          entry_source: "whale_shock",
+          source_tags: sourceTags,
+          entry_metadata: entryMetadata,
+        })
+        .select()
+        .single();
+
+      if (insertErr) {
+        errors.push(`insert ${candidate.symbol}: ${insertErr.message}`);
+        result.skipped = Number(result.skipped) + 1;
+        continue;
+      }
+      openedTrades.push(trade as Record<string, unknown>);
+
+      // Fill the DB-triggered placeholder with an immutable entry-time record.
+      const snapshot = {
+        schema_version: 1,
+        capture_status: "complete",
+        captured_at: trade.created_at ?? entryAt,
+        capture_provenance: "whale_shock_executor_at_entry",
+        trade: {
+          id: trade.id, symbol: candidate.symbol, side: "buy", mode: "paper",
+          quantity: trade.quantity, entry_price: trade.entry_price,
+          stop_loss: trade.stop_loss, take_profit: trade.take_profit,
+          entry_source: "whale_shock", source_tags: sourceTags,
+          regime_label: regime, created_at: trade.created_at ?? entryAt,
+        },
+        signal: null,
+        upstream: {
+          whale_shock: candidate,
+          strategy: { version: "whale-shock-v1", config, required_volume_floor_usd: entryMetadata.required_volume_floor_usd },
+          market_regime: { label: regime, source: "latest_persisted_composite_signal" },
+          technicals: null,
+          ai_council: null,
+        },
+        execution_context: {
+          mode: "paper", entry_price: trade.entry_price, quantity: trade.quantity,
+          stop_loss: trade.stop_loss, take_profit: trade.take_profit,
+          entry_fee: trade.entry_fee, executed_at: trade.created_at ?? entryAt,
+        },
+      };
+      const { data: snapshotRow, error: snapshotErr } = await supabase
+        .from("entry_context_snapshots")
+        .update({
+          symbol: candidate.symbol,
+          composite_signal_id: null,
+          captured_at: trade.created_at ?? entryAt,
+          snapshot,
+        })
+        .eq("trade_id", trade.id)
+        .eq("snapshot->>capture_status", "pending")
+        .select("trade_id")
+        .maybeSingle();
+      if (snapshotErr) {
+        errors.push(`entry snapshot ${candidate.symbol}: ${snapshotErr.message}`);
+      } else if (!snapshotRow) {
+        errors.push(`entry snapshot ${candidate.symbol}: no pending placeholder found for trade ${trade.id}`);
+      }
+
+      console.log("[WHALE_SHOCK_EXECUTED]", JSON.stringify({
+        symbol: candidate.symbol, price, buyUsd: candidate.buyUsd,
+        buyRatio: candidate.buyRatio, alerts: candidate.alertCount, tradeId: trade.id,
+      }));
+    }
+    result.opened = openedTrades.length;
+    result.trades = openedTrades;
+    if (errors.length) result.status = "partial";
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : String(error));
+    result.status = "error";
+    console.error("[WHALE_SHOCK] stage failed; standard execution will continue", errors);
+  }
+  result.errors = errors;
+  return result;
+}
+
 Deno.serve(async (req) => {
   const preflight = handleOptions(req);
   if (preflight) return preflight;
@@ -329,6 +515,8 @@ Deno.serve(async (req) => {
       });
     }
 
+
+    const whaleShockStage = await executeWhaleShockTradesStage(supabase);
 
     const { data: signals, error: signalError } = await getEligibleSignals(supabase);
     if (signalError) throw signalError;
@@ -564,6 +752,7 @@ Deno.serve(async (req) => {
       mode: "paper",
       research_mode: true,
       exits: exitStage,
+      whale_shock: whaleShockStage,
       opened: opened.length,
       skipped: auditEvents.filter((event) => event.decision === "SKIP").length,
       errors,
