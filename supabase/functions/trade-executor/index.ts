@@ -344,21 +344,29 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
     const onCooldown = new Set((recentTrades ?? []).map((trade) => String(trade.symbol).toUpperCase()));
     // Repo schema stores regime_label, not a composite_signals.score column.
     const regimeWindowIso = new Date(now - 6 * 60 * 60_000).toISOString();
+    // Regime labels are stored per symbol, so evaluate each candidate's own history
+    // instead of mixing unrelated symbols into a synthetic market-wide transition.
     const { data: regimeHistory, error: regimeErr } = await supabase
       .from("composite_signals")
-      .select("regime_label,created_at")
+      .select("symbol,regime_label,created_at")
+      .in("symbol", symbols)
       .gte("created_at", regimeWindowIso)
       .not("regime_label", "is", null)
       .order("created_at", { ascending: true })
-      .limit(200);
+      .limit(1000);
     if (regimeErr) throw new Error(`market regime history query: ${regimeErr.message}`);
-    const regimeTransition = evaluateRegimeShockTransition(regimeHistory ?? [], config);
-    if (!regimeTransition.passed) {
-      result.skipped = candidates.length;
-      console.log("[WHALE_SHOCK] regime gate blocked", regimeTransition.reason);
-      return result;
+    const regimesBySymbol = new Map<string, any[]>();
+    for (const row of regimeHistory ?? []) {
+      const key = String(row.symbol ?? "").toUpperCase();
+      if (!key) continue;
+      const history = regimesBySymbol.get(key) ?? [];
+      history.push(row);
+      regimesBySymbol.set(key, history);
     }
-    const regime = regimeTransition.currentRegime;
+    const regimeTransitions = new Map<string, ReturnType<typeof evaluateRegimeShockTransition>>();
+    for (const candidate of candidates) {
+      regimeTransitions.set(candidate.symbol, evaluateRegimeShockTransition(regimesBySymbol.get(candidate.symbol) ?? [], config));
+    }
 
     const { data: technicalRows, error: technicalErr } = await supabase
       .from("indicator_snapshots")
@@ -386,6 +394,14 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
         console.log("[WHALE_SHOCK] skipped on cooldown", candidate.symbol);
         continue;
       }
+      const regimeTransition = regimeTransitions.get(candidate.symbol);
+      if (!regimeTransition?.passed) {
+        result.skipped = Number(result.skipped) + 1;
+        console.log("[WHALE_SHOCK] regime gate blocked", { symbol: candidate.symbol, reason: regimeTransition?.reason ?? "No regime history available" });
+        continue;
+      }
+      const regime = regimeTransition.currentRegime;
+
       const techCheck = evaluate1hTechnicalConfirmation(tech1hMap.get(candidate.symbol), config);
       if (!techCheck.passed) {
         result.skipped = Number(result.skipped) + 1;
