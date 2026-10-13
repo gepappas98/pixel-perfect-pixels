@@ -1,5 +1,8 @@
+export type WhaleShockAssetTier = "mid_cap" | "altcoin";
 export interface WhaleShockCandidate {
   symbol: string;
+  assetTier: WhaleShockAssetTier;
+  requiredFloorUsd: number;
   totalUsd: number;
   buyUsd: number;
   sellUsd: number;
@@ -26,10 +29,14 @@ export interface WhaleShockConfig {
 export const DEFAULT_WHALE_SHOCK_CONFIG: WhaleShockConfig = {
   windowMinutes: 30, minAlerts: 3, minBuyRatio: 0.75, cooldownMinutes: 10,
   paperPositionUsd: 1000, takeProfitPct: 0.06, stopLossPct: 0.03,
-  tierFloors: { BTC: 200000, ETH: 200000, SOL: 75000, INJ: 50000, AVAX: 50000, LINK: 50000, SUI: 50000, NEAR: 50000 },
+  // Majors (BTC/ETH/SOL) are excluded: their whale flow is routine liquidity,
+  // not a shock. Only mid-caps and dynamically discovered altcoins qualify.
+  tierFloors: { INJ: 50000, AVAX: 50000, LINK: 50000, SUI: 50000, NEAR: 50000 },
   defaultFloorUsd: 35000, requireInitialBearish: true, minViolentPositiveShift: 0.25,
   require1hTechnicalBullish: true,
 };
+// Symbols that can never trigger a Whale Shock entry.
+export const WHALE_SHOCK_EXCLUDED_MAJORS = new Set(["BTC", "ETH", "SOL"]);
 const REGIME_NUMERIC: Record<RegimeLabel, number> = { strong_bull: 1, bull: 0.5, sideways: 0, bear: -0.5, strong_bear: -1 };
 export function parseRegime(label?: string | null): RegimeLabel {
   const norm = String(label ?? "").toLowerCase().replace(/[ -]+/g, "_");
@@ -94,6 +101,10 @@ export function getRequiredVolumeFloor(symbol: string, config: WhaleShockConfig)
   const clean = symbol.replace(/[^A-Z0-9]/gi, "").toUpperCase();
   return config.tierFloors[clean] ?? config.defaultFloorUsd;
 }
+export function getAssetTier(symbol: string, config: WhaleShockConfig): WhaleShockAssetTier {
+  const clean = symbol.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+  return config.tierFloors[clean] != null ? "mid_cap" : "altcoin";
+}
 export function aggregateWhaleShocks(
   alerts: Array<{ symbol: string; direction: string; usd_value: number; source?: string }>,
   config: WhaleShockConfig = DEFAULT_WHALE_SHOCK_CONFIG,
@@ -102,6 +113,8 @@ export function aggregateWhaleShocks(
   for (const alert of alerts) {
     const symbol = alert.symbol?.replace(/[^A-Z0-9]/gi, "").toUpperCase(), value = Number(alert.usd_value);
     if (!symbol || !Number.isFinite(value) || value <= 0) continue;
+    // Majors are excluded — their whale flow is routine liquidity, not a shock.
+    if (WHALE_SHOCK_EXCLUDED_MAJORS.has(symbol)) continue;
     const direction = alert.direction?.toLowerCase();
     if (direction !== "accumulation" && direction !== "distribution") continue;
     const current = groups.get(symbol) ?? { totalUsd: 0, buyUsd: 0, sellUsd: 0, count: 0, sources: new Set<string>() };
@@ -113,8 +126,10 @@ export function aggregateWhaleShocks(
   const qualifying: WhaleShockCandidate[] = [];
   for (const [symbol, stats] of groups) {
     const buyRatio = stats.totalUsd > 0 ? stats.buyUsd / stats.totalUsd : 0;
-    if (stats.buyUsd >= getRequiredVolumeFloor(symbol, config) && buyRatio >= config.minBuyRatio && stats.count >= config.minAlerts) {
-      qualifying.push({ symbol, totalUsd: stats.totalUsd, buyUsd: stats.buyUsd, sellUsd: stats.sellUsd, buyRatio,
+    const requiredFloorUsd = getRequiredVolumeFloor(symbol, config);
+    if (stats.buyUsd >= requiredFloorUsd && buyRatio >= config.minBuyRatio && stats.count >= config.minAlerts) {
+      qualifying.push({ symbol, assetTier: getAssetTier(symbol, config), requiredFloorUsd,
+        totalUsd: stats.totalUsd, buyUsd: stats.buyUsd, sellUsd: stats.sellUsd, buyRatio,
         alertCount: stats.count, sources: [...stats.sources], windowMinutes: config.windowMinutes });
     }
   }

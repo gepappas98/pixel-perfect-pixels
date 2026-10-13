@@ -2,11 +2,34 @@ import { describe, expect, it } from "vitest";
 import { aggregateWhaleShocks, DEFAULT_WHALE_SHOCK_CONFIG, evaluate1hTechnicalConfirmation, evaluateRegimeShockTransition, getRequiredVolumeFloor } from "./whale-shock.ts";
 
 describe("Whale Shock aggregation", () => {
-  it("uses configured tier floors", () => {
-    expect(getRequiredVolumeFloor("BTC", DEFAULT_WHALE_SHOCK_CONFIG)).toBe(200_000);
+  it("uses configured tier floors for mid-caps and default floor for altcoins", () => {
     expect(getRequiredVolumeFloor("INJ", DEFAULT_WHALE_SHOCK_CONFIG)).toBe(50_000);
-    expect(getRequiredVolumeFloor("SOL", DEFAULT_WHALE_SHOCK_CONFIG)).toBe(75_000);
+    expect(getRequiredVolumeFloor("AVAX", DEFAULT_WHALE_SHOCK_CONFIG)).toBe(50_000);
     expect(getRequiredVolumeFloor("ONDO", DEFAULT_WHALE_SHOCK_CONFIG)).toBe(35_000);
+    expect(getRequiredVolumeFloor("PENDLE", DEFAULT_WHALE_SHOCK_CONFIG)).toBe(35_000);
+  });
+  it("excludes majors (BTC/ETH/SOL) even with huge accumulation", () => {
+    const majors = [
+      { symbol: "BTC", direction: "accumulation", usd_value: 500_000 },
+      { symbol: "BTC", direction: "accumulation", usd_value: 500_000 },
+      { symbol: "BTC", direction: "accumulation", usd_value: 500_000 },
+      { symbol: "ETH", direction: "accumulation", usd_value: 300_000 },
+      { symbol: "ETH", direction: "accumulation", usd_value: 300_000 },
+      { symbol: "ETH", direction: "accumulation", usd_value: 300_000 },
+      { symbol: "SOL", direction: "accumulation", usd_value: 100_000 },
+      { symbol: "SOL", direction: "accumulation", usd_value: 100_000 },
+      { symbol: "SOL", direction: "accumulation", usd_value: 100_000 },
+    ];
+    expect(aggregateWhaleShocks(majors)).toHaveLength(0);
+  });
+  it("dynamically qualifies an unknown altcoin above the default floor", () => {
+    const candidates = aggregateWhaleShocks([
+      { symbol: "PENDLE", direction: "accumulation", usd_value: 15_000 },
+      { symbol: "PENDLE", direction: "accumulation", usd_value: 12_000 },
+      { symbol: "PENDLE", direction: "accumulation", usd_value: 10_000 },
+    ]);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({ symbol: "PENDLE", assetTier: "altcoin", requiredFloorUsd: 35_000, buyUsd: 37_000 });
   });
   it("qualifies a 3-alert accumulation cluster above floor and 75% buy ratio", () => {
     const candidates = aggregateWhaleShocks([
