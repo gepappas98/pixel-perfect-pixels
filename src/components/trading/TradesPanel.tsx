@@ -168,9 +168,14 @@ export function TradesPanel() {
               const positive = (pnl ?? 0) >= 0;
 
               return (
-                <tr key={t.id} className={`border-t border-border font-mono text-xs ${t.entry_source === "early_entry_regime" ? "bg-violet-500/10 ring-1 ring-inset ring-violet-500/30" : ""}`}>
+                <tr key={t.id} className={`border-t border-border font-mono text-xs ${t.entry_source === "whale_shock" ? "bg-cyan-500/10 ring-1 ring-inset ring-cyan-500/30" : t.entry_source === "early_entry_regime" ? "bg-violet-500/10 ring-1 ring-inset ring-violet-500/30" : ""}`}>
                   <td className="py-1.5 font-semibold">
                     <span>{t.symbol}</span>
+                    {t.entry_source === "whale_shock" && (
+                      <span className="ml-2 inline-flex rounded border border-cyan-400/50 bg-cyan-500/15 px-1.5 py-0.5 align-middle text-[9px] font-bold tracking-wide text-cyan-300">
+                        WHALE SHOCK
+                      </span>
+                    )}
                     {t.entry_source === "early_entry_regime" && (
                       <span className="ml-2 inline-flex rounded border border-violet-400/50 bg-violet-500/15 px-1.5 py-0.5 align-middle text-[9px] font-bold tracking-wide text-violet-300">
                         EARLY ENTRY
