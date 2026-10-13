@@ -1,5 +1,8 @@
+export type WhaleShockAssetTier = "mid_cap" | "altcoin";
 export interface WhaleShockCandidate {
   symbol: string;
+  assetTier: WhaleShockAssetTier;
+  requiredFloorUsd: number;
   totalUsd: number;
   buyUsd: number;
   sellUsd: number;
