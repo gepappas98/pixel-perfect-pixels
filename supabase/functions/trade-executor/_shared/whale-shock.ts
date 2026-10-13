@@ -29,10 +29,14 @@ export interface WhaleShockConfig {
 export const DEFAULT_WHALE_SHOCK_CONFIG: WhaleShockConfig = {
   windowMinutes: 30, minAlerts: 3, minBuyRatio: 0.75, cooldownMinutes: 10,
   paperPositionUsd: 1000, takeProfitPct: 0.06, stopLossPct: 0.03,
-  tierFloors: { BTC: 200000, ETH: 200000, SOL: 75000, INJ: 50000, AVAX: 50000, LINK: 50000, SUI: 50000, NEAR: 50000 },
+  // Majors (BTC/ETH/SOL) are excluded: their whale flow is routine liquidity,
+  // not a shock. Only mid-caps and dynamically discovered altcoins qualify.
+  tierFloors: { INJ: 50000, AVAX: 50000, LINK: 50000, SUI: 50000, NEAR: 50000 },
   defaultFloorUsd: 35000, requireInitialBearish: true, minViolentPositiveShift: 0.25,
   require1hTechnicalBullish: true,
 };
+// Symbols that can never trigger a Whale Shock entry.
+export const WHALE_SHOCK_EXCLUDED_MAJORS = new Set(["BTC", "ETH", "SOL"]);
 const REGIME_NUMERIC: Record<RegimeLabel, number> = { strong_bull: 1, bull: 0.5, sideways: 0, bear: -0.5, strong_bear: -1 };
 export function parseRegime(label?: string | null): RegimeLabel {
   const norm = String(label ?? "").toLowerCase().replace(/[ -]+/g, "_");
