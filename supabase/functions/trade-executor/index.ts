@@ -1,6 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { binancePair, decideExit, normalizeExitSettings, type OpenTradeRow } from "../_shared/trade-exit.ts";
-import { aggregateWhaleShocks, DEFAULT_WHALE_SHOCK_CONFIG } from "./_shared/whale-shock.ts";
+import { aggregateWhaleShocks, DEFAULT_WHALE_SHOCK_CONFIG, evaluate1hTechnicalConfirmation, evaluateRegimeShockTransition } from "./_shared/whale-shock.ts";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -342,16 +342,46 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
     if (cooldownErr) throw new Error(`whale_shock cooldown query: ${cooldownErr.message}`);
 
     const onCooldown = new Set((recentTrades ?? []).map((trade) => String(trade.symbol).toUpperCase()));
-    const { data: latestSignals, error: regimeErr } = await supabase
+    // Repo schema stores regime_label, not a composite_signals.score column.
+    const regimeWindowIso = new Date(now - 6 * 60 * 60_000).toISOString();
+    // Regime labels are stored per symbol, so evaluate each candidate's own history
+    // instead of mixing unrelated symbols into a synthetic market-wide transition.
+    const { data: regimeHistory, error: regimeErr } = await supabase
       .from("composite_signals")
-      .select("regime_label")
+      .select("symbol,regime_label,created_at")
+      .in("symbol", symbols)
+      .gte("created_at", regimeWindowIso)
       .not("regime_label", "is", null)
+      .order("created_at", { ascending: true })
+      .limit(1000);
+    if (regimeErr) throw new Error(`market regime history query: ${regimeErr.message}`);
+    const regimesBySymbol = new Map<string, any[]>();
+    for (const row of regimeHistory ?? []) {
+      const key = String(row.symbol ?? "").toUpperCase();
+      if (!key) continue;
+      const history = regimesBySymbol.get(key) ?? [];
+      history.push(row);
+      regimesBySymbol.set(key, history);
+    }
+    const regimeTransitions = new Map<string, ReturnType<typeof evaluateRegimeShockTransition>>();
+    for (const candidate of candidates) {
+      regimeTransitions.set(candidate.symbol, evaluateRegimeShockTransition(regimesBySymbol.get(candidate.symbol) ?? [], config));
+    }
+
+    const { data: technicalRows, error: technicalErr } = await supabase
+      .from("indicator_snapshots")
+      .select("symbol,timeframe,signal,rsi,macd,macd_signal,created_at")
+      .in("symbol", symbols)
+      .eq("timeframe", "1h")
+      .gte("created_at", regimeWindowIso)
       .order("created_at", { ascending: false })
-      .limit(1);
-    if (regimeErr) throw new Error(`market regime query: ${regimeErr.message}`);
-    const regime = String(latestSignals?.[0]?.regime_label ?? "neutral");
-    const normalizedRegime = regime.toLowerCase().replace(/[ -]+/g, "_");
-    const isExtremeBear = normalizedRegime.includes("strong_bear") || normalizedRegime.includes("extreme_bear");
+      .limit(Math.max(100, symbols.length * 5));
+    if (technicalErr) throw new Error(`1h technical snapshot query: ${technicalErr.message}`);
+    const tech1hMap = new Map<string, any>();
+    for (const row of technicalRows ?? []) {
+      const key = String(row.symbol ?? "").toUpperCase();
+      if (key && !tech1hMap.has(key)) tech1hMap.set(key, row);
+    }
 
     const { prices, host, errors: priceErrors } = await fetchAllSpotPrices();
     result.price_host = host;
@@ -364,9 +394,18 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
         console.log("[WHALE_SHOCK] skipped on cooldown", candidate.symbol);
         continue;
       }
-      if (isExtremeBear) {
+      const regimeTransition = regimeTransitions.get(candidate.symbol);
+      if (!regimeTransition?.passed) {
         result.skipped = Number(result.skipped) + 1;
-        console.log("[WHALE_SHOCK] skipped due to extreme bear regime", { symbol: candidate.symbol, regime });
+        console.log("[WHALE_SHOCK] regime gate blocked", { symbol: candidate.symbol, reason: regimeTransition?.reason ?? "No regime history available" });
+        continue;
+      }
+      const regime = regimeTransition.currentRegime;
+
+      const techCheck = evaluate1hTechnicalConfirmation(tech1hMap.get(candidate.symbol), config);
+      if (!techCheck.passed) {
+        result.skipped = Number(result.skipped) + 1;
+        console.log("[WHALE_SHOCK] 1h technical gate blocked", { symbol: candidate.symbol, reason: techCheck.reason });
         continue;
       }
 
@@ -382,7 +421,7 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
       const stopLoss = price * (1 - config.stopLossPct);
       const takeProfit = price * (1 + config.takeProfitPct);
       const entryAt = new Date().toISOString();
-      const sourceTags = ["paper", "whale-shock", "spot-long-only", "cluster-trigger", "research-only"];
+      const sourceTags = ["paper", "whale-shock", "spot-long-only", "bearish-reversal", "1h-confirmed", "research-only"];
       const entryMetadata = {
         shock_volume_usd: candidate.buyUsd,
         total_volume_usd: candidate.totalUsd,
@@ -395,7 +434,9 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
         min_buy_ratio: config.minBuyRatio,
         min_alerts: config.minAlerts,
         cooldown_minutes: config.cooldownMinutes,
-        strategy_version: "whale-shock-v1",
+        strategy_version: "whale-shock-reversal-v2",
+        regime_transition: regimeTransition,
+        technical_confirmation: techCheck,
         captured_at: entryAt,
       };
 
@@ -445,8 +486,8 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
         upstream: {
           whale_shock: candidate,
           strategy: { version: "whale-shock-v1", config, required_volume_floor_usd: entryMetadata.required_volume_floor_usd },
-          market_regime: { label: regime, source: "latest_persisted_composite_signal" },
-          technicals: null,
+          market_regime: { ...regimeTransition, source: "composite_signals_regime_history_6h" },
+          technicals: { ...techCheck, timeframe: "1h" },
           ai_council: null,
         },
         execution_context: {
