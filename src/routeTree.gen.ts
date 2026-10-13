@@ -14,6 +14,8 @@ import { Route as AboutRouteImport } from './routes/about'
 import { Route as AiReportRouteImport } from './routes/ai-report'
 import { Route as ApiDiagnosticRouteImport } from './routes/api/diagnostic'
 import { Route as ApiBinanceSpotPriceRouteImport } from './routes/api/binance/spot-price'
+import { Route as ApiPublicAiCouncilBatchRouteImport } from './routes/api/public/ai-council-batch'
+import { Route as ApiPublicCouncilLessonsBatchRouteImport } from './routes/api/public/council-lessons-batch'
 import { Route as ApiPublicCronRouteImport } from './routes/api/public/cron'
 import { Route as ApiPublicMcpDiagnosticRouteImport } from './routes/api/public/mcp-diagnostic'
 
@@ -42,6 +44,17 @@ const ApiBinanceSpotPriceRoute = ApiBinanceSpotPriceRouteImport.update({
   path: '/api/binance/spot-price',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicAiCouncilBatchRoute = ApiPublicAiCouncilBatchRouteImport.update({
+  id: '/api/public/ai-council-batch',
+  path: '/api/public/ai-council-batch',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPublicCouncilLessonsBatchRoute =
+  ApiPublicCouncilLessonsBatchRouteImport.update({
+    id: '/api/public/council-lessons-batch',
+    path: '/api/public/council-lessons-batch',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiPublicCronRoute = ApiPublicCronRouteImport.update({
   id: '/api/public/cron',
   path: '/api/public/cron',
@@ -59,6 +72,8 @@ export interface FileRoutesByFullPath {
   '/ai-report': typeof AiReportRoute
   '/api/diagnostic': typeof ApiDiagnosticRoute
   '/api/binance/spot-price': typeof ApiBinanceSpotPriceRoute
+  '/api/public/ai-council-batch': typeof ApiPublicAiCouncilBatchRoute
+  '/api/public/council-lessons-batch': typeof ApiPublicCouncilLessonsBatchRoute
   '/api/public/cron': typeof ApiPublicCronRoute
   '/api/public/mcp-diagnostic': typeof ApiPublicMcpDiagnosticRoute
 }
@@ -68,6 +83,8 @@ export interface FileRoutesByTo {
   '/ai-report': typeof AiReportRoute
   '/api/diagnostic': typeof ApiDiagnosticRoute
   '/api/binance/spot-price': typeof ApiBinanceSpotPriceRoute
+  '/api/public/ai-council-batch': typeof ApiPublicAiCouncilBatchRoute
+  '/api/public/council-lessons-batch': typeof ApiPublicCouncilLessonsBatchRoute
   '/api/public/cron': typeof ApiPublicCronRoute
   '/api/public/mcp-diagnostic': typeof ApiPublicMcpDiagnosticRoute
 }
@@ -78,6 +95,8 @@ export interface FileRoutesById {
   '/ai-report': typeof AiReportRoute
   '/api/diagnostic': typeof ApiDiagnosticRoute
   '/api/binance/spot-price': typeof ApiBinanceSpotPriceRoute
+  '/api/public/ai-council-batch': typeof ApiPublicAiCouncilBatchRoute
+  '/api/public/council-lessons-batch': typeof ApiPublicCouncilLessonsBatchRoute
   '/api/public/cron': typeof ApiPublicCronRoute
   '/api/public/mcp-diagnostic': typeof ApiPublicMcpDiagnosticRoute
 }
@@ -89,6 +108,8 @@ export interface FileRouteTypes {
     | '/ai-report'
     | '/api/diagnostic'
     | '/api/binance/spot-price'
+    | '/api/public/ai-council-batch'
+    | '/api/public/council-lessons-batch'
     | '/api/public/cron'
     | '/api/public/mcp-diagnostic'
   fileRoutesByTo: FileRoutesByTo
@@ -98,6 +119,8 @@ export interface FileRouteTypes {
     | '/ai-report'
     | '/api/diagnostic'
     | '/api/binance/spot-price'
+    | '/api/public/ai-council-batch'
+    | '/api/public/council-lessons-batch'
     | '/api/public/cron'
     | '/api/public/mcp-diagnostic'
   id:
@@ -107,6 +130,8 @@ export interface FileRouteTypes {
     | '/ai-report'
     | '/api/diagnostic'
     | '/api/binance/spot-price'
+    | '/api/public/ai-council-batch'
+    | '/api/public/council-lessons-batch'
     | '/api/public/cron'
     | '/api/public/mcp-diagnostic'
   fileRoutesById: FileRoutesById
@@ -117,6 +142,8 @@ export interface RootRouteChildren {
   AiReportRoute: typeof AiReportRoute
   ApiDiagnosticRoute: typeof ApiDiagnosticRoute
   ApiBinanceSpotPriceRoute: typeof ApiBinanceSpotPriceRoute
+  ApiPublicAiCouncilBatchRoute: typeof ApiPublicAiCouncilBatchRoute
+  ApiPublicCouncilLessonsBatchRoute: typeof ApiPublicCouncilLessonsBatchRoute
   ApiPublicCronRoute: typeof ApiPublicCronRoute
   ApiPublicMcpDiagnosticRoute: typeof ApiPublicMcpDiagnosticRoute
 }
@@ -158,6 +185,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiBinanceSpotPriceRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/ai-council-batch': {
+      id: '/api/public/ai-council-batch'
+      path: '/api/public/ai-council-batch'
+      fullPath: '/api/public/ai-council-batch'
+      preLoaderRoute: typeof ApiPublicAiCouncilBatchRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/council-lessons-batch': {
+      id: '/api/public/council-lessons-batch'
+      path: '/api/public/council-lessons-batch'
+      fullPath: '/api/public/council-lessons-batch'
+      preLoaderRoute: typeof ApiPublicCouncilLessonsBatchRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/cron': {
       id: '/api/public/cron'
       path: '/api/public/cron'
@@ -181,6 +222,8 @@ const rootRouteChildren: RootRouteChildren = {
   AiReportRoute: AiReportRoute,
   ApiDiagnosticRoute: ApiDiagnosticRoute,
   ApiBinanceSpotPriceRoute: ApiBinanceSpotPriceRoute,
+  ApiPublicAiCouncilBatchRoute: ApiPublicAiCouncilBatchRoute,
+  ApiPublicCouncilLessonsBatchRoute: ApiPublicCouncilLessonsBatchRoute,
   ApiPublicCronRoute: ApiPublicCronRoute,
   ApiPublicMcpDiagnosticRoute: ApiPublicMcpDiagnosticRoute,
 }
