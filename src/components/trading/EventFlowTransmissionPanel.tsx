@@ -25,7 +25,7 @@ export function EventFlowTransmissionPanel(){
   const latestMarketSentiment=marketSentiment[0];
   const opened=paperDecisions.filter(x=>x.status==="OPENED").length;
   const alreadyOpen=paperDecisions.filter(x=>x.status==="ALREADY_OPEN").length;
-  const publicSentimentRows=sentiment.filter(x=>x.source==="free-crypto-news");
+  const publicSentimentRows=sentiment.filter(x=>x.source==="rss-news-consensus");
   const publicSentimentAssetCount=new Set(publicSentimentRows.map(x=>x.asset)).size;
   const latestPublicSentiment=publicSentimentRows.reduce((latest,row)=>!latest||row.observed_at>latest.observed_at?row:latest,undefined as SentimentSnapshot|undefined);
   const complete=tx.filter(x=>x.data_quality==="complete").length;
@@ -48,7 +48,7 @@ export function EventFlowTransmissionPanel(){
       <div className="flex items-center justify-between gap-2 text-[10px] font-mono"><span className="font-semibold">Paper OPEN status</span><span className="text-bull">ACTIVE · SPOT LONG-ONLY</span></div>
       <div className="mt-1 text-[9px] font-mono text-muted-foreground">Requires fresh RSS sentiment ≥ +0.25, confidence ≥ 0.55, Whale Flow accumulation ≥ +0.10 and fresh Binance Spot price. $1,000 notional · TP +4% · SL −3% · 6h cooldown. Existing signal strategy and live execution are unchanged.</div>
       <div className="mt-2 grid grid-cols-3 gap-1.5 text-[9px] font-mono">
-        <div className="rounded bg-background/70 p-1.5"><div className="text-muted-foreground">New OPENs</div><div className="mt-0.5 font-semibold">{opened}</div></div>
+        <div className="rounded bg-background/70 p-1.5"><div className="text-muted-foreground">Opened this scan</div><div className="mt-0.5 font-semibold">{opened}</div></div>
         <div className="rounded bg-background/70 p-1.5"><div className="text-muted-foreground">Already open</div><div className="mt-0.5 font-semibold">{alreadyOpen}</div></div>
         <div className="rounded bg-background/70 p-1.5"><div className="text-muted-foreground">Assets checked</div><div className="mt-0.5 font-semibold">{paperDecisions.length}</div></div>
       </div>
@@ -68,8 +68,8 @@ export function EventFlowTransmissionPanel(){
         {latestMarketSentiment ? <><span className="font-semibold">{latestMarketSentiment.classification}</span>{" · "}<span>{Number(latestMarketSentiment.value)}/100</span>{" · "}<span>{ago(latestMarketSentiment.observed_at)} ago</span></> : <span>unavailable — waiting for Alternative.me data</span>}
       </div>
       <div className="mt-0.5 text-muted-foreground">Source: Alternative.me Fear &amp; Greed Index. Daily global context only, not asset-specific sentiment.</div>
-      <div className="mt-0.5 text-muted-foreground">{latestPublicSentiment ? `Per-asset sentiment: Free Crypto News public endpoint · ${publicSentimentAssetCount} assets in loaded snapshots · latest ${ago(latestPublicSentiment.observed_at)} ago. Coverage depends on provider responses; unavailable assets are not assigned synthetic values.` : "Per-asset sentiment: no recent Free Crypto News snapshots available. Public endpoint availability/schema are not guaranteed; missing values remain unavailable."}</div>
-      <div className="mt-0.5 text-muted-foreground">News events use CoinDesk, Cointelegraph and Decrypt feeds with transparent keyword-based labels; global Fear &amp; Greed remains separate.</div>
+      <div className="mt-0.5 text-muted-foreground">{latestPublicSentiment ? `Per-asset sentiment: RSS news consensus · ${publicSentimentAssetCount} assets in loaded snapshots · latest ${ago(latestPublicSentiment.observed_at)} ago. Coverage depends on provider responses; unavailable assets are not assigned synthetic values.` : "Per-asset RSS consensus unavailable; missing assets remain unavailable and are not assigned synthetic values."}</div>
+      <div className="mt-0.5 text-muted-foreground">News events use the configured free RSS feeds and transparent keyword-based labels; global Fear &amp; Greed remains separate.</div>
     </div>
 
     {latestShock && <div className="mt-2 rounded border border-border/60 bg-muted/20 p-2 text-[9px] font-mono">
