@@ -40,11 +40,12 @@ async function getActiveSymbolPositions(
   for (let from = 0; ; from += pageSize) {
     const { data, error } = await supabase
       .from("trades")
-      .select("symbol")
+      .select("id,symbol")
       .eq("status", "open")
       .eq("side", "buy")
       .eq("mode", "paper")
       .order("created_at", { ascending: true })
+      .order("id", { ascending: true })
       .range(from, from + pageSize - 1);
     if (error) throw new Error(`active symbol exposure query failed: ${error.message}`);
     const rows = data ?? [];
@@ -501,6 +502,7 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
   const cooldownIso = new Date(now - config.cooldownMinutes * 60_000).toISOString();
   const result: Record<string, unknown> = {
     status: "ok", opened: 0, candidates: 0, skipped: 0, trades: [], errors: [],
+    symbol_cap_skips: [] as Array<Record<string, unknown>>,
   };
   const errors = result.errors as string[];
   const microCache = new Map<string, Promise<MicroGateAssessment>>();
@@ -586,10 +588,12 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
       const activeCount = activeCounts.get(exposureSymbol) ?? 0;
       if (activeCount >= MAX_ACTIVE_TRADES_PER_SYMBOL) {
         result.skipped = Number(result.skipped) + 1;
-        console.log("[SYMBOL_CAP_SKIP]", JSON.stringify({
+        const capSkip = {
           symbol: exposureSymbol, active_count: activeCount, cap: MAX_ACTIVE_TRADES_PER_SYMBOL,
-          entry_source: "whale_shock",
-        }));
+          entry_source: "whale_shock", decision: "SKIP", stage: "PER_SYMBOL_CAP",
+        };
+        (result.symbol_cap_skips as Array<Record<string, unknown>>).push(capSkip);
+        console.log("[SYMBOL_CAP_SKIP]", JSON.stringify(capSkip));
         continue;
       }
       if (onCooldown.has(candidate.symbol)) {
