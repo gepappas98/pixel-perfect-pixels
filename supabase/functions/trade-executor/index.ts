@@ -119,29 +119,20 @@ async function assessCurrentMarketRegime(
     return { ready: false, assessment: null, reason: sourceFailures.join("; ") };
   }
 
-  // Match the Market Regime panel: prefer 4h snapshots from 6h, then 24h, then 7d.
-  let indicatorRows: Array<{ symbol?: unknown; timeframe?: unknown; signal?: unknown }> = [];
-  let lastTechnicalError: string | null = null;
-  const technicalWindows = [6 * 60 * 60 * 1000, 24 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000];
-  for (const windowMs of technicalWindows) {
-    const since = new Date(now - windowMs).toISOString();
-    const result = await supabase.from("indicator_snapshots")
-      .select("symbol,timeframe,signal,created_at")
-      .eq("timeframe", "4h").gte("created_at", since).lte("created_at", nowIso)
-      .order("created_at", { ascending: false }).limit(5000);
-    if (result.error) {
-      lastTechnicalError = result.error.message;
-      continue;
-    }
-    indicatorRows = (result.data ?? []) as Array<{ symbol?: unknown; timeframe?: unknown; signal?: unknown }>;
-    if (indicatorRows.length) break;
+  // Execution gate requires fresh 4h inputs. Unlike the display panel fallback,
+  // do not classify from 24h/7d technicals because they may be stale for entries.
+  const technicalSince = new Date(now - 6 * 60 * 60 * 1000).toISOString();
+  const indicators = await supabase.from("indicator_snapshots")
+    .select("symbol,timeframe,signal,created_at")
+    .eq("timeframe", "4h").gte("created_at", technicalSince).lte("created_at", nowIso)
+    .order("created_at", { ascending: false }).limit(5000);
+  if (indicators.error) {
+    return { ready: false, assessment: null, reason: "4h technicals: " + indicators.error.message };
   }
-
+  const indicatorRows = (indicators.data ?? []) as Array<{ symbol?: unknown; timeframe?: unknown; signal?: unknown }>;
   const technicalSymbols = new Set(indicatorRows.map((row) => String(row.symbol ?? "").toUpperCase()).filter(Boolean));
   if (technicalSymbols.size === 0) {
-    return { ready: false, assessment: null, reason: lastTechnicalError
-      ? "4h technical snapshots unavailable: " + lastTechnicalError
-      : "no 4h indicator snapshots in the last 7d" };
+    return { ready: false, assessment: null, reason: "no fresh 4h indicator snapshots in the last 6h" };
   }
 
   return {
