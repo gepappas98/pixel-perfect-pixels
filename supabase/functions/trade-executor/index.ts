@@ -1,6 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { binancePair, decideExit, normalizeExitSettings, type OpenTradeRow } from "../_shared/trade-exit.ts";
 import { aggregateWhaleShocks, DEFAULT_WHALE_SHOCK_CONFIG, evaluate1hTechnicalConfirmation, evaluateRegimeShockTransition } from "./_shared/whale-shock.ts";
+import { evaluateMicroTimeframeGate, type MicroTimeframeState } from "./_shared/micro-trend-gate.ts";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -24,6 +25,82 @@ const STOP_LOSS_PCT = 0.03;
 const TAKE_PROFIT_PCT = 0.06;
 const EXECUTION_WINDOW_MINUTES = 15;
 const MAX_AUDIT_SIGNALS = 500;
+
+type MicroGateAssessment = {
+  ready: boolean;
+  state: MicroTimeframeState | null;
+  decision: ReturnType<typeof evaluateMicroTimeframeGate> | null;
+  reason: string;
+};
+
+const MICRO_SNAPSHOT_MAX_AGE_MS = 20 * 60 * 1000;
+
+async function assessMicroTimeframes(
+  supabase: ReturnType<typeof getServiceClient>,
+  symbol: string,
+): Promise<MicroGateAssessment> {
+  const base = String(symbol).toUpperCase().replace(/USDT$/, "");
+  const candidates = [...new Set([base, `${base}USDT`])];
+  const { data, error } = await supabase
+    .from("indicator_snapshots")
+    .select("symbol,timeframe,signal,rsi,created_at")
+    .in("symbol", candidates)
+    .in("timeframe", ["5m", "15m", "1h"])
+    .order("created_at", { ascending: false })
+    .limit(12);
+
+  if (error) return { ready: false, state: null, decision: null, reason: `snapshot query failed: ${error.message}` };
+
+  const byTf = new Map<string, any>();
+  for (const row of data ?? []) {
+    const tf = String(row.timeframe);
+    if (!byTf.has(tf)) byTf.set(tf, row);
+  }
+
+  const missing: string[] = [];
+  const stale: string[] = [];
+  for (const tf of ["5m", "15m", "1h"]) {
+    const row = byTf.get(tf);
+    if (!row) { missing.push(tf); continue; }
+    const age = Date.now() - new Date(String(row.created_at ?? "")).getTime();
+    if (!Number.isFinite(age) || age < 0 || age > MICRO_SNAPSHOT_MAX_AGE_MS) stale.push(tf);
+  }
+  if (missing.length || stale.length) {
+    const parts = [];
+    if (missing.length) parts.push(`missing=${missing.join(",")}`);
+    if (stale.length) parts.push(`stale>${MICRO_SNAPSHOT_MAX_AGE_MS / 60000}m=${stale.join(",")}`);
+    return { ready: false, state: null, decision: null, reason: `MICRO_DATA_NOT_READY: ${parts.join("; ")}` };
+  }
+
+  const trend = (value: unknown): "bullish" | "bearish" | "neutral" => {
+    const normalized = String(value ?? "").toLowerCase();
+    return normalized === "bullish" || normalized === "bearish" ? normalized : "neutral";
+  };
+  const state: MicroTimeframeState = {
+    symbol: base,
+    tf5m: trend(byTf.get("5m")?.signal),
+    tf15m: trend(byTf.get("15m")?.signal),
+    tf1h: trend(byTf.get("1h")?.signal),
+    rsi5m: byTf.get("5m")?.rsi == null ? null : Number(byTf.get("5m").rsi),
+    rsi15m: byTf.get("15m")?.rsi == null ? null : Number(byTf.get("15m").rsi),
+    rsi1h: byTf.get("1h")?.rsi == null ? null : Number(byTf.get("1h").rsi),
+  };
+  return { ready: true, state, decision: evaluateMicroTimeframeGate(state), reason: "" };
+}
+
+async function getCachedMicroAssessment(
+  supabase: ReturnType<typeof getServiceClient>,
+  symbol: string,
+  cache: Map<string, Promise<MicroGateAssessment>>,
+): Promise<MicroGateAssessment> {
+  const key = String(symbol).toUpperCase();
+  let pending = cache.get(key);
+  if (!pending) {
+    pending = assessMicroTimeframes(supabase, key);
+    cache.set(key, pending);
+  }
+  return pending;
+}
 
 async function getCurrentPrice(symbol: string): Promise<number> {
   const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}USDT`);
@@ -318,6 +395,7 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
     status: "ok", opened: 0, candidates: 0, skipped: 0, trades: [], errors: [],
   };
   const errors = result.errors as string[];
+  const microCache = new Map<string, Promise<MicroGateAssessment>>();
 
   try {
     const { data: alerts, error: alertErr } = await supabase
@@ -402,6 +480,17 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
       }
       const regime = regimeTransition.currentRegime;
 
+      const micro = await getCachedMicroAssessment(supabase, candidate.symbol, microCache);
+      if (!micro.ready || !micro.decision?.allowBuy) {
+        result.skipped = Number(result.skipped) + 1;
+        console.log("[WHALE_SHOCK] micro timeframe gate blocked", {
+          symbol: candidate.symbol,
+          reason: micro.ready ? micro.decision?.reason : micro.reason,
+          state: micro.state,
+        });
+        continue;
+      }
+
       const techCheck = evaluate1hTechnicalConfirmation(tech1hMap.get(candidate.symbol), config);
       if (!techCheck.passed) {
         result.skipped = Number(result.skipped) + 1;
@@ -438,6 +527,8 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
         strategy_version: "whale-shock-reversal-v2",
         regime_transition: regimeTransition,
         technical_confirmation: techCheck,
+        micro_gate: micro.decision,
+        micro_state: micro.state,
         captured_at: entryAt,
       };
 
@@ -489,6 +580,8 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
           strategy: { version: "whale-shock-v1", config, required_volume_floor_usd: entryMetadata.required_volume_floor_usd },
           market_regime: { ...regimeTransition, source: "composite_signals_regime_history_6h" },
           technicals: { ...techCheck, timeframe: "1h" },
+          micro_gate: micro.decision,
+          micro_state: micro.state,
           ai_council: null,
         },
         execution_context: {
@@ -587,6 +680,7 @@ Deno.serve(async (req) => {
     const opened: unknown[] = [];
     const errors: Array<{ signal_id: string; symbol: string; error: string }> = [];
     const auditEvents: Array<Record<string, unknown>> = [];
+    const standardMicroCache = new Map<string, Promise<MicroGateAssessment>>();
 
     for (const signal of eligibleSignals) {
       const signalId = String(signal.id);
@@ -604,6 +698,22 @@ Deno.serve(async (req) => {
           .update({ research_decision: "rejected", research_reason: "confidence_below_minimum_0.60" })
           .eq("composite_signal_id", signalId)
           .eq("research_decision", "pending_execution_audit");
+        continue;
+      }
+
+      const micro = await getCachedMicroAssessment(supabase, symbol, standardMicroCache);
+      if (!micro.ready || !micro.decision?.allowBuy) {
+        const reason = micro.ready ? (micro.decision?.reason ?? "micro gate rejected") : micro.reason;
+        auditEvents.push({
+          ts: new Date().toISOString(), symbol, signal_id: signalId,
+          stage: "MICRO_TF_GATE", decision: "REJECT", reason,
+          details: { state: micro.state, data_ready: micro.ready },
+        });
+        await supabase.from("repeated_buy_research_ledger")
+          .update({ research_decision: "rejected", research_reason: `micro_tf_gate: ${reason}` })
+          .eq("composite_signal_id", signalId)
+          .eq("research_decision", "pending_execution_audit");
+        console.log("[MICRO_GATE_REJECT]", symbol, reason);
         continue;
       }
 
@@ -685,7 +795,18 @@ Deno.serve(async (req) => {
         opened.push(trade);
 
         // Complete the trigger-created placeholder without risking the inserted trade.
-        await enrichEntryContextSnapshot(supabase, trade as Record<string, any>, signal as Record<string, any>);
+        const signalWithMicroContext = {
+          ...(signal as Record<string, any>),
+          entry_context_snapshot: {
+            ...((signal as Record<string, any>).entry_context_snapshot ?? {}),
+            technicals: {
+              ...(((signal as Record<string, any>).entry_context_snapshot ?? {}).technicals ?? {}),
+              micro_gate: micro.decision,
+              micro_state: micro.state,
+            },
+          },
+        };
+        await enrichEntryContextSnapshot(supabase, trade as Record<string, any>, signalWithMicroContext);
 
         await supabase.from("repeated_buy_research_ledger")
           .update({
