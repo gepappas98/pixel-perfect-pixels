@@ -23,16 +23,17 @@ export interface Technical1hCheck {
 export interface WhaleShockConfig {
   windowMinutes: number; minAlerts: number; minBuyRatio: number; cooldownMinutes: number;
   paperPositionUsd: number; takeProfitPct: number; stopLossPct: number;
-  tierFloors: Record<string, number>; defaultFloorUsd: number;
+  midCapFloorUsd: number; defaultFloorUsd: number;
   requireInitialBearish: boolean; minViolentPositiveShift: number; require1hTechnicalBullish: boolean;
 }
 export const DEFAULT_WHALE_SHOCK_CONFIG: WhaleShockConfig = {
   windowMinutes: 30, minAlerts: 3, minBuyRatio: 0.75, cooldownMinutes: 10,
   paperPositionUsd: 1000, takeProfitPct: 0.06, stopLossPct: 0.03,
-  // Majors (BTC/ETH/SOL) are excluded: their whale flow is routine liquidity,
-  // not a shock. Only mid-caps and dynamically discovered altcoins qualify.
-  tierFloors: { INJ: 50000, AVAX: 50000, LINK: 50000, SUI: 50000, NEAR: 50000 },
-  defaultFloorUsd: 35000, requireInitialBearish: true, minViolentPositiveShift: 0.25,
+  // BTC/ETH/SOL are excluded. Listed mid-caps require $50k; all other
+  // alert symbols are dynamically classified as altcoins and require $30k.
+  midCapFloorUsd: 50_000,
+  defaultFloorUsd: 30_000,
+  requireInitialBearish: true, minViolentPositiveShift: 0.25,
   require1hTechnicalBullish: true,
 };
 // Symbols that can never trigger a Whale Shock entry.
@@ -97,13 +98,34 @@ export function evaluate1hTechnicalConfirmation(
     : `1h not bullish (signal=${sig || "none"}, rsi=${rsi?.toFixed(1) ?? "n/a"})`;
   return { symbol: snapshot1h.symbol, signal: snapshot1h.signal ?? null, rsi, macd, macdSignal, passed, reason };
 }
-export function getRequiredVolumeFloor(symbol: string, config: WhaleShockConfig): number {
-  const clean = symbol.replace(/[^A-Z0-9]/gi, "").toUpperCase();
-  return config.tierFloors[clean] ?? config.defaultFloorUsd;
+// Expanded mid-cap universe. Symbols absent from this set remain eligible as
+// dynamically discovered altcoins; this is classification, not an allow-list.
+export const EXPANDED_MID_CAPS: ReadonlySet<string> = new Set([
+  // Top L1/L2 & infrastructure
+  "INJ", "AVAX", "LINK", "SUI", "NEAR", "TIA", "SEI", "APT", "ARB", "OP",
+  "ADA", "XRP", "DOT", "ATOM", "FTM", "S", "ALGO", "RUNE", "ICP", "FIL",
+  "POL", "MATIC", "HBAR", "VET", "XLM", "LTC", "BCH", "ETC", "KAS", "STRK",
+  // DeFi & RWA
+  "UNI", "AAVE", "MKR", "CRV", "LDO", "ONDO", "ENA", "PENDLE", "DYDX", "JUP", "PYTH", "COMP",
+  // AI, data & DePIN
+  "RENDER", "FET", "TAO", "WLD", "GRT", "AR", "THETA", "JASMY", "KAITO", "VIRTUAL",
+  // Meme & high-volume ecosystems
+  "DOGE", "SHIB", "PEPE", "WIF", "BONK", "FLOKI", "RAY", "AERO",
+]);
+export function getRequiredVolumeFloor(
+  symbol: string,
+  config: WhaleShockConfig = DEFAULT_WHALE_SHOCK_CONFIG,
+): number {
+  return getAssetTier(symbol, config) === "mid_cap"
+    ? config.midCapFloorUsd
+    : config.defaultFloorUsd;
 }
-export function getAssetTier(symbol: string, config: WhaleShockConfig): WhaleShockAssetTier {
+export function getAssetTier(
+  symbol: string,
+  _config: WhaleShockConfig = DEFAULT_WHALE_SHOCK_CONFIG,
+): WhaleShockAssetTier {
   const clean = symbol.replace(/[^A-Z0-9]/gi, "").toUpperCase();
-  return config.tierFloors[clean] != null ? "mid_cap" : "altcoin";
+  return EXPANDED_MID_CAPS.has(clean) ? "mid_cap" : "altcoin";
 }
 export function aggregateWhaleShocks(
   alerts: Array<{ symbol: string; direction: string; usd_value: number; source?: string }>,
