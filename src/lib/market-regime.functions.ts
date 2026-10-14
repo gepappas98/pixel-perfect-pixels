@@ -252,7 +252,7 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
 
       // ── Reasoning ──
       const reasons: string[] = [];
-      if (Math.abs(whaleNet) >= WHALE_NEUTRAL_BAND) {
+      if (Math.abs(whaleNet) > WHALE_NEUTRAL_BAND) {
         reasons.push(
           `whales net ${whaleNet > 0 ? "buying" : "selling"} (${(Math.abs(whaleNet) * 100).toFixed(0)}% skew)`,
         );
@@ -262,7 +262,7 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
 
       if (totalTech === 0) {
         reasons.push("technicals unavailable");
-      } else if (Math.abs(techBreadth) >= TECH_NEUTRAL_BAND) {
+      } else if (Math.abs(techBreadth) > TECH_NEUTRAL_BAND) {
         reasons.push(
           techBreadth > 0
             ? `${techBull}/${totalTech} coins technically bullish`
@@ -272,7 +272,7 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
         reasons.push(`technicals neutral/mixed (${techNeu}/${totalTech} neutral)`);
       }
 
-      if (Math.abs(councilConsensus) >= COUNCIL_NEUTRAL_BAND) {
+      if (Math.abs(councilConsensus) > COUNCIL_NEUTRAL_BAND) {
         reasons.push(
           `${cBuy} BUY / ${cSell} SELL / ${cHold} HOLD / ${cAvoid} AVOID (${directionalCouncil}/${totalCouncil} directional verdicts)`,
         );
