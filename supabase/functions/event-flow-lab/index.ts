@@ -45,79 +45,67 @@ async function collectMarketSentiment(db:any){
     return {available:false,source:"alternative.me-fear-greed",error};
   }
 }
-async function collectLunarCrushSentiment(assets:string[], observedAt:string){
-  const apiKey=Deno.env.get("LUNARCRUSH_API_KEY");
-  if(!apiKey)return {rows:[],status:{available:false,provider:"lunarcrush-api4",reason:"missing_lunarcrush_api_key",configured:false}};
-  try{
-    // One bulk request for the provider's tracked-coin catalogue; never issue one request per asset.
-    const response=await fetch("https://lunarcrush.com/api4/public/coins/list/v1",{
-      headers:{Authorization:"Bearer "+apiKey,Accept:"application/json"},
-      signal:AbortSignal.timeout(15000)
-    });
-    if(!response.ok){
-      const reason=response.status===401||response.status===403?"api_key_or_plan_not_authorized":"provider_http_error";
-      console.warn("[LUNARCRUSH] request failed: HTTP "+response.status);
-      return {rows:[],status:{available:false,provider:"lunarcrush-api4",configured:true,reason,http_status:response.status}};
+async function collectPublicSentiment(assets:string[], observedAt:string){
+  // Free Crypto News documents this public endpoint without API-key authentication.
+  // Provider availability, schema and rate limits are not guaranteed; keep this research-only.
+  const provider="free-crypto-news";
+  const rows:any[]=[];
+  const failures:any[]=[];
+  const concurrency=4;
+  let cursor=0;
+  async function worker(){
+    while(cursor<assets.length){
+      const asset=assets[cursor++];
+      try{
+        const url="https://cryptocurrency.cv/api/sentiment?asset="+encodeURIComponent(asset)+"&limit=20";
+        const response=await fetch(url,{headers:{Accept:"application/json","User-Agent":"ResearchLab/1.0 (public research collector)"},signal:AbortSignal.timeout(10000)});
+        if(!response.ok){failures.push({asset,http_status:response.status});continue;}
+        const payload=await response.json();
+        // Accept only documented/recognizable numeric sentiment fields; never infer a score from a label.
+        const candidate=payload?.score ?? payload?.sentiment_score ?? payload?.sentiment?.score ?? payload?.data?.score;
+        const rawScore=finiteOrNull(candidate);
+        if(rawScore===null){failures.push({asset,reason:"unrecognized_response_schema"});continue;}
+        // Public docs/examples may expose scores in either [-1,1] or [0,100]/[0,1].
+        let normalized:number;
+        if(rawScore>=-1 && rawScore<=1) normalized=rawScore;
+        else if(rawScore>=0 && rawScore<=100) normalized=(rawScore-50)/50;
+        else {failures.push({asset,reason:"score_out_of_range"});continue;}
+        const positive=finiteOrNull(payload?.positive ?? payload?.positive_count ?? payload?.data?.positive);
+        const negative=finiteOrNull(payload?.negative ?? payload?.negative_count ?? payload?.data?.negative);
+        const neutral=finiteOrNull(payload?.neutral ?? payload?.neutral_count ?? payload?.data?.neutral);
+        const total=positive!==null||negative!==null||neutral!==null
+          ? Math.max(0,Math.floor((positive??0)+(negative??0)+(neutral??0))) : 0;
+        const label=String(payload?.label ?? payload?.sentiment?.label ?? payload?.data?.label ?? "").toLowerCase();
+        if(!Number.isFinite(normalized)||normalized < -1||normalized>1){failures.push({asset,reason:"invalid_normalized_score"});continue;}
+        rows.push({
+          asset,observed_at:observedAt,source:provider,
+          mention_count:total,unique_items:total,
+          bullish_count:Math.max(0,Math.floor(positive??0)),
+          bearish_count:Math.max(0,Math.floor(negative??0)),
+          neutral_count:Math.max(0,Math.floor(neutral??0)),
+          sentiment_score:normalized,
+          raw:{
+            provider:"Free Crypto News public sentiment API",
+            label:label||null,
+            provider_score:rawScore,
+            score_normalization:rawScore>=-1&&rawScore<=1?"provider_-1_to_1":"provider_0_to_100",
+            counts_available:positive!==null||negative!==null||neutral!==null,
+            provider_observed_at:payload?.observed_at??payload?.timestamp??null
+          }
+        });
+      }catch(e){
+        failures.push({asset,reason:"request_or_parse_error",error:e instanceof Error?e.message:String(e)});
+      }
     }
-    const payload=await response.json();
-    const coins=Array.isArray(payload?.data)?payload.data:[];
-    if(!coins.length)return {rows:[],status:{available:false,provider:"lunarcrush-api4",configured:true,reason:"empty_or_unrecognized_response"}};
-    const bySymbol=new Map<string,any[]>();
-    for(const coin of coins){
-      const symbol=String(coin?.symbol??"").trim().toUpperCase();
-      if(!symbol)continue;
-      const list=bySymbol.get(symbol)??[];
-      list.push(coin);
-      bySymbol.set(symbol,list);
-    }
-    const rows:any[]=[];
-    let mapped=0,ambiguous=0,missing=0,withoutSocialActivity=0,missingSentiment=0;
-    for(const assetValue of assets){
-      const asset=String(assetValue).trim().toUpperCase();
-      const matches=bySymbol.get(asset)??[];
-      if(matches.length===0){missing++;continue;}
-      // Do not silently assign an ambiguous ticker to the wrong token.
-      if(matches.length!==1){ambiguous++;continue;}
-      mapped++;
-      const coin=matches[0];
-      const pct=finiteOrNull(coin?.sentiment);
-      const socialVolume=finiteOrNull(coin?.social_volume_24h);
-      const interactions=finiteOrNull(coin?.interactions_24h);
-      if(pct===null||pct<0||pct>100){missingSentiment++;continue;}
-      if(socialVolume===null||socialVolume<=0){withoutSocialActivity++;continue;}
-      // LunarCrush sentiment is 0..100 (% positive); downstream research schema uses -1..+1.
-      const normalized=Math.max(-1,Math.min(1,(pct-50)/50));
-      rows.push({
-        asset,observed_at:observedAt,source:"lunarcrush-api4",
-        mention_count:Math.max(0,Math.floor(socialVolume)),
-        unique_items:Math.max(0,Math.floor(socialVolume)),
-        bullish_count:0,bearish_count:0,neutral_count:0,
-        sentiment_score:normalized,
-        raw:{
-          provider:"LunarCrush API v4",provider_generated_at:payload?.config?.generated??null,
-          coin_id:coin?.id??null,symbol:coin?.symbol??asset,name:coin?.name??null,
-          sentiment_percent:pct,social_volume_24h:socialVolume,interactions_24h:interactions,
-          social_dominance:finiteOrNull(coin?.social_dominance),
-          galaxy_score:finiteOrNull(coin?.galaxy_score),alt_rank:finiteOrNull(coin?.alt_rank),
-          counts_available:false,normalization:"(sentiment_percent - 50) / 50",
-          social_volume_definition:"LunarCrush social_volume_24h; not a count of bullish/bearish posts"
-        }
-      });
-    }
-    return {rows,status:{
-      available:rows.length>0,provider:"lunarcrush-api4",configured:true,
-      universe_assets:assets.length,provider_catalog_size:coins.length,mapped_assets:mapped,
-      assets_with_sentiment_and_social_activity:rows.length,missing_assets:missing,
-      ambiguous_symbols:ambiguous,without_social_activity:withoutSocialActivity,missing_sentiment:missingSentiment,
-      provider_generated_at:payload?.config?.generated??null,observed_at:observedAt
-    }};
-  }catch(e){
-    const error=e instanceof Error?e.message:String(e);
-    console.warn("[LUNARCRUSH] unavailable: "+error);
-    return {rows:[],status:{available:false,provider:"lunarcrush-api4",configured:true,reason:"request_or_parse_error",error}};
   }
+  await Promise.all(Array.from({length:Math.min(concurrency,assets.length)},()=>worker()));
+  return {rows,status:{
+    available:rows.length>0,provider,authentication:"none",
+    universe_assets:assets.length,assets_with_valid_sentiment:rows.length,
+    failed_assets:failures.length,failures:failures.slice(0,10),observed_at:observedAt,
+    caveat:"Unauthenticated third-party endpoint; schema, availability, coverage and rate limits are not guaranteed."
+  }};
 }
-
 function eventType(text:string){const t=text.toLowerCase();if(/etf|sec|regulat|law|senate|congress|mica|ban/.test(t))return"regulation";if(/hack|exploit|breach|stolen|attack/.test(t))return"security";if(/listing|delist|exchange|binance|coinbase/.test(t))return"exchange";if(/upgrade|fork|mainnet|network/.test(t))return"network";if(/partnership|integrat|adoption/.test(t))return"adoption";if(/liquidat|funding|whale|flow/.test(t))return"market";return"other";}
 async function fp(s:string){const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(s));return Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,"0")).join("");}
 
@@ -195,11 +183,11 @@ async function collect(db:any,forceSocial=false){
 
   const collectSocial = forceSocial || new Date(now).getUTCMinutes()%15===0;
   const socialRows = collectSocial ? await coinLoreSocialSnapshots(db, assets, observedAt) : [];
-  // LunarCrush is optional and research-only. No key means explicit unavailability, not synthetic/zero sentiment.
-  const lunarCrushResult = collectSocial
-    ? await collectLunarCrushSentiment(assets, observedAt)
-    : {rows:[],status:{available:false,provider:"lunarcrush-api4",configured:Boolean(Deno.env.get("LUNARCRUSH_API_KEY")),reason:"not_due_for_collection"}};
-  const sentimentRows:any[] = lunarCrushResult.rows;
+  // Public no-key provider is research-only. Collect on the existing 15-minute cadence.
+  const publicSentimentResult = collectSocial
+    ? await collectPublicSentiment(assets, observedAt)
+    : {rows:[],status:{available:false,provider:"free-crypto-news",authentication:"none",reason:"not_due_for_collection"}};
+  const sentimentRows:any[] = publicSentimentResult.rows;
   const marketSentiment=await collectMarketSentiment(db);
 
   const newsRows:any[]=[];
@@ -219,6 +207,6 @@ async function collect(db:any,forceSocial=false){
   const {data:socialRefresh,error:socialRefreshErr}=await db.rpc("refresh_mature_influential_social_transmissions",{p_lookback_hours:168});if(socialRefreshErr)console.warn("[SOCIAL_CHAIN_REFRESH]",socialRefreshErr);
   const {data:shock,error:shockErr}=await db.rpc("refresh_whale_flow_shock_followups",{p_lookback_hours:48});if(shockErr)console.warn("[FLOW_SHOCK]",shockErr);
   const {data:classification,error:classificationErr}=await db.rpc("refresh_whale_flow_transition_classification",{p_lookback_hours:168});if(classificationErr)console.warn("[FLOW_CLASSIFICATION]",classificationErr);
-  return{ok:true,assets:assets.length,prices:prices.filter(Boolean).length,flows:flowRows.filter(Boolean).length,sentiment:sentimentRows.length,sentiment_status:lunarCrushResult.status,market_sentiment:marketSentiment,social_activity:socialRows.length,transmissions_refreshed:tx??0,flow_shock_followups_refreshed:shock??0,flow_transition_classification_refreshed:classification??0,event_flow_study_snapshots_captured:study??0,social_chain_maturation:socialRefresh??{examined:0,processed:0,failed:0,research_only:true},observed_at:observedAt};
+  return{ok:true,assets:assets.length,prices:prices.filter(Boolean).length,flows:flowRows.filter(Boolean).length,sentiment:sentimentRows.length,sentiment_status:publicSentimentResult.status,market_sentiment:marketSentiment,social_activity:socialRows.length,transmissions_refreshed:tx??0,flow_shock_followups_refreshed:shock??0,flow_transition_classification_refreshed:classification??0,event_flow_study_snapshots_captured:study??0,social_chain_maturation:socialRefresh??{examined:0,processed:0,failed:0,research_only:true},observed_at:observedAt};
 }
 Deno.serve(async req=>{const pre=handleOptions(req);if(pre)return pre;try{const db=getServiceClient();const body=await req.json().catch(()=>({}));if(body?.action==="discover"){const universe=await discoverAssets(db);return new Response(JSON.stringify({ok:true,selected:universe.length,assets:universe.map((x:any)=>x.asset)}),{headers:{...corsHeaders,"Content-Type":"application/json"}});}if(body?.action==="analyze"){const {data,error}=await db.from("event_flow_transmissions").select("*").order("event_at",{ascending:false}).limit(100);if(error)throw error;return new Response(JSON.stringify({ok:true,rows:data??[]}),{headers:{...corsHeaders,"Content-Type":"application/json"}});}const result=await collect(db,body?.action==="collect_social");return new Response(JSON.stringify(result),{headers:{...corsHeaders,"Content-Type":"application/json"}});}catch(e){console.error("[EVENT_FLOW_LAB]",e);return new Response(JSON.stringify({ok:false,error:e instanceof Error?e.message:String(e)}),{status:500,headers:{...corsHeaders,"Content-Type":"application/json"}});}});
