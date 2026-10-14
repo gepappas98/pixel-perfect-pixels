@@ -1,7 +1,7 @@
 -- Parallel paper-only Early Reversal experiments. Additive: preserve existing trades and observations.
 alter table public.trades drop constraint if exists trades_entry_source_check;
 alter table public.trades add constraint trades_entry_source_check
-  check (entry_source in ('standard','early_entry_regime','early_entry_b_reversal','early_entry_c_adaptive','event_flow_paper','live_exchange'));
+  check (entry_source in ('standard','early_entry_regime','early_entry_b_reversal','early_entry_c_adaptive','event_flow_paper','whale_shock','live_exchange'));
 create index if not exists trades_early_entry_variant_idx
   on public.trades (entry_source, status, created_at desc);
 create table if not exists public.early_entry_variant_decisions (
