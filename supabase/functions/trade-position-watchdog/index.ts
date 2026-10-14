@@ -2,6 +2,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   binancePair,
   decideExit,
+  getBreakevenStopLossUpdate,
   normalizeExitSettings,
   type OpenTradeRow,
 } from "../_shared/trade-exit.ts";
@@ -222,6 +223,35 @@ Deno.serve(async (req) => {
         result.alerts_raised++;
         if (severity === "critical") result.alerts_escalated++;
         continue;
+      }
+
+      const protectedStop = getBreakevenStopLossUpdate(trade, price);
+      if (protectedStop != null) {
+        const { data: protectedRow, error: protectError } = await supabase
+          .from("trades")
+          .update({ stop_loss: protectedStop })
+          .eq("id", trade.id)
+          .eq("status", "open")
+          .eq("mode", "paper")
+          .eq("side", "buy")
+          .select("id")
+          .maybeSingle();
+        if (protectError) {
+          result.errors.push(`breakeven stop ${trade.id}: ${protectError.message}`);
+          console.error("[BREAKEVEN_LOCK] failed to persist stop", {
+            trade_id: trade.id, symbol: trade.symbol, error: protectError.message,
+          });
+          continue;
+        }
+        if (!protectedRow) {
+          result.race_skipped++;
+          continue;
+        }
+        trade.stop_loss = protectedStop;
+        console.log("[BREAKEVEN_LOCK]", JSON.stringify({
+          trade_id: trade.id, symbol: trade.symbol, entry_price: Number(trade.entry_price),
+          current_price: price, stop_loss: protectedStop, trigger_gain_pct: 3,
+        }));
       }
 
       const decision = decideExit(trade, price, settings, nowMs);

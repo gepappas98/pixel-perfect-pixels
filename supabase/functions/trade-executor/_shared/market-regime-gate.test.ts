@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  computeCalibratedAgreement,
   computeMarketRegimeAssessment,
   evaluateSidewaysEntryGate,
 } from "./market-regime-gate";
@@ -20,6 +21,22 @@ describe("computeMarketRegimeAssessment", () => {
     expect(result.whaleNet).toBeCloseTo(10_000 / 80_942_000, 8);
     expect(result.techBreadth).toBe(0.5);
     expect(result.label).toBe("bullish");
+  });
+});
+
+describe("computeCalibratedAgreement", () => {
+  it("counts neutral pillars in the denominator instead of reporting false 100% agreement", () => {
+    const result = computeCalibratedAgreement(0.08, 0.02, 0);
+    expect(result.confidence).toBeCloseTo(1 / 3, 8);
+    expect(result.agreementPct).toBe(33);
+    expect(result.dominantDirection).toBe("bullish");
+  });
+
+  it("treats whale ±5% and technical/council ±10% as neutral, including the boundaries", () => {
+    const result = computeCalibratedAgreement(0.05, 0.10, -0.10);
+    expect(result.confidence).toBe(0);
+    expect(result.agreementPct).toBe(0);
+    expect(result.dominantDirection).toBe("neutral");
   });
 });
 

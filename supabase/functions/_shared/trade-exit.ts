@@ -5,6 +5,27 @@
  */
 export const EXIT_FEE_RATE = 0.0005; // keep in sync with src/lib/fees.ts
 
+// Paper-only dynamic protection: once a position is observed at +3%, persist a
+// stop above entry to cover estimated entry+exit fees and a small buffer.
+export const BREAKEVEN_TRIGGER_GAIN_PCT = 3.0;
+export const BREAKEVEN_BUFFER_FEE_PCT = 0.15;
+
+export function getBreakevenStopLossUpdate(
+  trade: OpenTradeRow,
+  price: number | undefined,
+): number | null {
+  if (trade.side !== "buy" || trade.mode !== "paper") return null;
+  if (price == null || !Number.isFinite(price) || price <= 0) return null;
+  const entry = Number(trade.entry_price);
+  if (!Number.isFinite(entry) || entry <= 0) return null;
+  if (((price - entry) / entry) * 100 < BREAKEVEN_TRIGGER_GAIN_PCT) return null;
+
+  const protectedStop = entry * (1 + BREAKEVEN_BUFFER_FEE_PCT / 100);
+  const currentStop = trade.stop_loss == null ? null : Number(trade.stop_loss);
+  if (currentStop != null && Number.isFinite(currentStop) && currentStop >= protectedStop) return null;
+  return protectedStop;
+}
+
 export interface ExitSettings {
   max_hold_hours: number;
   stale_exit_hours: number;

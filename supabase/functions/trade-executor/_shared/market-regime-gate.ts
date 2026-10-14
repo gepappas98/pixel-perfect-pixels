@@ -1,5 +1,36 @@
 export type RegimeDirection = "bullish" | "bearish" | "sideways";
 
+export const WHALE_NEUTRAL_DEADBAND = 0.05;
+export const TECH_NEUTRAL_DEADBAND = 0.10;
+export const COUNCIL_NEUTRAL_DEADBAND = 0.10;
+
+export function getDirectionalSign(value: number, deadband: number): -1 | 0 | 1 {
+  if (!Number.isFinite(value) || (value <= deadband && value >= -deadband)) return 0;
+  return value > deadband ? 1 : -1;
+}
+
+export function computeCalibratedAgreement(
+  whaleNet: number,
+  techBreadth: number,
+  councilConsensus: number,
+): { confidence: number; agreementPct: number; dominantDirection: "bullish" | "bearish" | "neutral" } {
+  const signs = [
+    getDirectionalSign(whaleNet, WHALE_NEUTRAL_DEADBAND),
+    getDirectionalSign(techBreadth, TECH_NEUTRAL_DEADBAND),
+    getDirectionalSign(councilConsensus, COUNCIL_NEUTRAL_DEADBAND),
+  ];
+  const bullishCount = signs.filter((sign) => sign > 0).length;
+  const bearishCount = signs.filter((sign) => sign < 0).length;
+  const dominant = Math.max(bullishCount, bearishCount);
+  const confidence = dominant / 3;
+  return {
+    confidence,
+    agreementPct: Math.round(confidence * 100),
+    dominantDirection: bullishCount > bearishCount ? "bullish"
+      : bearishCount > bullishCount ? "bearish" : "neutral",
+  };
+}
+
 export interface MarketRegimeInputs {
   whales: Array<{ direction?: unknown; usd_value?: unknown }>;
   indicators: Array<{ symbol?: unknown; timeframe?: unknown; signal?: unknown }>;
@@ -12,6 +43,9 @@ export interface MarketRegimeAssessment {
   whaleNet: number;
   techBreadth: number;
   councilConsensus: number;
+  confidence: number;
+  agreementPct: number;
+  dominantDirection: "bullish" | "bearish" | "neutral";
 }
 
 export interface SidewaysEntryDecision {
@@ -71,7 +105,8 @@ export function computeMarketRegimeAssessment(input: MarketRegimeInputs): Market
   const label: RegimeDirection = score >= 0.15
     ? "bullish"
     : score <= -0.15 ? "bearish" : "sideways";
-  return { score, label, whaleNet, techBreadth, councilConsensus };
+  const agreement = computeCalibratedAgreement(whaleNet, techBreadth, councilConsensus);
+  return { score, label, whaleNet, techBreadth, councilConsensus, ...agreement };
 }
 
 /**

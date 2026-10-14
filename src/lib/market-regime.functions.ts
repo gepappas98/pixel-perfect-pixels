@@ -44,13 +44,13 @@ export interface MarketRegime {
 
 // Components below their source-specific neutral band are treated as noise,
 // not as directional votes. Values are normalized ratios in [-1, 1].
-const WHALE_NEUTRAL_BAND = 0.03;
-const TECH_NEUTRAL_BAND = 0.05;
-const COUNCIL_NEUTRAL_BAND = 0.05;
+export const WHALE_NEUTRAL_BAND = 0.05;
+export const TECH_NEUTRAL_BAND = 0.10;
+export const COUNCIL_NEUTRAL_BAND = 0.10;
 
-function getDirectionalSign(value: number, band: number): number {
-  if (!Number.isFinite(value) || Math.abs(value) < band) return 0;
-  return Math.sign(value);
+export function getDirectionalSign(value: number, band: number): number {
+  if (!Number.isFinite(value) || (value <= band && value >= -band)) return 0;
+  return value > band ? 1 : -1;
 }
 
 function classifyRegime(score: number): RegimeLabel {
@@ -252,7 +252,7 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
 
       // ── Reasoning ──
       const reasons: string[] = [];
-      if (Math.abs(whaleNet) >= WHALE_NEUTRAL_BAND) {
+      if (Math.abs(whaleNet) > WHALE_NEUTRAL_BAND) {
         reasons.push(
           `whales net ${whaleNet > 0 ? "buying" : "selling"} (${(Math.abs(whaleNet) * 100).toFixed(0)}% skew)`,
         );
@@ -262,7 +262,7 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
 
       if (totalTech === 0) {
         reasons.push("technicals unavailable");
-      } else if (Math.abs(techBreadth) >= TECH_NEUTRAL_BAND) {
+      } else if (Math.abs(techBreadth) > TECH_NEUTRAL_BAND) {
         reasons.push(
           techBreadth > 0
             ? `${techBull}/${totalTech} coins technically bullish`
@@ -272,7 +272,7 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
         reasons.push(`technicals neutral/mixed (${techNeu}/${totalTech} neutral)`);
       }
 
-      if (Math.abs(councilConsensus) >= COUNCIL_NEUTRAL_BAND) {
+      if (Math.abs(councilConsensus) > COUNCIL_NEUTRAL_BAND) {
         reasons.push(
           `${cBuy} BUY / ${cSell} SELL / ${cHold} HOLD / ${cAvoid} AVOID (${directionalCouncil}/${totalCouncil} directional verdicts)`,
         );
