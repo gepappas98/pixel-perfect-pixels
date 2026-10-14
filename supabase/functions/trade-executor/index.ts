@@ -35,19 +35,24 @@ function normalizeExposureSymbol(value: unknown): string {
 async function getActiveSymbolPositions(
   supabase: ReturnType<typeof getServiceClient>,
 ): Promise<Map<string, number>> {
-  const { data, error } = await supabase
-    .from("trades")
-    .select("symbol")
-    .eq("status", "open")
-    .eq("side", "buy")
-    .eq("mode", "paper")
-    .range(0, 4999);
-  if (error) throw new Error(`active symbol exposure query failed: ${error.message}`);
-
   const counts = new Map<string, number>();
-  for (const row of data ?? []) {
-    const symbol = normalizeExposureSymbol(row.symbol);
-    if (symbol) counts.set(symbol, (counts.get(symbol) ?? 0) + 1);
+  const pageSize = 1000;
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase
+      .from("trades")
+      .select("symbol")
+      .eq("status", "open")
+      .eq("side", "buy")
+      .eq("mode", "paper")
+      .order("created_at", { ascending: true })
+      .range(from, from + pageSize - 1);
+    if (error) throw new Error(`active symbol exposure query failed: ${error.message}`);
+    const rows = data ?? [];
+    for (const row of rows) {
+      const symbol = normalizeExposureSymbol(row.symbol);
+      if (symbol) counts.set(symbol, (counts.get(symbol) ?? 0) + 1);
+    }
+    if (rows.length < pageSize) break;
   }
   return counts;
 }
