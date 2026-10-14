@@ -5,7 +5,7 @@ import {
 } from "./market-regime-gate";
 
 describe("computeMarketRegimeAssessment", () => {
-  it("computes whale net flow and a neutral score from empty directional pillars", () => {
+  it("computes whale net flow and technical breadth using the canonical score weights", () => {
     const result = computeMarketRegimeAssessment({
       whales: [
         { direction: "accumulation", usd_value: 40_476_000 },
