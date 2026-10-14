@@ -671,8 +671,6 @@ Deno.serve(async (req) => {
         });
       }
 
-      const reasoningParts = [result.reasoning];      }
-
       const reasoningParts = [result.reasoning];
       if (mtf.primary || mtf.fast || mtf.trend) reasoningParts.push(`MTF: ${mtf.detail}`);
       if (gate.note) reasoningParts.push(gate.note);
