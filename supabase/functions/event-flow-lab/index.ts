@@ -59,24 +59,26 @@ async function collectPublicSentiment(assets:string[], observedAt:string){
       try{
         const url="https://cryptocurrency.cv/api/sentiment?asset="+encodeURIComponent(asset)+"&limit=20";
         const response=await fetch(url,{headers:{Accept:"application/json","User-Agent":"ResearchLab/1.0 (public research collector)"},signal:AbortSignal.timeout(10000)});
-        if(!response.ok){failures.push({asset,http_status:response.status});continue;}
+        if(!response.ok){failures.push({asset,reason:"http_error",http_status:response.status});continue;}
         const payload=await response.json();
-        // Accept only documented/recognizable numeric sentiment fields; never infer a score from a label.
-        const candidate=payload?.score ?? payload?.sentiment_score ?? payload?.sentiment?.score ?? payload?.data?.score;
+        const root=Array.isArray(payload?.data)?payload.data[0]:(payload?.data&&typeof payload.data==="object"?payload.data:payload);
+        const sentiment=root?.sentiment&&typeof root.sentiment==="object"?root.sentiment:root;
+        // Accept documented/recognizable numeric score fields only; a label alone is not a score.
+        const candidate=sentiment?.score ?? sentiment?.sentiment_score ?? sentiment?.sentimentScore ?? root?.score ?? root?.sentiment_score;
         const rawScore=finiteOrNull(candidate);
-        if(rawScore===null){failures.push({asset,reason:"unrecognized_response_schema"});continue;}
-        // Public docs/examples may expose scores in either [-1,1] or [0,100]/[0,1].
+        if(rawScore===null){failures.push({asset,reason:"unrecognized_response_schema",response_keys:root&&typeof root==="object"?Object.keys(root).slice(0,20):[]});continue;}
+        // Scores in [-1,1] are already normalized. Values outside that range are accepted only as [0,100].
         let normalized:number;
-        if(rawScore>=-1 && rawScore<=1) normalized=rawScore;
-        else if(rawScore>=0 && rawScore<=100) normalized=(rawScore-50)/50;
-        else {failures.push({asset,reason:"score_out_of_range"});continue;}
-        const positive=finiteOrNull(payload?.positive ?? payload?.positive_count ?? payload?.data?.positive);
-        const negative=finiteOrNull(payload?.negative ?? payload?.negative_count ?? payload?.data?.negative);
-        const neutral=finiteOrNull(payload?.neutral ?? payload?.neutral_count ?? payload?.data?.neutral);
+        let normalization:string;
+        if(rawScore>=-1 && rawScore<=1){normalized=rawScore;normalization="provider_-1_to_1";}
+        else if(rawScore>1 && rawScore<=100){normalized=(rawScore-50)/50;normalization="provider_0_to_100";}
+        else {failures.push({asset,reason:"score_out_of_range",provider_score:rawScore});continue;}
+        const positive=finiteOrNull(sentiment?.positive ?? sentiment?.positive_count ?? sentiment?.positiveCount ?? root?.positive);
+        const negative=finiteOrNull(sentiment?.negative ?? sentiment?.negative_count ?? sentiment?.negativeCount ?? root?.negative);
+        const neutral=finiteOrNull(sentiment?.neutral ?? sentiment?.neutral_count ?? sentiment?.neutralCount ?? root?.neutral);
         const total=positive!==null||negative!==null||neutral!==null
           ? Math.max(0,Math.floor((positive??0)+(negative??0)+(neutral??0))) : 0;
-        const label=String(payload?.label ?? payload?.sentiment?.label ?? payload?.data?.label ?? "").toLowerCase();
-        if(!Number.isFinite(normalized)||normalized < -1||normalized>1){failures.push({asset,reason:"invalid_normalized_score"});continue;}
+        const label=String(sentiment?.label ?? sentiment?.sentiment_label ?? root?.label ?? "").toLowerCase();
         rows.push({
           asset,observed_at:observedAt,source:provider,
           mention_count:total,unique_items:total,
@@ -86,11 +88,9 @@ async function collectPublicSentiment(assets:string[], observedAt:string){
           sentiment_score:normalized,
           raw:{
             provider:"Free Crypto News public sentiment API",
-            label:label||null,
-            provider_score:rawScore,
-            score_normalization:rawScore>=-1&&rawScore<=1?"provider_-1_to_1":"provider_0_to_100",
+            label:label||null,provider_score:rawScore,score_normalization:normalization,
             counts_available:positive!==null||negative!==null||neutral!==null,
-            provider_observed_at:payload?.observed_at??payload?.timestamp??null
+            provider_observed_at:root?.observed_at??root?.timestamp??root?.updated_at??null
           }
         });
       }catch(e){
@@ -99,11 +99,17 @@ async function collectPublicSentiment(assets:string[], observedAt:string){
     }
   }
   await Promise.all(Array.from({length:Math.min(concurrency,assets.length)},()=>worker()));
+  const coveragePercent=assets.length?Math.round(rows.length*1000/assets.length)/10:0;
+  const targetCoveragePercent=70;
+  const missingAssets=assets.filter(asset=>!rows.some(row=>row.asset===asset));
   return {rows,status:{
     available:rows.length>0,provider,authentication:"none",
     universe_assets:assets.length,assets_with_valid_sentiment:rows.length,
-    failed_assets:failures.length,failures:failures.slice(0,10),observed_at:observedAt,
-    caveat:"Unauthenticated third-party endpoint; schema, availability, coverage and rate limits are not guaranteed."
+    coverage_percent:coveragePercent,target_coverage_percent:targetCoveragePercent,
+    coverage_passed:coveragePercent>=targetCoveragePercent,
+    failed_assets:failures.length,missing_assets:missingAssets,
+    failures:failures.slice(0,30),observed_at:observedAt,
+    caveat:"Unauthenticated third-party endpoint; live response schema, availability, coverage and rate limits must be verified in deployment logs."
   }};
 }
 function eventType(text:string){const t=text.toLowerCase();if(/etf|sec|regulat|law|senate|congress|mica|ban/.test(t))return"regulation";if(/hack|exploit|breach|stolen|attack/.test(t))return"security";if(/listing|delist|exchange|binance|coinbase/.test(t))return"exchange";if(/upgrade|fork|mainnet|network/.test(t))return"network";if(/partnership|integrat|adoption/.test(t))return"adoption";if(/liquidat|funding|whale|flow/.test(t))return"market";return"other";}
