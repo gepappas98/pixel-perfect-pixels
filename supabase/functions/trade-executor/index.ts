@@ -1,5 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { binancePair, decideExit, normalizeExitSettings, type OpenTradeRow } from "../_shared/trade-exit.ts";
+import { binancePair, decideExit, getBreakevenStopLossUpdate, normalizeExitSettings, type OpenTradeRow } from "../_shared/trade-exit.ts";
 import { aggregateWhaleShocks, DEFAULT_WHALE_SHOCK_CONFIG, evaluate1hTechnicalConfirmation, evaluateRegimeShockTransition } from "./_shared/whale-shock.ts";
 import { evaluateMicroTimeframeGate, type MicroTimeframeState } from "./_shared/micro-trend-gate.ts";
 import { computeMarketRegimeAssessment, evaluateSidewaysEntryGate, type MarketRegimeAssessment } from "./_shared/market-regime-gate.ts";
@@ -26,6 +26,31 @@ const STOP_LOSS_PCT = 0.03;
 const TAKE_PROFIT_PCT = 0.06;
 const EXECUTION_WINDOW_MINUTES = 15;
 const MAX_AUDIT_SIGNALS = 500;
+const MAX_ACTIVE_TRADES_PER_SYMBOL = 1;
+
+function normalizeExposureSymbol(value: unknown): string {
+  return String(value ?? "").trim().toUpperCase().replace(/USDT$/, "");
+}
+
+async function getActiveSymbolPositions(
+  supabase: ReturnType<typeof getServiceClient>,
+): Promise<Map<string, number>> {
+  const { data, error } = await supabase
+    .from("trades")
+    .select("symbol")
+    .eq("status", "open")
+    .eq("side", "buy")
+    .eq("mode", "paper")
+    .range(0, 4999);
+  if (error) throw new Error(`active symbol exposure query failed: ${error.message}`);
+
+  const counts = new Map<string, number>();
+  for (const row of data ?? []) {
+    const symbol = normalizeExposureSymbol(row.symbol);
+    if (symbol) counts.set(symbol, (counts.get(symbol) ?? 0) + 1);
+  }
+  return counts;
+}
 
 type MicroGateAssessment = {
   ready: boolean;
@@ -249,7 +274,27 @@ async function closeTriggeredTradesStage(supabase: ReturnType<typeof getServiceC
 
     const nowMs = Date.now();
     for (const trade of buys) {
-      const decision = decideExit(trade, prices.get(binancePair(trade.symbol)), settings, nowMs);
+      const price = prices.get(binancePair(trade.symbol));
+      const protectedStop = getBreakevenStopLossUpdate(trade, price);
+      if (protectedStop != null) {
+        const { data: protectedRow, error: protectError } = await supabase
+          .from("trades")
+          .update({ stop_loss: protectedStop })
+          .eq("id", trade.id).eq("status", "open").eq("mode", "paper").eq("side", "buy")
+          .select("id").maybeSingle();
+        if (protectError) {
+          (summary.errors as string[]).push(`breakeven stop ${trade.id}: ${protectError.message}`);
+          console.error("[BREAKEVEN_LOCK] failed to persist stop", { trade_id: trade.id, symbol: trade.symbol, error: protectError.message });
+          continue;
+        }
+        if (!protectedRow) { (summary.race_skipped as number)++; continue; }
+        trade.stop_loss = protectedStop;
+        console.log("[BREAKEVEN_LOCK]", JSON.stringify({
+          trade_id: trade.id, symbol: trade.symbol, entry_price: Number(trade.entry_price),
+          current_price: price, stop_loss: protectedStop, trigger_gain_pct: 3,
+        }));
+      }
+      const decision = decideExit(trade, price, settings, nowMs);
       if (decision.action === "hold") { (summary.held as number)++; continue; }
       if (decision.action === "skip_no_price") { (summary.no_price as string[]).push(trade.symbol); continue; }
       if (decision.action === "skip_legacy_sell") continue;
@@ -529,8 +574,19 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
     result.price_host = host;
     if (!prices.size) throw new Error(`no valid Binance Spot prices: ${priceErrors.join("; ")}`);
 
+    const activeCounts = await getActiveSymbolPositions(supabase);
     const openedTrades: Record<string, unknown>[] = [];
     for (const candidate of candidates) {
+      const exposureSymbol = normalizeExposureSymbol(candidate.symbol);
+      const activeCount = activeCounts.get(exposureSymbol) ?? 0;
+      if (activeCount >= MAX_ACTIVE_TRADES_PER_SYMBOL) {
+        result.skipped = Number(result.skipped) + 1;
+        console.log("[SYMBOL_CAP_SKIP]", JSON.stringify({
+          symbol: exposureSymbol, active_count: activeCount, cap: MAX_ACTIVE_TRADES_PER_SYMBOL,
+          entry_source: "whale_shock",
+        }));
+        continue;
+      }
       if (onCooldown.has(candidate.symbol)) {
         result.skipped = Number(result.skipped) + 1;
         console.log("[WHALE_SHOCK] skipped on cooldown", candidate.symbol);
@@ -641,6 +697,7 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
         continue;
       }
       openedTrades.push(trade as Record<string, unknown>);
+      activeCounts.set(exposureSymbol, activeCount + 1);
 
       // Fill the DB-triggered placeholder with an immutable entry-time record.
       const snapshot = {
@@ -771,6 +828,14 @@ Deno.serve(async (req) => {
     const errors: Array<{ signal_id: string; symbol: string; error: string }> = [];
     const auditEvents: Array<Record<string, unknown>> = [];
     const standardMicroCache = new Map<string, Promise<MicroGateAssessment>>();
+    let standardActiveCounts: Map<string, number> | null = null;
+    let exposureQueryError: string | null = null;
+    try {
+      standardActiveCounts = await getActiveSymbolPositions(supabase);
+    } catch (error) {
+      exposureQueryError = error instanceof Error ? error.message : String(error);
+      console.error("[SYMBOL_CAP] exposure unavailable; standard entries will fail closed", exposureQueryError);
+    }
 
     for (const signal of eligibleSignals) {
       const signalId = String(signal.id);
@@ -810,6 +875,36 @@ Deno.serve(async (req) => {
           .update({ research_decision: "duplicate_signal", research_reason: "duplicate_composite_signal_already_has_trade" })
           .eq("composite_signal_id", signalId)
           .eq("research_decision", "pending_execution_audit");
+        continue;
+      }
+
+      const exposureSymbol = normalizeExposureSymbol(symbol);
+      if (!standardActiveCounts || exposureQueryError) {
+        const reason = "active symbol exposure unavailable; entry blocked: " + (exposureQueryError ?? "unknown query failure");
+        auditEvents.push({
+          ts: new Date().toISOString(), symbol, signal_id: signalId,
+          stage: "PER_SYMBOL_CAP", decision: "REJECT", reason,
+          details: { data_ready: false, cap: MAX_ACTIVE_TRADES_PER_SYMBOL },
+        });
+        await supabase.from("repeated_buy_research_ledger")
+          .update({ research_decision: "rejected", research_reason: "per_symbol_cap_data_unavailable: " + reason })
+          .eq("composite_signal_id", signalId)
+          .eq("research_decision", "pending_execution_audit");
+        continue;
+      }
+      const activeCount = standardActiveCounts.get(exposureSymbol) ?? 0;
+      if (activeCount >= MAX_ACTIVE_TRADES_PER_SYMBOL) {
+        const reason = `max_exposure_reached: ${activeCount}/${MAX_ACTIVE_TRADES_PER_SYMBOL} open paper BUY position(s)`;
+        auditEvents.push({
+          ts: new Date().toISOString(), symbol: exposureSymbol, signal_id: signalId,
+          stage: "PER_SYMBOL_CAP", decision: "SKIP", reason,
+          details: { currentOpen: activeCount, cap: MAX_ACTIVE_TRADES_PER_SYMBOL },
+        });
+        await supabase.from("repeated_buy_research_ledger")
+          .update({ research_decision: "rejected", research_reason: "per_symbol_cap: " + reason })
+          .eq("composite_signal_id", signalId)
+          .eq("research_decision", "pending_execution_audit");
+        console.log("[SYMBOL_CAP_SKIP]", exposureSymbol, reason);
         continue;
       }
 
@@ -924,6 +1019,7 @@ Deno.serve(async (req) => {
         if (tradeError) throw new Error(tradeError.message);
 
         opened.push(trade);
+        standardActiveCounts.set(exposureSymbol, activeCount + 1);
 
         // Complete the trigger-created placeholder without risking the inserted trade.
         const signalWithMicroContext = {
