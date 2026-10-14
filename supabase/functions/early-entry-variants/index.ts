@@ -33,12 +33,17 @@ Deno.serve(async (req) => {
   const totalTakerQuote = [...latestCandles.values()].reduce((s,c)=>s+Math.max(0,num(c.taker_buy_quote_volume)),0);
   const takerImbalance = totalQuote > 0 ? 2*totalTakerQuote/totalQuote-1 : 0;
 
-  const { data: candleHistory, error: candleHistErr } = await db.from("market_candles").select("symbol,close_time,quote_volume,taker_buy_quote_volume").eq("timeframe","5m").gte("close_time",iso(86400000)).lt("close_time",iso(15*60000)).order("close_time",{ascending:false}).limit(3000);
-  if (candleHistErr) throw candleHistErr;
-  const histLatest = new Map<string, any>();
-  for (const c of candleHistory ?? []) if (!histLatest.has(String(c.symbol).toUpperCase())) histLatest.set(String(c.symbol).toUpperCase(),c);
-  const historicalImbalances:number[]=[];
-  for (const c of histLatest.values()) { const q=num(c.quote_volume); if(q>0) historicalImbalances.push(2*num(c.taker_buy_quote_volume)/q-1); }
+  // Adaptive thresholds use the experiment's own past 10-minute aggregate observations,
+  // not a cross-sectional snapshot or a globally fixed threshold.
+  const { data: variantHistoryRows, error: variantHistoryErr } = await db.from("early_entry_variant_decisions")
+    .select("observed_at,metrics").eq("variant","C_ADAPTIVE_REVERSAL")
+    .gte("observed_at",iso(24*60*60*1000)).order("observed_at",{ascending:false}).limit(150);
+  if (variantHistoryErr) throw variantHistoryErr;
+  const adaptiveHistory = (variantHistoryRows ?? []).slice(0, 100);
+  const historicalImbalances = adaptiveHistory.map((r:any)=>r.metrics?.taker_buy_imbalance_5m)
+    .filter((v:unknown)=>v!==null&&v!==undefined).map(num);
+  const historicalWhaleDeltas = adaptiveHistory.map((r:any)=>r.metrics?.whale_delta)
+    .filter((v:unknown)=>v!==null&&v!==undefined).map(num);
   const { data: indRows, error: indErr } = await db.from("indicator_snapshots").select("symbol,timeframe,signal,created_at,price").eq("timeframe","1h").gte("created_at",iso(3600000)).order("created_at",{ascending:false}).limit(2000);
   if(indErr) throw indErr;
   const latestIndicators=new Map<string,any>();
@@ -59,10 +64,9 @@ Deno.serve(async (req) => {
   const confluencePlusOne=councilBuy>councilSell || positiveSentiment>sentimentLatest.size/2;
   const confluence={plus_one:confluencePlusOne,council_buy:councilBuy,council_sell:councilSell,sentiment_assets:sentimentLatest.size,positive_sentiment_assets:positiveSentiment};
 
-  const takerHistory=history.map(r=>r.details?.taker_buy_flow_5m?.imbalance).filter((v:unknown)=>v!==null&&v!==undefined).map(num);
-  const whaleZ=z(whaleDelta,history.slice(0,100).map(r=>num(r.whale_flow_delta_pp)/100));
-  const adaptiveTakerZ=z(takerImbalance,historicalImbalances.length>=8?historicalImbalances:takerHistory);
-  const warmup=history.length<8 || (historicalImbalances.length<8&&takerHistory.length<8);
+  const whaleZ=z(whaleDelta,historicalWhaleDeltas);
+  const adaptiveTakerZ=z(takerImbalance,historicalImbalances);
+  const warmup=historicalImbalances.length<8 || historicalWhaleDeltas.length<8;
   const {data:priceRows}=await db.from("asset_price_snapshots").select("asset,price,created_at").gte("created_at",iso(20*60000)).order("created_at",{ascending:false}).limit(500);
   const priceMap=new Map<string,number>();
   for(const r of priceRows??[])if(!priceMap.has(String(r.asset).toUpperCase())&&num(r.price)>0)priceMap.set(String(r.asset).toUpperCase(),num(r.price));
