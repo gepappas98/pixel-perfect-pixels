@@ -561,26 +561,74 @@ Deno.serve(async (req) => {
     // Validate once per invocation; composite signals and paper execution are untouched.
     const spotTradingSymbols = await loadBinanceSpotTradingSymbols();
 
-    const created = [];
 
-    for (const symbol of symbols) {
+    // Batch input retrieval: replace per-symbol serial PostgREST reads with a small,
+    // bounded set of requests. Results are sorted newest-first and grouped in memory.
+    const dbSymbols = [...new Set(symbols.map(indicatorSymbol))];
+    const [
+      { data: batchWhales, error: batchWhalesError },
+      { data: batchIndicators, error: batchIndicatorsError },
+      { data: batchCouncils, error: batchCouncilsError },
+      { data: batchOpenTrades, error: batchOpenTradesError },
+    ] = await Promise.all([
+      supabase.from("whale_alerts").select("*")
+        .in("symbol", symbols).gte("created_at", since)
+        .order("created_at", { ascending: false }).limit(2000),
+      supabase.from("indicator_snapshots").select("*")
+        .in("symbol", dbSymbols).in("timeframe", [...TIMEFRAMES])
+        .order("created_at", { ascending: false }).limit(2000),
+      supabase.from("council_signals").select("*")
+        .in("symbol", symbols).gte("source_created_at", councilSince)
+        .lte("source_created_at", freshnessNowIso)
+        .order("source_created_at", { ascending: false }).limit(1000),
+      supabase.from("trades").select("id,symbol,entry_price,created_at")
+        .in("symbol", symbols).eq("mode", "paper").eq("status", "open")
+        .order("created_at", { ascending: true }).limit(2000),
+    ]);
+    if (batchWhalesError) console.error("[SIGNAL_COMBINER_BATCH] whale fetch failed:", batchWhalesError.message);
+    if (batchIndicatorsError) console.error("[SIGNAL_COMBINER_BATCH] indicator fetch failed:", batchIndicatorsError.message);
+    if (batchCouncilsError) console.error("[SIGNAL_COMBINER_BATCH] council fetch failed:", batchCouncilsError.message);
+    if (batchOpenTradesError) console.error("[SIGNAL_COMBINER_BATCH] open-trade fetch failed:", batchOpenTradesError.message);
+
+    const whalesBySymbol = new Map<string, any[]>();
+    for (const row of batchWhales ?? []) {
+      const key = String(row.symbol ?? "").toUpperCase();
+      const rows = whalesBySymbol.get(key) ?? [];
+      if (rows.length < 20) rows.push(row);
+      whalesBySymbol.set(key, rows);
+    }
+    const indicatorsBySymbol = new Map<string, any[]>();
+    for (const row of batchIndicators ?? []) {
+      const key = String(row.symbol ?? "").toUpperCase();
+      const rows = indicatorsBySymbol.get(key) ?? [];
+      if (rows.length < 10) rows.push(row);
+      indicatorsBySymbol.set(key, rows);
+    }
+    const councilsBySymbol = new Map<string, any>();
+    for (const row of batchCouncils ?? []) {
+      const key = String(row.symbol ?? "").toUpperCase();
+      if (!councilsBySymbol.has(key)) councilsBySymbol.set(key, row);
+    }
+    const openTradesBySymbol = new Map<string, any>();
+    for (const trade of batchOpenTrades ?? []) {
+      const key = String(trade.symbol ?? "").toUpperCase();
+      if (!openTradesBySymbol.has(key)) openTradesBySymbol.set(key, trade);
+    }
+
+    const created: any[] = [];
+    const compositeRowsToUpsert: any[] = [];
+    const shadowRowsToInsert: any[] = [];
+    const variantRowsToUpsert: any[] = [];
+    const ledgerRowsToInsert: any[] = [];
+
+    for (const symbol of symbols) {    for (const symbol of symbols) {
       const dbSymbol = indicatorSymbol(symbol);
 
-      const [{ data: whales }, { data: indicators }, { data: councils }] =
-        await Promise.all([
-          supabase.from("whale_alerts").select("*").eq("symbol", symbol).gte("created_at", since)
-            .order("created_at", { ascending: false }).limit(20),
-          supabase.from("indicator_snapshots").select("*").eq("symbol", dbSymbol)
-            .in("timeframe", [...TIMEFRAMES])
-            .order("created_at", { ascending: false }).limit(10),
-          supabase.from("council_signals").select("*").eq("symbol", symbol).gte("source_created_at", councilSince).lte("source_created_at", freshnessNowIso)
-            .order("source_created_at", { ascending: false }).limit(1),
-        ]);
-
-      const whaleRows = whales ?? [];
+      const whaleRows = whalesBySymbol.get(String(symbol).toUpperCase()) ?? [];
       const whale = whaleRows[0] ?? null;
-      const council = councils?.[0] ?? null;
-      const mtf = classifyMtf((indicators ?? []) as Record<string, any>[]);
+      const council = councilsBySymbol.get(String(symbol).toUpperCase()) ?? null;
+      const indicatorRows = indicatorsBySymbol.get(String(dbSymbol).toUpperCase()) ?? [];
+      const mtf = classifyMtf(indicatorRows as Record<string, any>[]);
       const indicator = mtf.primary;
 
       if (!whale && !indicator && !council) continue;
@@ -597,34 +645,33 @@ Deno.serve(async (req) => {
 
       if (strategySnapshot) {
         const shadow = calculateConfiguredShadow(whale, mtf, council, strategySnapshot);
-        const { error: shadowError } = await supabase
-          .from("strategy_shadow_diagnostics")
-          .insert({
-            symbol,
-            strategy_preset: strategySnapshot.preset_name,
-            strategy_updated_at: strategySnapshot.updated_at,
-            whale_weight: strategySnapshot.whale,
-            technicals_weight: strategySnapshot.technicals,
-            council_weight: strategySnapshot.council,
-            current_score: result.score,
-            current_recommendation: gate.recommendation,
-            shadow_score: shadow.score,
-            shadow_confidence: shadow.confidence,
-            shadow_recommendation: shadow.recommendation,
-            current_components: result.components,
-            shadow_components: shadow.components,
-            mtf_gate: {
-              enabled: mtfGate.enabled,
-              shadow_mode: mtfGate.shadow_mode,
-              min_timeframes: mtfGate.min_timeframes,
-              current: { recommendation: gate.recommendation, note: gate.note },
-              counterfactual: calculateMtfCounterfactual(result, mtf, whale, council),
-              shadow: shadow.mtf,
-              hard_conflict: shadow.hardConflict,
-            },
-          });
-        if (shadowError) console.error("[STRATEGY_SHADOW] diagnostics insert failed:", shadowError.message);
+        shadowRowsToInsert.push({
+          symbol,
+          strategy_preset: strategySnapshot.preset_name,
+          strategy_updated_at: strategySnapshot.updated_at,
+          whale_weight: strategySnapshot.whale,
+          technicals_weight: strategySnapshot.technicals,
+          council_weight: strategySnapshot.council,
+          current_score: result.score,
+          current_recommendation: gate.recommendation,
+          shadow_score: shadow.score,
+          shadow_confidence: shadow.confidence,
+          shadow_recommendation: shadow.recommendation,
+          current_components: result.components,
+          shadow_components: shadow.components,
+          mtf_gate: {
+            enabled: mtfGate.enabled,
+            shadow_mode: mtfGate.shadow_mode,
+            min_timeframes: mtfGate.min_timeframes,
+            current: { recommendation: gate.recommendation, note: gate.note },
+            counterfactual: calculateMtfCounterfactual(result, mtf, whale, council),
+            shadow: shadow.mtf,
+            hard_conflict: shadow.hardConflict,
+          },
+        });
       }
+
+      const reasoningParts = [result.reasoning];      }
 
       const reasoningParts = [result.reasoning];
       if (mtf.primary || mtf.fast || mtf.trend) reasoningParts.push(`MTF: ${mtf.detail}`);
@@ -704,12 +751,7 @@ Deno.serve(async (req) => {
         }
 
         const buyVariantRows = variantRows.filter((v) => v.recommendation === "buy");
-        if (buyVariantRows.length) {
-          const { error: variantError } = await supabase
-            .from("strategy_variant_signals")
-            .upsert(buyVariantRows, { onConflict: "source_fingerprint", ignoreDuplicates: true });
-          if (variantError) throw variantError;
-        }
+        if (buyVariantRows.length) variantRowsToUpsert.push(...buyVariantRows);
       } else if (variantEntryPrice > 0 && spotTradingSymbols && !spotTradingSymbols.has(dbSymbol)) {
         console.warn(`[SPOT_VARIANT_GATE] skipped shadow variants for ${symbol} (${dbSymbol}): not TRADING on Binance Spot`);
       }
@@ -757,56 +799,37 @@ Deno.serve(async (req) => {
       // Fingerprints are intentionally unique/idempotent. Re-observing the
       // same input combination must refresh the signal timestamp rather than
       // crash the whole pipeline on uq_composite_signals_fingerprint.
-      const { data: inserted, error } = await supabase
-        .from("composite_signals")
-        .upsert(
-          {
-            symbol,
-            whale_alert_id: whale?.id ?? null,
-            indicator_snapshot_id: indicator?.id ?? null,
-            council_signal_id: council?.id ?? null,
-            confidence: result.confidence,
-            recommendation: gate.recommendation,
-            reasoning: reasoningParts.join("; "),
-            price_at: Number(indicator?.price ?? 0) > 0 ? Number(indicator?.price ?? 0) : null,
-            regime_label: productionRegimeLabel,
-            market_session: productionMarketSession,
-            source_tags: sourceTags,
-            fingerprint: signalFingerprint,
-            entry_context_snapshot: entryContextSnapshot,
-            created_at: new Date().toISOString(),
-          },
-          { onConflict: "fingerprint" },
-        )
-        .select()
-        .single();
-
-      if (error) throw error;
-      if (inserted) created.push(inserted);
+      const compRow = {
+        symbol,
+        whale_alert_id: whale?.id ?? null,
+        indicator_snapshot_id: indicator?.id ?? null,
+        council_signal_id: council?.id ?? null,
+        confidence: result.confidence,
+        recommendation: gate.recommendation,
+        reasoning: reasoningParts.join("; "),
+        price_at: Number(indicator?.price ?? 0) > 0 ? Number(indicator?.price ?? 0) : null,
+        regime_label: productionRegimeLabel,
+        market_session: productionMarketSession,
+        source_tags: sourceTags,
+        fingerprint: signalFingerprint,
+        entry_context_snapshot: entryContextSnapshot,
+        created_at: new Date().toISOString(),
+      };
+      compositeRowsToUpsert.push(compRow);
 
       // Append one observational row per BUY evaluation. This ledger never gates execution.
-      if (inserted && gate.recommendation === "buy") {
+      if (gate.recommendation === "buy") {
         const signalPrice = Number(indicator?.price ?? 0);
-        const { data: openSameSymbol, error: openLookupError } = await supabase
-          .from("trades")
-          .select("id,entry_price,created_at")
-          .eq("symbol", symbol)
-          .eq("mode", "paper")
-          .eq("status", "open")
-          .order("created_at", { ascending: true })
-          .limit(1);
-        if (openLookupError) console.error("[REPEATED_BUY_LEDGER] concentration lookup failed:", openLookupError.message);
-        const existingResearchPosition = openSameSymbol?.[0] ?? null;
+        const existingResearchPosition = openTradesBySymbol.get(String(symbol).toUpperCase()) ?? null;
         const confidenceEligible = Number(result.confidence) >= 0.6;
-        const { error: ledgerError } = await supabase.from("repeated_buy_research_ledger").insert({
-          composite_signal_id: inserted.id,
+        ledgerRowsToInsert.push({
           signal_fingerprint: signalFingerprint,
           symbol,
           recommendation: gate.recommendation,
           confidence: result.confidence,
           signal_reasoning: reasoningParts.join("; "),
           signal_price: signalPrice > 0 ? signalPrice : null,
-          signal_created_at: inserted.created_at ?? new Date().toISOString(),
+          signal_created_at: compRow.created_at,
           research_decision: confidenceEligible ? "pending_execution_audit" : "rejected",
           research_reason: confidenceEligible ? null : "confidence_below_minimum_0.60",
           limited_position_decision: !confidenceEligible
@@ -829,8 +852,35 @@ Deno.serve(async (req) => {
             source_tags: sourceTags,
           },
         });
-        if (ledgerError) console.error("[REPEATED_BUY_LEDGER] insert failed:", ledgerError.message);
       }
+    }
+
+    // Batch persistence is deliberately separated from signal calculation so
+    // no per-symbol PostgREST write/read round-trips remain in the loop.
+    if (compositeRowsToUpsert.length) {
+      const { data, error } = await supabase.from("composite_signals")
+        .upsert(compositeRowsToUpsert, { onConflict: "fingerprint" }).select();
+      if (error) throw error;
+      if (data) created.push(...data);
+    }
+    if (variantRowsToUpsert.length) {
+      const { error } = await supabase.from("strategy_variant_signals")
+        .upsert(variantRowsToUpsert, { onConflict: "source_fingerprint", ignoreDuplicates: true });
+      if (error) throw error;
+    }
+    if (shadowRowsToInsert.length) {
+      const { error } = await supabase.from("strategy_shadow_diagnostics").insert(shadowRowsToInsert);
+      if (error) console.error("[STRATEGY_SHADOW] batch diagnostics insert failed:", error.message);
+    }
+    if (ledgerRowsToInsert.length) {
+      const idByFingerprint = new Map<string, string>();
+      for (const row of created) idByFingerprint.set(String(row.fingerprint), String(row.id));
+      const linkedLedgerRows = ledgerRowsToInsert.map((row) => ({
+        ...row,
+        composite_signal_id: idByFingerprint.get(String(row.signal_fingerprint)) ?? null,
+      }));
+      const { error } = await supabase.from("repeated_buy_research_ledger").insert(linkedLedgerRows);
+      if (error) console.error("[REPEATED_BUY_LEDGER] batch insert failed:", error.message);
     }
 
     return new Response(
