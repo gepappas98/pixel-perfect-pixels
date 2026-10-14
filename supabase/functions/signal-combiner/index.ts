@@ -621,7 +621,7 @@ Deno.serve(async (req) => {
     const variantRowsToUpsert: any[] = [];
     const ledgerRowsToInsert: any[] = [];
 
-    for (const symbol of symbols) {    for (const symbol of symbols) {
+    for (const symbol of symbols) {
       const dbSymbol = indicatorSymbol(symbol);
 
       const whaleRows = whalesBySymbol.get(String(symbol).toUpperCase()) ?? [];
