@@ -44,13 +44,13 @@ export interface MarketRegime {
 
 // Components below their source-specific neutral band are treated as noise,
 // not as directional votes. Values are normalized ratios in [-1, 1].
-const WHALE_NEUTRAL_BAND = 0.03;
-const TECH_NEUTRAL_BAND = 0.05;
-const COUNCIL_NEUTRAL_BAND = 0.05;
+const WHALE_NEUTRAL_BAND = 0.05;
+const TECH_NEUTRAL_BAND = 0.10;
+const COUNCIL_NEUTRAL_BAND = 0.10;
 
 function getDirectionalSign(value: number, band: number): number {
-  if (!Number.isFinite(value) || Math.abs(value) < band) return 0;
-  return Math.sign(value);
+  if (!Number.isFinite(value) || value <= band && value >= -band) return 0;
+  return value > band ? 1 : -1;
 }
 
 function classifyRegime(score: number): RegimeLabel {
