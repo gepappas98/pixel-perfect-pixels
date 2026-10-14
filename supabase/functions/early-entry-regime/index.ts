@@ -260,8 +260,9 @@ Deno.serve(async (req) => {
           source: "market_candles/binance-spot-klines",
         },
         market_regime_score_components: {
-          formula: "whaleNet*0.375 + techBreadth4h*0.5 + councilConsensus*0.125",
-          supplied_score_used: Number.isFinite(suppliedScore),
+          formula: "whaleNet*0.30 + techBreadth4h*0.40 + councilConsensus*0.10 + takerBuyImbalance5m*0.20",
+          weights: { whale: 0.30, technical_breadth_4h: 0.40, council: 0.10, taker_buy_5m: 0.20 },
+          supplied_score_ignored: Number.isFinite(suppliedScore),
           whale_net: whaleNet,
           tech_breadth_4h: techBreadth4h,
           tech_4h_symbols: latest4h.size,
