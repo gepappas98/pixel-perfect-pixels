@@ -8,7 +8,8 @@ type Transmission = {
   price_return_4h: number|null; transmission_class: string; data_quality: string;
 };
 
-type SentimentSnapshot = { asset:string; observed_at:string; shock_score:number; sentiment_score:number; mention_count:number; };
+type SentimentSnapshot = { asset:string; observed_at:string; shock_score:number; sentiment_score:number; mention_count:number; source:string; };
+type MarketSentiment = { observed_at:string; source:string; value:number; classification:string; };
 type NewsEvent = { asset:string; event_at:string; shock_score:number; title:string; source:string; sentiment_label:string; };
 
 const pct=(v:number|null)=>v==null?"—":`${v>=0?"+":""}${v.toFixed(2)}%`;
@@ -18,6 +19,8 @@ export function EventFlowTransmissionPanel(){
   const {rows:tx}=useLiveTable<Transmission>("event_flow_transmissions",20,"event_at");
   const {rows:sentiment}=useLiveTable<SentimentSnapshot>("asset_sentiment_snapshots",30,"observed_at");
   const {rows:news}=useLiveTable<NewsEvent>("asset_news_events",20,"event_at");
+  const {rows:marketSentiment}=useLiveTable<MarketSentiment>("market_sentiment_snapshots",1,"observed_at");
+  const latestMarketSentiment=marketSentiment[0];
   const complete=tx.filter(x=>x.data_quality==="complete").length;
   const followed=tx.filter(x=>x.transmission_class==="flow_followed").length;
   const diverged=tx.filter(x=>x.transmission_class==="flow_diverged").length;
@@ -34,11 +37,20 @@ export function EventFlowTransmissionPanel(){
       </span>
     </div>
 
-    <div className="mt-3 grid grid-cols-4 gap-1.5 text-[9px] font-mono">
-      <div className="rounded bg-muted/30 p-1.5"><div className="text-muted-foreground">Sentiment</div><div className="mt-0.5">{sentiment.length}</div></div>
+    <div className="mt-3 grid grid-cols-5 gap-1.5 text-[9px] font-mono">
+      <div className="rounded bg-muted/30 p-1.5"><div className="text-muted-foreground">Asset sentiment</div><div className="mt-0.5">{sentiment.length}</div></div>
       <div className="rounded bg-muted/30 p-1.5"><div className="text-muted-foreground">News</div><div className="mt-0.5">{news.length}</div></div>
+      <div className="rounded bg-muted/30 p-1.5"><div className="text-muted-foreground">Market F&amp;G</div><div className="mt-0.5">{latestMarketSentiment ? `${latestMarketSentiment.value}/100` : "—"}</div></div>
       <div className="rounded bg-muted/30 p-1.5"><div className="text-muted-foreground">Followed</div><div className="mt-0.5 text-bull">{followed}</div></div>
       <div className="rounded bg-muted/30 p-1.5"><div className="text-muted-foreground">Diverged</div><div className="mt-0.5 text-bear">{diverged}</div></div>
+    </div>
+
+    <div className="mt-2 rounded border border-border/60 bg-muted/20 p-2 text-[9px] font-mono">
+      <div><span className="text-muted-foreground">Global market sentiment:</span>{" "}
+        {latestMarketSentiment ? <><span className="font-semibold">{latestMarketSentiment.classification}</span>{" · "}<span>{Number(latestMarketSentiment.value)}/100</span>{" · "}<span>{ago(latestMarketSentiment.observed_at)} ago</span></> : <span>unavailable — waiting for Alternative.me data</span>}
+      </div>
+      <div className="mt-0.5 text-muted-foreground">Source: Alternative.me Fear &amp; Greed Index. Daily global context only, not asset-specific sentiment.</div>
+      <div className="mt-0.5 text-muted-foreground">Per-asset sentiment is unavailable until a reliable asset-level provider is configured; Reddit is not used.</div>
     </div>
 
     {latestShock && <div className="mt-2 rounded border border-border/60 bg-muted/20 p-2 text-[9px] font-mono">
