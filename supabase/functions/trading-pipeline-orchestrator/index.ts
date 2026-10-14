@@ -158,7 +158,7 @@ Deno.serve(async (req) => {
     started_at: started.toISOString(),
     mode: Deno.env.get("TRADING_MODE") || "paper",
     result: {
-      architecture: "sequential",
+      architecture: "dag_parallel_phases",
       interval_minutes: 10,
       trigger,
       source,
@@ -177,63 +177,77 @@ Deno.serve(async (req) => {
   const id = run.data.id;
   const results: any[] = [];
 
-  for (const [name, timeout] of STAGES) {
-    const stage = await call(name, timeout);
-    results.push(stage);
-
+  const updateRunProgress = async (phaseName: string) => {
     await db.from("pipeline_runs").update({
       result: {
-        architecture: "sequential",
+        architecture: "dag_parallel_phases",
         interval_minutes: 10,
         trigger,
         source,
         stages: compactStagesForStorage(results),
-        current_stage: name,
+        current_stage: phaseName,
         storage_compaction_version: 1,
       },
     }).eq("id", id);
+  };
 
-    // Early Entry is research-only and must never interrupt the established pipeline.
-    if (!stage.ok && name !== "council-lessons" && name !== "early-entry-regime") {
-      await db.from("pipeline_runs").update({
-        status: "error",
-        completed_at: new Date().toISOString(),
-        duration_ms: Date.now() - started.getTime(),
-        error_message: name + " failed with HTTP " + stage.status,
-        result: {
-          architecture: "sequential",
-          interval_minutes: 10,
-          trigger,
-          source,
-          stages: compactStagesForStorage(results),
-          failed_stage: name,
-          storage_compaction_version: 1,
-        },
-      }).eq("id", id);
-
-      return Response.json({
-        ok: false,
-        run_id: id,
-        failed_stage: name,
-        stages: results,
-      }, { status: 502 });
+  try {
+    // Phase 1: independent ingestion stages run concurrently.
+    const phase1 = await Promise.all([
+      call("whale-watch", 65000),
+      call("tradingview-signals", 70000),
+      call("council-sync", 55000),
+      call("strategy-auto-switch", 35000),
+    ]);
+    results.push(...phase1);
+    await updateRunProgress("phase_1_ingestion_complete");
+    const whaleStage = phase1.find((s) => s.name === "whale-watch");
+    const techStage = phase1.find((s) => s.name === "tradingview-signals");
+    if (!whaleStage?.ok || !techStage?.ok) {
+      throw new Error(`Critical ingestion stage failed: ${!whaleStage?.ok ? "whale-watch" : "tradingview-signals"}`);
     }
 
-    if (name === "signal-combiner") {
-      const research = await captureAccumulationResearch(db);
-      results.push(research);
-      await db.from("pipeline_runs").update({
-        result: {
-          architecture: "sequential",
-          interval_minutes: 10,
-          trigger,
-          source,
-          stages: compactStagesForStorage(results),
-          current_stage: research.name,
-          storage_compaction_version: 1,
-        },
-      }).eq("id", id);
-    }
+    // Phase 2: signal synthesis must finish before regime evaluation.
+    const combinerStage = await call("signal-combiner", 70000);
+    results.push(combinerStage);
+    if (!combinerStage.ok) throw new Error("signal-combiner failed with HTTP " + combinerStage.status);
+    const [earlyEntryStage, researchStage] = await Promise.all([
+      call("early-entry-regime", 30000),
+      captureAccumulationResearch(db),
+    ]);
+    results.push(earlyEntryStage, researchStage);
+    await updateRunProgress("phase_2_synthesis_complete");
+
+    // Phase 3: paper/live-mode executor behavior remains owned by trade-executor;
+    // variant resolution runs in parallel and does not submit exchange orders.
+    const [tradeExecutorStage, variantResolverStage] = await Promise.all([
+      call("trade-executor", 80000),
+      call("variant-resolver", 60000),
+    ]);
+    results.push(tradeExecutorStage, variantResolverStage);
+    await updateRunProgress("phase_3_execution_complete");
+
+    // Phase 4: post-trade learning.
+    const lessonsStage = await call("council-lessons", 40000);
+    results.push(lessonsStage);
+    if (!lessonsStage.ok) console.error("[ORCHESTRATOR] non-blocking council-lessons failure", lessonsStage.status);
+  } catch (error) {
+    const errMessage = error instanceof Error ? error.message : String(error);
+    await db.from("pipeline_runs").update({
+      status: "error",
+      completed_at: new Date().toISOString(),
+      duration_ms: Date.now() - started.getTime(),
+      error_message: errMessage,
+      result: {
+        architecture: "dag_parallel_phases",
+        interval_minutes: 10,
+        trigger,
+        source,
+        stages: compactStagesForStorage(results),
+        storage_compaction_version: 1,
+      },
+    }).eq("id", id);
+    return Response.json({ok:false,run_id:id,error:errMessage,stages:results},{status:502});
   }
 
   const executorStage = results.find((stage) => stage.name === "trade-executor");
@@ -259,7 +273,7 @@ Deno.serve(async (req) => {
     completed_at: new Date().toISOString(),
     duration_ms: Date.now() - started.getTime(),
     result: {
-      architecture: "sequential",
+      architecture: "dag_parallel_phases",
       interval_minutes: 10,
       trigger,
       source,
