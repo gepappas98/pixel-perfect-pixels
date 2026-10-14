@@ -2,7 +2,7 @@ import { handleOptions, corsHeaders } from "../_shared/cors.ts";
 import { getServiceClient } from "../_shared/supabase.ts";
 
 const CORE_FALLBACK=["BTC","ETH","SOL","XRP","DOGE","ADA","BNB","AVAX","LINK","ARB","CRV","MATIC"];
-const TIMEFRAMES=["1h","4h","1d"] as const;
+const TIMEFRAMES=["5m","15m","1h","4h","1d"] as const;
 const KLINE_LIMIT=100, FETCH_TIMEOUT_MS=12000;
 const BINANCE_HOSTS=["https://api.binance.com","https://data-api.binance.vision"] as const;
 const BYBIT_HOST="https://api.bybit.com";
@@ -11,7 +11,7 @@ const SYMBOL_MAP:Record<string,string>={MATIC:"POL",RNDR:"RENDER"};
 function exSymbol(c:string){return (SYMBOL_MAP[c]??c)+"USDT";}
 async function fetchT(url:string){return fetch(url,{signal:AbortSignal.timeout(FETCH_TIMEOUT_MS)});}
 async function binance(symbol:string,tf:string){for(const h of BINANCE_HOSTS){try{const r=await fetchT(`${h}/api/v3/klines?symbol=${symbol}&interval=${tf}&limit=${KLINE_LIMIT}`);if(r.ok){const x=await r.json();if(Array.isArray(x)&&x.length)return x;}}catch{}}return null;}
-async function bybit(symbol:string,tf:string){const iv=tf==="1h"?"60":tf==="4h"?"240":"D";try{const u=new URL(`${BYBIT_HOST}/v5/market/kline`);u.searchParams.set("category","spot");u.searchParams.set("symbol",symbol);u.searchParams.set("interval",iv);u.searchParams.set("limit",String(KLINE_LIMIT));const r=await fetchT(u.toString());if(!r.ok)return null;const j=await r.json();if(j.retCode!==0||!Array.isArray(j.result?.list))return null;const ms=iv==="D"?86400000:iv==="240"?14400000:3600000;return [...j.result.list].reverse().map((x:string[])=>[x[0],x[1],x[2],x[3],x[4],x[5],String(Number(x[0])+ms)]);}catch{return null;}}
+async function bybit(symbol:string,tf:string){const iv=tf==="5m"?"5":tf==="15m"?"15":tf==="1h"?"60":tf==="4h"?"240":"D";try{const u=new URL(`${BYBIT_HOST}/v5/market/kline`);u.searchParams.set("category","spot");u.searchParams.set("symbol",symbol);u.searchParams.set("interval",iv);u.searchParams.set("limit",String(KLINE_LIMIT));const r=await fetchT(u.toString());if(!r.ok)return null;const j=await r.json();if(j.retCode!==0||!Array.isArray(j.result?.list))return null;const ms=iv==="D"?86400000:iv==="240"?14400000:iv==="60"?3600000:iv==="15"?900000:300000;return [...j.result.list].reverse().map((x:string[])=>[x[0],x[1],x[2],x[3],x[4],x[5],String(Number(x[0])+ms)]);}catch{return null;}}
 async function candles(c:string,tf:string){const s=exSymbol(c),b=await binance(s,tf);if(b)return {source:"binance",rows:b};const y=await bybit(s,tf);return y?{source:"bybit",rows:y}:null;}
 
 function rsi(c:number[],p=14){if(c.length<p+1)return NaN;let g=0,l=0;for(let i=c.length-p;i<c.length;i++){const d=c[i]-c[i-1];if(d>=0)g+=d;else l-=d;}if(l===0)return 100;return 100-100/(1+(g/p)/(l/p));}
