@@ -6,7 +6,21 @@ function getServiceClient(){return createClient(Deno.env.get("SUPABASE_URL")!,De
 const SOURCES = [
   { name: "coindesk", url: "https://www.coindesk.com/arc/outboundfeeds/rss/" },
   { name: "cointelegraph", url: "https://cointelegraph.com/rss" },
+  { name: "cointelegraph-bitcoin", url: "https://cointelegraph.com/rss/tag/bitcoin" },
+  { name: "cointelegraph-altcoins", url: "https://cointelegraph.com/rss/tag/altcoins" },
+  { name: "the-block", url: "https://www.theblock.co/rss.xml" },
+  { name: "cryptoslate", url: "https://cryptoslate.com/feed/" },
   { name: "decrypt", url: "https://decrypt.co/feed" },
+  { name: "bitcoin-magazine", url: "https://bitcoinmagazine.com/.rss/full/" },
+  { name: "u-today", url: "https://u.today/rss" },
+  { name: "bitcoin-com-news", url: "https://news.bitcoin.com/feed/" },
+  { name: "the-defiant", url: "https://thedefiant.io/feed" },
+  { name: "dl-news", url: "https://www.dlnews.com/arc/outboundfeeds/rss/" },
+  { name: "google-news-crypto", url: "https://news.google.com/rss/search?q=cryptocurrency&hl=en-US&gl=US&ceid=US:en" },
+  { name: "google-news-bitcoin", url: "https://news.google.com/rss/search?q=Bitcoin%20BTC&hl=en-US&gl=US&ceid=US:en" },
+  { name: "ethereum-foundation", url: "https://blog.ethereum.org/feed.xml" },
+  // Temporary public community RSS; Reddit announced RSS support ends 2026-11-13.
+  { name: "reddit-crypto-search", url: "https://www.reddit.com/search.rss?q=crypto&sort=new" },
 ];
 const POSITIVE = ["surge","rally","bullish","approval","approved","adoption","inflow","inflows","launch","launched","partnership","upgrade","growth","record","breakout","buy","accumulate","accumulation","etf","institutional","wins","positive","recovery","integrate","integration","funding","raises","raised","legal clarity"];
 const NEGATIVE = ["crash","drop","plunge","bearish","rejection","rejected","outflow","outflows","hack","hacked","exploit","lawsuit","ban","banned","sell","selling","liquidation","liquidations","fraud","scam","breach","bankruptcy","loss","losses","fear","warning","downgrade","delist","delisted","attack","stolen","negative","collapse","risk"];
@@ -26,25 +40,24 @@ function hasToken(text:string,token:string){if(token.length<=4){const re=new Reg
 function assetsIn(text:string,assets:string[]){return assets.filter(a=>(ASSET_NAMES[a]??[a.toLowerCase()]).some(k=>hasToken(text,k)));}
 async function fetchText(url:string){const r=await fetch(url,{headers:{"User-Agent":"TradingCommandCenter/1.0 research-bot"},signal:AbortSignal.timeout(12000)});if(!r.ok)throw new Error(url+" HTTP "+r.status);return await r.text();}
 function parseFeed(xml:string,source:string){const blocks=[...xml.matchAll(/<(item|entry)(?:\s[^>]*)?>([\s\S]*?)<\/(item|entry)>/gi)].map(m=>m[2]!);return blocks.map(b=>({source,title:tag(b,"title"),url:tag(b,"link")||(b.match(/<link[^>]+href="([^"]+)"/i)?.[1]??""),published:tag(b,"pubDate")||tag(b,"published")||tag(b,"updated"),description:tag(b,"description")||tag(b,"summary")})).filter(x=>x.title);}
-async function redditRecent(){
-  const failures:string[]=[];
+async function collectMarketSentiment(db:any){
   try{
-    const raw=await fetchText("https://www.reddit.com/r/CryptoCurrency/new.json?limit=100&raw_json=1");
-    const j=JSON.parse(raw);
-    const items=(j?.data?.children??[]).map((x:any)=>{
-      const d=x?.data??{};
-      return {source:"reddit",title:String(d.title??""),description:String(d.selftext??""),url:String(d.url??(d.permalink?"https://www.reddit.com"+d.permalink:"")),published:d.created_utc?new Date(Number(d.created_utc)*1000).toISOString():""};
-    }).filter((x:any)=>x.title).slice(0,100);
-    if(items.length)return {items,failures};
-    failures.push("json returned 0 items");
-  }catch(e){failures.push("json: "+(e instanceof Error?e.message:String(e)));}
-  try{
-    const items=parseFeed(await fetchText("https://www.reddit.com/r/CryptoCurrency/new.rss?limit=100"),"reddit").slice(0,100);
-    if(items.length)return {items,failures};
-    failures.push("rss returned 0 items");
-  }catch(e){failures.push("rss: "+(e instanceof Error?e.message:String(e)));}
-  console.warn("[SENTIMENT][REDDIT] unavailable: "+failures.join(" | "));
-  return {items:[],failures};
+    const response=await fetch("https://api.alternative.me/fng/?limit=1",{headers:{"User-Agent":"ResearchLab/1.0 (market sentiment research)"},signal:AbortSignal.timeout(10000)});
+    if(!response.ok)throw new Error("Alternative.me Fear & Greed HTTP "+response.status);
+    const payload=await response.json();
+    const item=payload?.data?.[0];
+    const value=Number(item?.value);
+    const epoch=Number(item?.timestamp);
+    if(!item||!Number.isFinite(value)||value<0||value>100||!Number.isFinite(epoch)||epoch<=0)throw new Error("Alternative.me returned invalid Fear & Greed data");
+    const row={observed_at:new Date(epoch*1000).toISOString(),source:"alternative.me-fear-greed",value,classification:String(item.value_classification??"unknown"),raw:{name:payload?.name??"Fear and Greed Index",value:item.value,value_classification:item.value_classification,timestamp:item.timestamp}};
+    const {error}=await db.from("market_sentiment_snapshots").upsert(row,{onConflict:"source,observed_at"});
+    if(error)throw error;
+    return {available:true,value,classification:row.classification,observed_at:row.observed_at,source:row.source};
+  }catch(e){
+    const error=e instanceof Error?e.message:String(e);
+    console.warn("[MARKET_SENTIMENT][ALTERNATIVE_ME] unavailable: "+error);
+    return {available:false,source:"alternative.me-fear-greed",error};
+  }
 }
 function eventType(text:string){const t=text.toLowerCase();if(/etf|sec|regulat|law|senate|congress|mica|ban/.test(t))return"regulation";if(/hack|exploit|breach|stolen|attack/.test(t))return"security";if(/listing|delist|exchange|binance|coinbase/.test(t))return"exchange";if(/upgrade|fork|mainnet|network/.test(t))return"network";if(/partnership|integrat|adoption/.test(t))return"adoption";if(/liquidat|funding|whale|flow/.test(t))return"market";return"other";}
 async function fp(s:string){const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(s));return Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,"0")).join("");}
@@ -123,21 +136,105 @@ async function collect(db:any,forceSocial=false){
 
   const collectSocial = forceSocial || new Date(now).getUTCMinutes()%15===0;
   const socialRows = collectSocial ? await coinLoreSocialSnapshots(db, assets, observedAt) : [];
-  const redditResult=await redditRecent();
-  const redditItems=redditResult.items;
-  const sentimentRows:any[]=assets.flatMap(asset=>{
-    const items=redditItems.filter(item=>assetsIn(item.title+" "+item.description,[asset]).length>0).slice(0,25);
-    if(!items.length)return [];
-    let bull=0,bear=0,neutral=0;
-    for(const item of items){const s=score(item.title+" "+item.description);if(s.score>.15)bull++;else if(s.score<-.15)bear++;else neutral++;}
-    const total=items.length;
-    return[{asset,observed_at:observedAt,source:"reddit-cryptocurrency-rss",mention_count:total,unique_items:total,bullish_count:bull,bearish_count:bear,neutral_count:neutral,sentiment_score:total?(bull-bear)/total:0,raw:{items:items.slice(0,10).map(x=>({title:x.title,url:x.url,published:x.published}))}}];
-  });
+  const marketSentiment=await collectMarketSentiment(db);
 
+  // Pull only current feed entries. Store compact metadata, never full XML or article bodies.
   const newsRows:any[]=[];
-  for(const src of SOURCES){try{const xml=await fetchText(src.url);for(const item of parseFeed(xml,src.name).slice(0,100)){const matched=assetsIn(item.title+" "+item.description,assets);const s=score(item.title+" "+item.description);for(const asset of matched){const relevance=(ASSET_NAMES[asset]??[asset]).some(k=>item.title.toLowerCase().includes(k.toLowerCase())) ? .75 : .4;newsRows.push({asset,event_at:new Date(item.published||now).toISOString(),source:src.name,title:item.title,url:item.url||null,sentiment_score:s.score,sentiment_label:s.score>.15?"bullish":s.score<-.15?"bearish":"neutral",event_type:eventType(item.title+" "+item.description),relevance,novelty:1,shock_score:Math.abs(s.score)*relevance,fingerprint:await fp(src.name+"|"+asset+"|"+item.title.toLowerCase().replace(/\s+/g," ").trim()),raw:item});}}}catch(e){console.warn("[NEWS]",src.name,e);}}
+  const sourceStatus:Record<string,any>={};
+  // Fetch at most four feeds concurrently to limit rate spikes and total runtime.
+  const feedResults: any[][] = [];
+  let sourceCursor = 0;
+  async function feedWorker() {
+    while (sourceCursor < SOURCES.length) {
+      const src = SOURCES[sourceCursor++];
+      try {
+        const xml = await fetchText(src.url);
+        const items = parseFeed(xml, src.name).slice(0, 40);
+        if (!items.length) {
+          sourceStatus[src.name] = { available: false, reason: "http_ok_but_no_feed_items" };
+          continue;
+        }
+        sourceStatus[src.name] = { available: true, items_read: items.length };
+        const rows: any[] = [];
+        for (const item of items) {
+          const articleText = item.title + " " + item.description;
+          const matched = assetsIn(articleText, assets);
+          const s = score(articleText);
+          const parsedTime = Date.parse(item.published || "");
+          const eventAt = Number.isFinite(parsedTime) ? new Date(parsedTime).toISOString() : now.toISOString();
+          for (const asset of matched) {
+            const aliases = ASSET_NAMES[asset] ?? [asset.toLowerCase()];
+            const relevance = aliases.some(k => hasToken(item.title, k)) ? .75 : .4;
+            const normalizedTitle = item.title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+            const fingerprint = await fp("rss|" + asset + "|" + normalizedTitle);
+            rows.push({
+              asset, event_at: eventAt, source: src.name, title: item.title.slice(0, 400), url: item.url || null,
+              sentiment_score: s.score, sentiment_label: s.score > .15 ? "bullish" : s.score < -.15 ? "bearish" : "neutral",
+              event_type: eventType(articleText), relevance, novelty: 1, shock_score: Math.abs(s.score) * relevance,
+              fingerprint
+            });
+          }
+        }
+        feedResults.push(rows);
+      } catch (e) {
+        sourceStatus[src.name] = { available: false, error: e instanceof Error ? e.message : String(e).slice(0, 180) };
+        console.warn("[NEWS]", src.name, e);
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(4, SOURCES.length) }, () => feedWorker()));
+  newsRows.push(...feedResults.flat());
 
-  for(const row of sentimentRows){const {data:prev}=await db.from("asset_sentiment_snapshots").select("sentiment_score,mention_count").eq("asset",row.asset).gte("observed_at",new Date(now.getTime()-21600000).toISOString()).lt("observed_at",row.observed_at).order("observed_at",{ascending:false}).limit(72);const p=prev??[];if(p.length){const mean=p.reduce((a:any,b:any)=>a+Number(b.sentiment_score||0),0)/p.length;const mm=p.reduce((a:any,b:any)=>a+Number(b.mention_count||0),0)/p.length;const sd=Math.sqrt(p.reduce((a:any,b:any)=>a+Math.pow(Number(b.sentiment_score||0)-mean,2),0)/p.length)||.1;row.sentiment_velocity=(row.sentiment_score-mean)/Math.max(.1,sd);row.mention_velocity=(Number(row.mention_count)-mm)/Math.max(1,mm);row.shock_score=Math.abs(row.sentiment_velocity)+(Math.abs(row.mention_velocity)>1?Math.min(3,Math.abs(row.mention_velocity)):0);}else row.shock_score=Math.abs(row.sentiment_score)*2;}
+  const uniqueNews=new Map<string,any>();
+  for(const row of newsRows){if(!uniqueNews.has(row.fingerprint))uniqueNews.set(row.fingerprint,row);}
+  newsRows.length=0;
+  newsRows.push(...uniqueNews.values());
+
+  const sentimentRows:any[]=[];
+  for(const asset of assets){
+    const items=newsRows.filter(row=>row.asset===asset);
+    if(!items.length)continue;
+    const bullish=items.filter(row=>row.sentiment_label==="bullish").length;
+    const bearish=items.filter(row=>row.sentiment_label==="bearish").length;
+    const neutral=items.length-bullish-bearish;
+    const avg=items.reduce((sum,row)=>sum+Number(row.sentiment_score||0),0)/items.length;
+    const sources=[...new Set(items.map(row=>row.source))];
+    const agreement=Math.max(bullish,bearish,neutral)/items.length;
+    const confidence=Math.max(0,Math.min(.95,(.35+.15*Math.min(3,Math.max(0,items.length-1))+.08*Math.min(2,Math.max(0,sources.length-1)))*agreement));
+    sentimentRows.push({
+      asset,observed_at:observedAt,source:"rss-news-consensus",
+      mention_count:items.length,unique_items:items.length,
+      bullish_count:bullish,bearish_count:bearish,neutral_count:neutral,
+      sentiment_score:Math.max(-1,Math.min(1,avg)),
+      shock_score:Math.abs(avg)*confidence,
+      raw:{confidence,corroborating_items:items.length,source_count:sources.length,sources}
+    });
+  }
+  const coveragePercent=assets.length?Math.round(sentimentRows.length*1000/assets.length)/10:0;
+  const sentimentStatus={
+    available:sentimentRows.length>0,provider:"rss-news-consensus",authentication:"none",
+    universe_assets:assets.length,assets_with_valid_sentiment:sentimentRows.length,
+    coverage_percent:coveragePercent,target_coverage_percent:70,coverage_passed:coveragePercent>=70,
+    sources_configured:SOURCES.length,source_status:sourceStatus,observed_at:observedAt,
+    policy:"compact headlines/URLs only; syndicated duplicates collapsed; no full RSS XML/article body stored"
+  };
+
+    for(const row of sentimentRows){
+    if(row.source==="rss-news-consensus"){
+      row.shock_score=Math.abs(Number(row.sentiment_score)||0)*Number(row.raw?.confidence||0);
+      continue;
+    }
+    const {data:prev}=await db.from("asset_sentiment_snapshots").select("sentiment_score,mention_count").eq("asset",row.asset).eq("source",row.source).gte("observed_at",new Date(now.getTime()-21600000).toISOString()).lt("observed_at",row.observed_at).order("observed_at",{ascending:false}).limit(72);
+    const p=prev??[];
+    if(p.length){
+      const mean=p.reduce((a:any,b:any)=>a+Number(b.sentiment_score||0),0)/p.length;
+      const mm=p.reduce((a:any,b:any)=>a+Number(b.mention_count||0),0)/p.length;
+      const sd=Math.sqrt(p.reduce((a:any,b:any)=>a+Math.pow(Number(b.sentiment_score||0)-mean,2),0)/p.length)||.1;
+      row.sentiment_velocity=(row.sentiment_score-mean)/Math.max(.1,sd);
+      row.mention_velocity=(Number(row.mention_count)-mm)/Math.max(1,mm);
+      row.shock_score=Math.abs(row.sentiment_velocity)+(Math.abs(row.mention_velocity)>1?Math.min(3,Math.abs(row.mention_velocity)):0);
+    }else row.shock_score=Math.abs(row.sentiment_score)*2;
+  }
 
   const inserts=[
     priceRows=>priceRows.length?db.from("asset_price_snapshots").upsert(priceRows,{onConflict:"asset,observed_at,source"}):Promise.resolve(),
@@ -146,11 +243,14 @@ async function collect(db:any,forceSocial=false){
     rows=>rows.length?db.from("asset_news_events").upsert(rows,{onConflict:"fingerprint",ignoreDuplicates:true}):Promise.resolve()
   ];
   await Promise.all([inserts[0](prices.filter(Boolean)),inserts[1](flowRows),inserts[2](sentimentRows),inserts[3](newsRows)]);
+  // Keep only the recent event window needed by downstream research jobs.
+  const {error:retentionError}=await db.from("asset_news_events").delete().lt("event_at",new Date(now.getTime()-7*86400000).toISOString());
+  if(retentionError)console.warn("[NEWS_RETENTION]",retentionError);
   const {data:tx,error:txErr}=await db.rpc("refresh_event_flow_transmissions",{p_lookback_hours:48});if(txErr)console.warn("[TRANSMISSION]",txErr);
   const {data:study,error:studyErr}=await db.rpc("capture_event_flow_study_snapshot");if(studyErr)console.warn("[FLOW_STUDY]",studyErr);
   const {data:socialRefresh,error:socialRefreshErr}=await db.rpc("refresh_mature_influential_social_transmissions",{p_lookback_hours:168});if(socialRefreshErr)console.warn("[SOCIAL_CHAIN_REFRESH]",socialRefreshErr);
   const {data:shock,error:shockErr}=await db.rpc("refresh_whale_flow_shock_followups",{p_lookback_hours:48});if(shockErr)console.warn("[FLOW_SHOCK]",shockErr);
   const {data:classification,error:classificationErr}=await db.rpc("refresh_whale_flow_transition_classification",{p_lookback_hours:168});if(classificationErr)console.warn("[FLOW_CLASSIFICATION]",classificationErr);
-  return{ok:true,assets:assets.length,prices:prices.filter(Boolean).length,flows:flowRows.filter(Boolean).length,sentiment:sentimentRows.length,social_activity:socialRows.length,reddit:{available:redditItems.length>0,items:redditItems.length,failures:redditResult.failures},transmissions_refreshed:tx??0,flow_shock_followups_refreshed:shock??0,flow_transition_classification_refreshed:classification??0,event_flow_study_snapshots_captured:study??0,social_chain_maturation:socialRefresh??{examined:0,processed:0,failed:0,research_only:true},observed_at:observedAt};
+  return{ok:true,assets:assets.length,prices:prices.filter(Boolean).length,flows:flowRows.filter(Boolean).length,sentiment:sentimentRows.length,sentiment_status:sentimentStatus,market_sentiment:marketSentiment,social_activity:socialRows.length,transmissions_refreshed:tx??0,flow_shock_followups_refreshed:shock??0,flow_transition_classification_refreshed:classification??0,event_flow_study_snapshots_captured:study??0,social_chain_maturation:socialRefresh??{examined:0,processed:0,failed:0,research_only:true},observed_at:observedAt};
 }
 Deno.serve(async req=>{const pre=handleOptions(req);if(pre)return pre;try{const db=getServiceClient();const body=await req.json().catch(()=>({}));if(body?.action==="discover"){const universe=await discoverAssets(db);return new Response(JSON.stringify({ok:true,selected:universe.length,assets:universe.map((x:any)=>x.asset)}),{headers:{...corsHeaders,"Content-Type":"application/json"}});}if(body?.action==="analyze"){const {data,error}=await db.from("event_flow_transmissions").select("*").order("event_at",{ascending:false}).limit(100);if(error)throw error;return new Response(JSON.stringify({ok:true,rows:data??[]}),{headers:{...corsHeaders,"Content-Type":"application/json"}});}const result=await collect(db,body?.action==="collect_social");return new Response(JSON.stringify(result),{headers:{...corsHeaders,"Content-Type":"application/json"}});}catch(e){console.error("[EVENT_FLOW_LAB]",e);return new Response(JSON.stringify({ok:false,error:e instanceof Error?e.message:String(e)}),{status:500,headers:{...corsHeaders,"Content-Type":"application/json"}});}});
