@@ -18,13 +18,9 @@ const SOURCES = [
   { name: "dl-news", url: "https://www.dlnews.com/arc/outboundfeeds/rss/" },
   { name: "google-news-crypto", url: "https://news.google.com/rss/search?q=cryptocurrency&hl=en-US&gl=US&ceid=US:en" },
   { name: "google-news-bitcoin", url: "https://news.google.com/rss/search?q=Bitcoin%20BTC&hl=en-US&gl=US&ceid=US:en" },
-  { name: "messari", url: "https://messari.io/rss" },
-  { name: "glassnode", url: "https://insights.glassnode.com/rss/" },
-  { name: "santiment", url: "https://santiment.net/blog/feed/" },
   { name: "ethereum-foundation", url: "https://blog.ethereum.org/feed.xml" },
   // Temporary public community RSS; Reddit announced RSS support ends 2026-11-13.
   { name: "reddit-crypto-search", url: "https://www.reddit.com/search.rss?q=crypto&sort=new" },
-  { name: "reddit-cryptocurrency", url: "https://www.reddit.com/r/CryptoCurrency/new/.rss" },
 ];
 const POSITIVE = ["surge","rally","bullish","approval","approved","adoption","inflow","inflows","launch","launched","partnership","upgrade","growth","record","breakout","buy","accumulate","accumulation","etf","institutional","wins","positive","recovery","integrate","integration","funding","raises","raised","legal clarity"];
 const NEGATIVE = ["crash","drop","plunge","bearish","rejection","rejected","outflow","outflows","hack","hacked","exploit","lawsuit","ban","banned","sell","selling","liquidation","liquidations","fraud","scam","breach","bankruptcy","loss","losses","fear","warning","downgrade","delist","delisted","attack","stolen","negative","collapse","risk"];
@@ -145,35 +141,44 @@ async function collect(db:any,forceSocial=false){
   // Pull only current feed entries. Store compact metadata, never full XML or article bodies.
   const newsRows:any[]=[];
   const sourceStatus:Record<string,any>={};
-  for(const src of SOURCES){
-    try{
-      const xml=await fetchText(src.url);
-      const items=parseFeed(xml,src.name).slice(0,40);
-      sourceStatus[src.name]={available:true,items_read:items.length};
-      for(const item of items){
-        const articleText=item.title+" "+item.description;
-        const matched=assetsIn(articleText,assets);
-        const s=score(articleText);
-        const parsedTime=Date.parse(item.published||"");
-        const eventAt=Number.isFinite(parsedTime)?new Date(parsedTime).toISOString():now.toISOString();
-        for(const asset of matched){
-          const aliases=ASSET_NAMES[asset]??[asset.toLowerCase()];
-          const relevance=aliases.some(k=>hasToken(item.title,k)) ? .75 : .4;
-          const normalizedTitle=item.title.toLowerCase().replace(/[^a-z0-9]+/g," ").trim();
-          const fingerprint=await fp("rss|"+asset+"|"+normalizedTitle);
-          newsRows.push({
-            asset,event_at:eventAt,source:src.name,title:item.title.slice(0,400),url:item.url||null,
-            sentiment_score:s.score,sentiment_label:s.score>.15?"bullish":s.score<-.15?"bearish":"neutral",
-            event_type:eventType(articleText),relevance,novelty:1,shock_score:Math.abs(s.score)*relevance,
+  // Fetch feeds concurrently in small batches: avoid a 16 x 12s sequential worst case.
+  const feedResults = await Promise.all(SOURCES.map(async (src) => {
+    try {
+      const xml = await fetchText(src.url);
+      const items = parseFeed(xml, src.name).slice(0, 40);
+      if (!items.length) {
+        sourceStatus[src.name] = { available: false, reason: "http_ok_but_no_feed_items" };
+        return [];
+      }
+      sourceStatus[src.name] = { available: true, items_read: items.length };
+      const rows: any[] = [];
+      for (const item of items) {
+        const articleText = item.title + " " + item.description;
+        const matched = assetsIn(articleText, assets);
+        const s = score(articleText);
+        const parsedTime = Date.parse(item.published || "");
+        const eventAt = Number.isFinite(parsedTime) ? new Date(parsedTime).toISOString() : now.toISOString();
+        for (const asset of matched) {
+          const aliases = ASSET_NAMES[asset] ?? [asset.toLowerCase()];
+          const relevance = aliases.some(k => hasToken(item.title, k)) ? .75 : .4;
+          const normalizedTitle = item.title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+          const fingerprint = await fp("rss|" + asset + "|" + normalizedTitle);
+          rows.push({
+            asset, event_at: eventAt, source: src.name, title: item.title.slice(0, 400), url: item.url || null,
+            sentiment_score: s.score, sentiment_label: s.score > .15 ? "bullish" : s.score < -.15 ? "bearish" : "neutral",
+            event_type: eventType(articleText), relevance, novelty: 1, shock_score: Math.abs(s.score) * relevance,
             fingerprint
           });
         }
       }
-    }catch(e){
-      sourceStatus[src.name]={available:false,error:e instanceof Error?e.message:String(e).slice(0,180)};
-      console.warn("[NEWS]",src.name,e);
+      return rows;
+    } catch (e) {
+      sourceStatus[src.name] = { available: false, error: e instanceof Error ? e.message : String(e).slice(0, 180) };
+      console.warn("[NEWS]", src.name, e);
+      return [];
     }
-  }
+  }));
+  newsRows.push(...feedResults.flat());
 
   const uniqueNews=new Map<string,any>();
   for(const row of newsRows){if(!uniqueNews.has(row.fingerprint))uniqueNews.set(row.fingerprint,row);}
