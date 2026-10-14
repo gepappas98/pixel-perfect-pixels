@@ -81,6 +81,35 @@ Deno.serve(async (req) => {
   ];
   for(const v of variants){
    const metrics={whale_state:whaleState,whale_net:whaleNet,whale_delta:whaleDelta,whale_turn:whaleTurn,transition_sequence_distribution_neutral_accumulation:transitionSequence,taker_buy_imbalance_5m:takerImbalance,taker_buy_z:adaptiveTakerZ,whale_delta_z:whaleZ,candle_symbols:latestCandles.size,breadth_1h:{bullish:bull,bearish:bear,neutral,delta_bullish:breadthDelta,improving:breadthImproving},regime_at_signal:String(prev?.market_regime??"unknown"),confluence,adaptive_warmup:warmup,research_only:true,live_orders_submitted:0};
+   if(v.id==="A_CURRENT"){
+    // A is the already-running strict baseline. Observe its actual paper trades;
+    // never open a second A position from this evaluator.
+    const {data:baselineTrades,error:baselineErr}=await db.from("trades").select("id,symbol,created_at,entry_metadata")
+      .eq("entry_source","early_entry_regime").eq("mode","paper").gte("created_at",iso(10*60000))
+      .order("created_at",{ascending:false}).limit(100);
+    if(baselineErr)throw baselineErr;
+    let recorded=0;
+    for(const t of baselineTrades??[]){
+      const key=`A_CURRENT:BASELINE_TRADE:${t.id}`;
+      const {error}=await db.from("early_entry_variant_decisions").insert({
+        variant:"A_CURRENT",symbol:t.symbol,decision:"PAPER_OPEN",
+        reason:"A — CURRENT EARLY ENTRY: existing strict baseline opened this paper trade.",
+        decision_key:key,metrics:{...metrics,baseline_trade_created_at:t.created_at,baseline_entry_metadata:t.entry_metadata??{}},trade_id:t.id
+      });
+      if(error&&!String(error.message).includes("duplicate key"))throw error;
+      recorded++;
+    }
+    if(recorded===0){
+      const key=`A_CURRENT:GLOBAL:${bucket}`;
+      const {error}=await db.from("early_entry_variant_decisions").insert({
+        variant:"A_CURRENT",decision:"NO_ENTRY",reason:"A — CURRENT EARLY ENTRY: no baseline paper trade opened during this evaluation window.",
+        decision_key:key,metrics
+      });
+      if(error&&!String(error.message).includes("duplicate key"))throw error;
+    }
+    outcomes.push({variant:"A_CURRENT",opened:0,baseline_trades_observed:recorded,eligible:recorded>0});
+    continue;
+   }
    if(!v.eligible){const key=`${v.id}:GLOBAL:${bucket}`;const {error}=await db.from("early_entry_variant_decisions").insert({variant:v.id,decision:"NO_ENTRY",reason:"Core gate not met. "+v.reason,decision_key:key,metrics});if(error&&!String(error.message).includes("duplicate key"))throw error;outcomes.push({variant:v.id,opened:0,eligible:false});continue;}
    const assetHasConfluence=(symbol:string)=>{const base=symbol.endsWith("USDT")?symbol.slice(0,-4):symbol;return councilLatest.get(symbol)==="BUY"||councilLatest.get(base)==="BUY"||num(sentimentLatest.get(base))>0;};
    const candidates=[...latestIndicators.entries()].filter(([symbol,r])=>{const c=latestCandles.get(symbol),base=symbol.endsWith("USDT")?symbol.slice(0,-4):symbol;return String(r.signal).toLowerCase()==="bullish"&&!!c&&num(c.quote_volume)>0&&(2*num(c.taker_buy_quote_volume)/num(c.quote_volume)-1)>0&&priceMap.has(base);})
