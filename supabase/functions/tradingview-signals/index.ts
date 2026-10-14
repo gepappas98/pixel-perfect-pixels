@@ -38,24 +38,39 @@ function smc(o:number[],h:number[],l:number[],c:number[]){
 function accumulationFeatures(h:number[],l:number[],c:number[],v:number[]){if(c.length<60)return null;const n=c.length-1,p=c[n],ma20=c.slice(-20).reduce((a,b)=>a+b,0)/20,ma50=c.slice(-50).reduce((a,b)=>a+b,0)/50;let obv=0;const os=[0];for(let i=1;i<c.length;i++){obv+=c[i]>c[i-1]?v[i]:c[i]<c[i-1]?-v[i]:0;os.push(obv);}const base=os[Math.max(0,n-20)],obvChange=Math.abs(base)>0?(obv-base)/Math.abs(base)*100:0;let flow=0,vol=0;for(let i=n-19;i<=n;i++){const r=h[i]-l[i],m=r>0?((c[i]-l[i])-(h[i]-c[i]))/r:0;flow+=m*v[i];vol+=v[i];}const cmf=vol>0?flow/vol:0;const tr=[];for(let i=1;i<c.length;i++)tr.push(Math.max(h[i]-l[i],Math.abs(h[i]-c[i-1]),Math.abs(l[i]-c[i-1])));const aps=[];for(let i=14;i<tr.length;i++){const a=tr.slice(i-13,i+1).reduce((x,y)=>x+y,0)/14;aps.push(c[i+1]>0?a/c[i+1]*100:0);}const atrPct=aps.at(-1)||0,prior=aps.slice(-21,-1).filter(Number.isFinite).sort((a,b)=>a-b),med=prior.length?prior[Math.floor(prior.length/2)]:atrPct,compression=med>0?(med-atrPct)/med*100:0;const rh=Math.max(...h.slice(-21,-1)),sl=Math.min(...l.slice(-21,-1)),avgV=v.slice(-21,-1).reduce((a,b)=>a+b,0)/20,vr=avgV>0?v[n]/avgV:0,breakout=p>rh&&vr>=1.5;let score=0;if(p>=ma20)score+=10;if(p>=ma50)score+=10;if(cmf>0)score+=20;if(obvChange>0)score+=20;if(compression>=15)score+=15;if(vr>=1)score+=10;if(breakout)score+=15;return{ma20,ma50,cmf20:cmf,obv,obvChangePct20:obvChange,atrPct,atrCompressionPct:compression,volume:v[n],avgVolume20:avgV,volumeRatio:vr,support20:sl,resistance20:rh,breakoutConfirmed:breakout,score,status:breakout?"BREAKOUT_CONFIRMED":score>=60?"ACCUMULATION_WATCH":"NEUTRAL"};}
 function classify(r:number,m:number,s:number,p:number,b:any,t:any,x:any){if(x.signal==="bsl_sweep_trap")return"bearish";if(x.signal==="ssl_sweep_trap")return"bullish";if(x.signal.startsWith("bearish")){const q=m-s;return q<=0||r>=45?"bearish":"neutral";}const q=m-s;if(p<=b.lower*1.01&&t.osc>=20&&q>=0)return"bullish";if(p>=b.upper*.99&&t.osc<=-20&&q<=0)return"bearish";if(r>=44&&r<=56)return q>.05*Math.abs(m)?"bullish":q<-.05*Math.abs(m)?"bearish":"neutral";return r<44?(q>0?"bullish":"neutral"):(q<0?"bearish":"neutral");}
 
-async function activeCoins(db:any){
+async function activeCoinContext(db:any){
  const {data}=await db.from("dynamic_watchlist_snapshots").select("symbols,expires_at").order("computed_at",{ascending:false}).limit(1).maybeSingle();
  const w=data?.symbols&&Array.isArray(data.symbols)&&new Date(String(data.expires_at??"")).getTime()>Date.now()?data.symbols:CORE_FALLBACK;
- const {data:hot}=await db.from("hot_whale_signals").select("symbol").gte("last_seen_at",new Date(Date.now()-30*60_000).toISOString()).limit(20);
- return [...new Set([...w,...(hot??[]).map((x:any)=>x.symbol)].map((x:any)=>String(x).toUpperCase()).filter(Boolean))];
+ const since30m=new Date(Date.now()-30*60_000).toISOString();
+ const [{data:alerts},{data:hot},{data:openTrades}]=await Promise.all([
+  db.from("whale_alerts").select("symbol").gte("created_at",since30m).limit(100),
+  db.from("hot_whale_signals").select("symbol").gte("last_seen_at",since30m).limit(50),
+  db.from("trades").select("symbol").eq("status","open").limit(50),
+ ]);
+ const prioritySymbols=new Set<string>();
+ for(const r of alerts??[])if(r.symbol)prioritySymbols.add(String(r.symbol).toUpperCase().replace(/USDT$/,""));
+ for(const r of hot??[])if(r.symbol)prioritySymbols.add(String(r.symbol).toUpperCase().replace(/USDT$/,""));
+ for(const r of openTrades??[])if(r.symbol)prioritySymbols.add(String(r.symbol).toUpperCase().replace(/USDT$/,""));
+ const allSymbols=[...new Set([...w,...prioritySymbols].map((x:any)=>String(x).toUpperCase().replace(/USDT$/,"")).filter(Boolean))];
+ return {allSymbols,prioritySymbols};
 }
 
 Deno.serve(async(req)=>{
  const pre=handleOptions(req);if(pre)return pre;
  const started=Date.now();const db=getServiceClient();
  try{
-  const coins=await activeCoins(db);const tasks=coins.flatMap(coin=>TIMEFRAMES.map(timeframe=>({coin,timeframe})));
+  const {allSymbols,prioritySymbols}=await activeCoinContext(db);
+  const tasks:{coin:string;timeframe:string}[]=[];
+  for(const coin of allSymbols){
+   const timeframes=prioritySymbols.has(coin)?["5m","15m","1h","4h","1d"]:["1h","4h","1d"];
+   for(const timeframe of timeframes)tasks.push({coin,timeframe});
+  }
   const results:Row[]=[];let cursor=0,requests=0,binanceOk=0,bybitFallback=0,failures=0;
   async function worker(){while(true){const i=cursor++;if(i>=tasks.length)return;const {coin,timeframe}=tasks[i];try{requests++;const z=await candles(coin,timeframe);if(!z){failures++;continue;}if(z.source==="binance")binanceOk++;else bybitFallback++;const raw=z.rows;const o=raw.map((x:any)=>Number(x[1])),h=raw.map((x:any)=>Number(x[2])),l=raw.map((x:any)=>Number(x[3])),c=raw.map((x:any)=>Number(x[4])),v=raw.map((x:any)=>Number(x[5]));if(c.length<30||c.some(x=>!Number.isFinite(x))){failures++;continue;}const rr=rsi(c),mm=macd(c),bbx=bb(c),ar=aroon(h,l),vw=vwap(h,l,c,v),at=atr(h,l,c),sx=smc(o,h,l,c),price=c.at(-1)!;results.push({symbol:exSymbol(coin),timeframe,rsi:rr,macd:mm.macd,macd_signal:mm.signal,bb_upper:bbx.upper,bb_lower:bbx.lower,price,signal:classify(rr,mm.macd,mm.signal,price,bbx,ar,sx),raw:{closes_tail:c.slice(-5),candle_close_time:new Date(Number(raw.at(-1)?.[6])||Date.now()).toISOString(),aroon:ar,vwap:vw,atr_pct:at,smc:sx,accumulation:timeframe==="1d"?accumulationFeatures(h,l,c,v):null,source:z.source},created_at:new Date().toISOString()});}catch(e){failures++;console.error(`[TECH] ${coin} ${timeframe}`,e);}}}
-  await Promise.all(Array.from({length:Math.min(15,tasks.length)},()=>worker()));
+  await Promise.all(Array.from({length:Math.min(10,tasks.length)},()=>worker()));
   if(!results.length)throw new Error("No indicator snapshots could be produced");
   const {data,error}=await db.from("indicator_snapshots").upsert(results,{onConflict:"symbol,timeframe",ignoreDuplicates:false}).select("id");
   if(error)throw error;
-  return new Response(JSON.stringify({ok:true,produced:results.length,persisted:data?.length??0,watchlist_size:coins.length,timeframes:TIMEFRAMES,requests,binance_success:binanceOk,bybit_fallbacks:bybitFallback,failures,duration_ms:Date.now()-started}),{headers:{...corsHeaders,"Content-Type":"application/json"}});
+  return new Response(JSON.stringify({ok:true,produced:results.length,persisted:data?.length??0,watchlist_size:allSymbols.length,priority_coins_count:prioritySymbols.size,tasks_total:tasks.length,workers:Math.min(10,tasks.length),requests,binance_success:binanceOk,bybit_fallbacks:bybitFallback,failures,duration_ms:Date.now()-started}),{headers:{...corsHeaders,"Content-Type":"application/json"}});
  }catch(e){console.error("[TRADINGVIEW_SIGNALS] fatal",e);return new Response(JSON.stringify({ok:false,error:e instanceof Error?e.message:String(e)}),{status:500,headers:{...corsHeaders,"Content-Type":"application/json"}});}
 });
