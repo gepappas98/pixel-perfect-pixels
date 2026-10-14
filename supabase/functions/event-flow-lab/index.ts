@@ -6,7 +6,22 @@ function getServiceClient(){return createClient(Deno.env.get("SUPABASE_URL")!,De
 const SOURCES = [
   { name: "coindesk", url: "https://www.coindesk.com/arc/outboundfeeds/rss/" },
   { name: "cointelegraph", url: "https://cointelegraph.com/rss" },
+  { name: "cointelegraph-bitcoin", url: "https://cointelegraph.com/rss/tag/bitcoin" },
+  { name: "cointelegraph-altcoins", url: "https://cointelegraph.com/rss/tag/altcoins" },
+  { name: "the-block", url: "https://www.theblock.co/rss.xml" },
+  { name: "cryptoslate", url: "https://cryptoslate.com/feed/" },
   { name: "decrypt", url: "https://decrypt.co/feed" },
+  { name: "bitcoin-magazine", url: "https://bitcoinmagazine.com/.rss/full/" },
+  { name: "u-today", url: "https://u.today/rss" },
+  { name: "bitcoin-com-news", url: "https://news.bitcoin.com/feed/" },
+  { name: "the-defiant", url: "https://thedefiant.io/feed" },
+  { name: "dl-news", url: "https://www.dlnews.com/arc/outboundfeeds/rss/" },
+  { name: "google-news-crypto", url: "https://news.google.com/rss/search?q=cryptocurrency&hl=en-US&gl=US&ceid=US:en" },
+  { name: "google-news-bitcoin", url: "https://news.google.com/rss/search?q=Bitcoin%20BTC&hl=en-US&gl=US&ceid=US:en" },
+  { name: "messari", url: "https://messari.io/rss" },
+  { name: "glassnode", url: "https://insights.glassnode.com/rss/" },
+  { name: "santiment", url: "https://santiment.net/blog/feed/" },
+  { name: "ethereum-foundation", url: "https://blog.ethereum.org/feed.xml" },
 ];
 const POSITIVE = ["surge","rally","bullish","approval","approved","adoption","inflow","inflows","launch","launched","partnership","upgrade","growth","record","breakout","buy","accumulate","accumulation","etf","institutional","wins","positive","recovery","integrate","integration","funding","raises","raised","legal clarity"];
 const NEGATIVE = ["crash","drop","plunge","bearish","rejection","rejected","outflow","outflows","hack","hacked","exploit","lawsuit","ban","banned","sell","selling","liquidation","liquidations","fraud","scam","breach","bankruptcy","loss","losses","fear","warning","downgrade","delist","delisted","attack","stolen","negative","collapse","risk"];
@@ -44,73 +59,6 @@ async function collectMarketSentiment(db:any){
     console.warn("[MARKET_SENTIMENT][ALTERNATIVE_ME] unavailable: "+error);
     return {available:false,source:"alternative.me-fear-greed",error};
   }
-}
-async function collectPublicSentiment(assets:string[], observedAt:string){
-  // Free Crypto News documents this public endpoint without API-key authentication.
-  // Provider availability, schema and rate limits are not guaranteed; keep this research-only.
-  const provider="free-crypto-news";
-  const rows:any[]=[];
-  const failures:any[]=[];
-  const concurrency=4;
-  let cursor=0;
-  async function worker(){
-    while(cursor<assets.length){
-      const asset=assets[cursor++];
-      try{
-        const url="https://cryptocurrency.cv/api/sentiment?asset="+encodeURIComponent(asset)+"&limit=20";
-        const response=await fetch(url,{headers:{Accept:"application/json","User-Agent":"ResearchLab/1.0 (public research collector)"},signal:AbortSignal.timeout(10000)});
-        if(!response.ok){failures.push({asset,reason:"http_error",http_status:response.status});continue;}
-        const payload=await response.json();
-        const root=Array.isArray(payload?.data)?payload.data[0]:(payload?.data&&typeof payload.data==="object"?payload.data:payload);
-        const sentiment=root?.sentiment&&typeof root.sentiment==="object"?root.sentiment:root;
-        // Accept documented/recognizable numeric score fields only; a label alone is not a score.
-        const candidate=sentiment?.score ?? sentiment?.sentiment_score ?? sentiment?.sentimentScore ?? root?.score ?? root?.sentiment_score;
-        const rawScore=finiteOrNull(candidate);
-        if(rawScore===null){failures.push({asset,reason:"unrecognized_response_schema",response_keys:root&&typeof root==="object"?Object.keys(root).slice(0,20):[]});continue;}
-        // Scores in [-1,1] are already normalized. Values outside that range are accepted only as [0,100].
-        let normalized:number;
-        let normalization:string;
-        if(rawScore>=-1 && rawScore<=1){normalized=rawScore;normalization="provider_-1_to_1";}
-        else if(rawScore>1 && rawScore<=100){normalized=(rawScore-50)/50;normalization="provider_0_to_100";}
-        else {failures.push({asset,reason:"score_out_of_range",provider_score:rawScore});continue;}
-        const positive=finiteOrNull(sentiment?.positive ?? sentiment?.positive_count ?? sentiment?.positiveCount ?? root?.positive);
-        const negative=finiteOrNull(sentiment?.negative ?? sentiment?.negative_count ?? sentiment?.negativeCount ?? root?.negative);
-        const neutral=finiteOrNull(sentiment?.neutral ?? sentiment?.neutral_count ?? sentiment?.neutralCount ?? root?.neutral);
-        const total=positive!==null||negative!==null||neutral!==null
-          ? Math.max(0,Math.floor((positive??0)+(negative??0)+(neutral??0))) : 0;
-        const label=String(sentiment?.label ?? sentiment?.sentiment_label ?? root?.label ?? "").toLowerCase();
-        rows.push({
-          asset,observed_at:observedAt,source:provider,
-          mention_count:total,unique_items:total,
-          bullish_count:Math.max(0,Math.floor(positive??0)),
-          bearish_count:Math.max(0,Math.floor(negative??0)),
-          neutral_count:Math.max(0,Math.floor(neutral??0)),
-          sentiment_score:normalized,
-          raw:{
-            provider:"Free Crypto News public sentiment API",
-            label:label||null,provider_score:rawScore,score_normalization:normalization,
-            counts_available:positive!==null||negative!==null||neutral!==null,
-            provider_observed_at:root?.observed_at??root?.timestamp??root?.updated_at??null
-          }
-        });
-      }catch(e){
-        failures.push({asset,reason:"request_or_parse_error",error:e instanceof Error?e.message:String(e)});
-      }
-    }
-  }
-  await Promise.all(Array.from({length:Math.min(concurrency,assets.length)},()=>worker()));
-  const coveragePercent=assets.length?Math.round(rows.length*1000/assets.length)/10:0;
-  const targetCoveragePercent=70;
-  const missingAssets=assets.filter(asset=>!rows.some(row=>row.asset===asset));
-  return {rows,status:{
-    available:rows.length>0,provider,authentication:"none",
-    universe_assets:assets.length,assets_with_valid_sentiment:rows.length,
-    coverage_percent:coveragePercent,target_coverage_percent:targetCoveragePercent,
-    coverage_passed:coveragePercent>=targetCoveragePercent,
-    failed_assets:failures.length,missing_assets:missingAssets,
-    failures:failures.slice(0,30),observed_at:observedAt,
-    caveat:"Unauthenticated third-party endpoint; live response schema, availability, coverage and rate limits must be verified in deployment logs."
-  }};
 }
 function eventType(text:string){const t=text.toLowerCase();if(/etf|sec|regulat|law|senate|congress|mica|ban/.test(t))return"regulation";if(/hack|exploit|breach|stolen|attack/.test(t))return"security";if(/listing|delist|exchange|binance|coinbase/.test(t))return"exchange";if(/upgrade|fork|mainnet|network/.test(t))return"network";if(/partnership|integrat|adoption/.test(t))return"adoption";if(/liquidat|funding|whale|flow/.test(t))return"market";return"other";}
 async function fp(s:string){const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(s));return Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,"0")).join("");}
@@ -189,17 +137,91 @@ async function collect(db:any,forceSocial=false){
 
   const collectSocial = forceSocial || new Date(now).getUTCMinutes()%15===0;
   const socialRows = collectSocial ? await coinLoreSocialSnapshots(db, assets, observedAt) : [];
-  // Public no-key provider is research-only. Collect on the existing 15-minute cadence.
-  const publicSentimentResult = collectSocial
-    ? await collectPublicSentiment(assets, observedAt)
-    : {rows:[],status:{available:false,provider:"free-crypto-news",authentication:"none",reason:"not_due_for_collection"}};
-  const sentimentRows:any[] = publicSentimentResult.rows;
   const marketSentiment=await collectMarketSentiment(db);
 
+  // Pull only current feed entries. Store compact metadata, never full XML or article bodies.
   const newsRows:any[]=[];
-  for(const src of SOURCES){try{const xml=await fetchText(src.url);for(const item of parseFeed(xml,src.name).slice(0,100)){const matched=assetsIn(item.title+" "+item.description,assets);const s=score(item.title+" "+item.description);for(const asset of matched){const relevance=(ASSET_NAMES[asset]??[asset]).some(k=>item.title.toLowerCase().includes(k.toLowerCase())) ? .75 : .4;newsRows.push({asset,event_at:new Date(item.published||now).toISOString(),source:src.name,title:item.title,url:item.url||null,sentiment_score:s.score,sentiment_label:s.score>.15?"bullish":s.score<-.15?"bearish":"neutral",event_type:eventType(item.title+" "+item.description),relevance,novelty:1,shock_score:Math.abs(s.score)*relevance,fingerprint:await fp(src.name+"|"+asset+"|"+item.title.toLowerCase().replace(/\s+/g," ").trim()),raw:item});}}}catch(e){console.warn("[NEWS]",src.name,e);}}
+  const sourceStatus:Record<string,any>={};
+  for(const src of SOURCES){
+    try{
+      const xml=await fetchText(src.url);
+      const items=parseFeed(xml,src.name).slice(0,40);
+      sourceStatus[src.name]={available:true,items_read:items.length};
+      for(const item of items){
+        const articleText=item.title+" "+item.description;
+        const matched=assetsIn(articleText,assets);
+        const s=score(articleText);
+        const parsedTime=Date.parse(item.published||"");
+        const eventAt=Number.isFinite(parsedTime)?new Date(parsedTime).toISOString():now.toISOString();
+        for(const asset of matched){
+          const aliases=ASSET_NAMES[asset]??[asset.toLowerCase()];
+          const relevance=aliases.some(k=>hasToken(item.title,k)) ? .75 : .4;
+          const normalizedTitle=item.title.toLowerCase().replace(/[^a-z0-9]+/g," ").trim();
+          const fingerprint=await fp("rss|"+asset+"|"+normalizedTitle);
+          newsRows.push({
+            asset,event_at:eventAt,source:src.name,title:item.title.slice(0,400),url:item.url||null,
+            sentiment_score:s.score,sentiment_label:s.score>.15?"bullish":s.score<-.15?"bearish":"neutral",
+            event_type:eventType(articleText),relevance,novelty:1,shock_score:Math.abs(s.score)*relevance,
+            fingerprint
+          });
+        }
+      }
+    }catch(e){
+      sourceStatus[src.name]={available:false,error:e instanceof Error?e.message:String(e).slice(0,180)};
+      console.warn("[NEWS]",src.name,e);
+    }
+  }
 
-  for(const row of sentimentRows){const {data:prev}=await db.from("asset_sentiment_snapshots").select("sentiment_score,mention_count").eq("asset",row.asset).eq("source",row.source).gte("observed_at",new Date(now.getTime()-21600000).toISOString()).lt("observed_at",row.observed_at).order("observed_at",{ascending:false}).limit(72);const p=prev??[];if(p.length){const mean=p.reduce((a:any,b:any)=>a+Number(b.sentiment_score||0),0)/p.length;const mm=p.reduce((a:any,b:any)=>a+Number(b.mention_count||0),0)/p.length;const sd=Math.sqrt(p.reduce((a:any,b:any)=>a+Math.pow(Number(b.sentiment_score||0)-mean,2),0)/p.length)||.1;row.sentiment_velocity=(row.sentiment_score-mean)/Math.max(.1,sd);row.mention_velocity=(Number(row.mention_count)-mm)/Math.max(1,mm);row.shock_score=Math.abs(row.sentiment_velocity)+(Math.abs(row.mention_velocity)>1?Math.min(3,Math.abs(row.mention_velocity)):0);}else row.shock_score=Math.abs(row.sentiment_score)*2;}
+  const uniqueNews=new Map<string,any>();
+  for(const row of newsRows){if(!uniqueNews.has(row.fingerprint))uniqueNews.set(row.fingerprint,row);}
+  newsRows.length=0;
+  newsRows.push(...uniqueNews.values());
+
+  const sentimentRows:any[]=[];
+  for(const asset of assets){
+    const items=newsRows.filter(row=>row.asset===asset);
+    if(!items.length)continue;
+    const bullish=items.filter(row=>row.sentiment_label==="bullish").length;
+    const bearish=items.filter(row=>row.sentiment_label==="bearish").length;
+    const neutral=items.length-bullish-bearish;
+    const avg=items.reduce((sum,row)=>sum+Number(row.sentiment_score||0),0)/items.length;
+    const sources=[...new Set(items.map(row=>row.source))];
+    const agreement=Math.max(bullish,bearish,neutral)/items.length;
+    const confidence=Math.max(0,Math.min(.95,(.35+.15*Math.min(3,Math.max(0,items.length-1))+.08*Math.min(2,Math.max(0,sources.length-1)))*agreement));
+    sentimentRows.push({
+      asset,observed_at:observedAt,source:"rss-news-consensus",
+      mention_count:items.length,unique_items:items.length,
+      bullish_count:bullish,bearish_count:bearish,neutral_count:neutral,
+      sentiment_score:Math.max(-1,Math.min(1,avg)),
+      shock_score:Math.abs(avg)*confidence,
+      raw:{confidence,corroborating_items:items.length,source_count:sources.length,sources}
+    });
+  }
+  const coveragePercent=assets.length?Math.round(sentimentRows.length*1000/assets.length)/10:0;
+  const sentimentStatus={
+    available:sentimentRows.length>0,provider:"rss-news-consensus",authentication:"none",
+    universe_assets:assets.length,assets_with_valid_sentiment:sentimentRows.length,
+    coverage_percent:coveragePercent,target_coverage_percent:70,coverage_passed:coveragePercent>=70,
+    sources_configured:SOURCES.length,source_status:sourceStatus,observed_at:observedAt,
+    policy:"compact headlines/URLs only; syndicated duplicates collapsed; no full RSS XML/article body stored"
+  };
+
+    for(const row of sentimentRows){
+    if(row.source==="rss-news-consensus"){
+      row.shock_score=Math.abs(Number(row.sentiment_score)||0)*Number(row.raw?.confidence||0);
+      continue;
+    }
+    const {data:prev}=await db.from("asset_sentiment_snapshots").select("sentiment_score,mention_count").eq("asset",row.asset).eq("source",row.source).gte("observed_at",new Date(now.getTime()-21600000).toISOString()).lt("observed_at",row.observed_at).order("observed_at",{ascending:false}).limit(72);
+    const p=prev??[];
+    if(p.length){
+      const mean=p.reduce((a:any,b:any)=>a+Number(b.sentiment_score||0),0)/p.length;
+      const mm=p.reduce((a:any,b:any)=>a+Number(b.mention_count||0),0)/p.length;
+      const sd=Math.sqrt(p.reduce((a:any,b:any)=>a+Math.pow(Number(b.sentiment_score||0)-mean,2),0)/p.length)||.1;
+      row.sentiment_velocity=(row.sentiment_score-mean)/Math.max(.1,sd);
+      row.mention_velocity=(Number(row.mention_count)-mm)/Math.max(1,mm);
+      row.shock_score=Math.abs(row.sentiment_velocity)+(Math.abs(row.mention_velocity)>1?Math.min(3,Math.abs(row.mention_velocity)):0);
+    }else row.shock_score=Math.abs(row.sentiment_score)*2;
+  }
 
   const inserts=[
     priceRows=>priceRows.length?db.from("asset_price_snapshots").upsert(priceRows,{onConflict:"asset,observed_at,source"}):Promise.resolve(),
@@ -208,11 +230,14 @@ async function collect(db:any,forceSocial=false){
     rows=>rows.length?db.from("asset_news_events").upsert(rows,{onConflict:"fingerprint",ignoreDuplicates:true}):Promise.resolve()
   ];
   await Promise.all([inserts[0](prices.filter(Boolean)),inserts[1](flowRows),inserts[2](sentimentRows),inserts[3](newsRows)]);
+  // Keep only the recent event window needed by downstream research jobs.
+  const {error:retentionError}=await db.from("asset_news_events").delete().lt("event_at",new Date(now.getTime()-7*86400000).toISOString());
+  if(retentionError)console.warn("[NEWS_RETENTION]",retentionError);
   const {data:tx,error:txErr}=await db.rpc("refresh_event_flow_transmissions",{p_lookback_hours:48});if(txErr)console.warn("[TRANSMISSION]",txErr);
   const {data:study,error:studyErr}=await db.rpc("capture_event_flow_study_snapshot");if(studyErr)console.warn("[FLOW_STUDY]",studyErr);
   const {data:socialRefresh,error:socialRefreshErr}=await db.rpc("refresh_mature_influential_social_transmissions",{p_lookback_hours:168});if(socialRefreshErr)console.warn("[SOCIAL_CHAIN_REFRESH]",socialRefreshErr);
   const {data:shock,error:shockErr}=await db.rpc("refresh_whale_flow_shock_followups",{p_lookback_hours:48});if(shockErr)console.warn("[FLOW_SHOCK]",shockErr);
   const {data:classification,error:classificationErr}=await db.rpc("refresh_whale_flow_transition_classification",{p_lookback_hours:168});if(classificationErr)console.warn("[FLOW_CLASSIFICATION]",classificationErr);
-  return{ok:true,assets:assets.length,prices:prices.filter(Boolean).length,flows:flowRows.filter(Boolean).length,sentiment:sentimentRows.length,sentiment_status:publicSentimentResult.status,market_sentiment:marketSentiment,social_activity:socialRows.length,transmissions_refreshed:tx??0,flow_shock_followups_refreshed:shock??0,flow_transition_classification_refreshed:classification??0,event_flow_study_snapshots_captured:study??0,social_chain_maturation:socialRefresh??{examined:0,processed:0,failed:0,research_only:true},observed_at:observedAt};
+  return{ok:true,assets:assets.length,prices:prices.filter(Boolean).length,flows:flowRows.filter(Boolean).length,sentiment:sentimentRows.length,sentiment_status:sentimentStatus,market_sentiment:marketSentiment,social_activity:socialRows.length,transmissions_refreshed:tx??0,flow_shock_followups_refreshed:shock??0,flow_transition_classification_refreshed:classification??0,event_flow_study_snapshots_captured:study??0,social_chain_maturation:socialRefresh??{examined:0,processed:0,failed:0,research_only:true},observed_at:observedAt};
 }
 Deno.serve(async req=>{const pre=handleOptions(req);if(pre)return pre;try{const db=getServiceClient();const body=await req.json().catch(()=>({}));if(body?.action==="discover"){const universe=await discoverAssets(db);return new Response(JSON.stringify({ok:true,selected:universe.length,assets:universe.map((x:any)=>x.asset)}),{headers:{...corsHeaders,"Content-Type":"application/json"}});}if(body?.action==="analyze"){const {data,error}=await db.from("event_flow_transmissions").select("*").order("event_at",{ascending:false}).limit(100);if(error)throw error;return new Response(JSON.stringify({ok:true,rows:data??[]}),{headers:{...corsHeaders,"Content-Type":"application/json"}});}const result=await collect(db,body?.action==="collect_social");return new Response(JSON.stringify(result),{headers:{...corsHeaders,"Content-Type":"application/json"}});}catch(e){console.error("[EVENT_FLOW_LAB]",e);return new Response(JSON.stringify({ok:false,error:e instanceof Error?e.message:String(e)}),{status:500,headers:{...corsHeaders,"Content-Type":"application/json"}});}});
