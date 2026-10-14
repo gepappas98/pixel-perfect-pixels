@@ -102,6 +102,26 @@ Deno.serve(async (req) => {
     const councilConsensus = latestCouncils.size ? (councilBuy - councilSell) / latestCouncils.size : 0;
     const computedScore = Number((whaleNet * 0.375 + techBreadth4h * 0.5 + councilConsensus * 0.125).toFixed(4));
     const score = Number.isFinite(suppliedScore) ? Number(suppliedScore.toFixed(4)) : computedScore;
+
+    // Capture short-term aggressive-buy pressure from structured 5m candles.
+    // This is an explanatory research feature, not a new entry gate or score weight.
+    const since15m = new Date(now.getTime() - 15 * 60 * 1000).toISOString();
+    const { data: candles5m, error: candlesError } = await db.from("market_candles")
+      .select("symbol,base_volume,taker_buy_base_volume,quote_volume,taker_buy_quote_volume,close_time")
+      .eq("timeframe", "5m").gte("close_time", since15m)
+      .order("close_time", { ascending: false }).limit(500);
+    if (candlesError) throw candlesError;
+    const latestCandles = new Map<string, any>();
+    for (const row of candles5m ?? []) if (!latestCandles.has(row.symbol)) latestCandles.set(row.symbol, row);
+    let candleBaseVolume = 0, takerBuyBaseVolume = 0, candleQuoteVolume = 0, takerBuyQuoteVolume = 0;
+    for (const row of latestCandles.values()) {
+      candleBaseVolume += Math.max(0, Number(row.base_volume) || 0);
+      takerBuyBaseVolume += Math.max(0, Number(row.taker_buy_base_volume) || 0);
+      candleQuoteVolume += Math.max(0, Number(row.quote_volume) || 0);
+      takerBuyQuoteVolume += Math.max(0, Number(row.taker_buy_quote_volume) || 0);
+    }
+    const takerBuyImbalance5m = candleBaseVolume > 0
+      ? Number((2 * takerBuyBaseVolume / candleBaseVolume - 1).toFixed(4)) : null;
     const breadthImproving = !!previous
       && breadth.bullish > Number(previous.technicals_1h_bullish ?? 0)
       && breadth.bearish < Number(previous.technicals_1h_bearish ?? 0);
@@ -178,6 +198,12 @@ Deno.serve(async (req) => {
               entry_reason: "bearish_or_sideways_to_bullish_regime_transition",
               market_regime: regime,
               market_regime_score: score,
+              taker_buy_imbalance_5m: takerBuyImbalance5m,
+              taker_buy_base_volume_5m: takerBuyBaseVolume,
+              base_volume_5m: candleBaseVolume,
+              taker_buy_quote_volume_5m: takerBuyQuoteVolume,
+              quote_volume_5m: candleQuoteVolume,
+              candle_symbols_5m: latestCandles.size,
               whale_flow_state: whaleState,
               whale_net: whaleNet,
               whale_buy_usd_1h: buyUsd,
@@ -208,6 +234,15 @@ Deno.serve(async (req) => {
       transition_state: finalTransition,
       details: {
         buy_usd: buyUsd, sell_usd: sellUsd, whale_net: whaleNet,
+        taker_buy_flow_5m: {
+          imbalance: takerBuyImbalance5m,
+          symbols: latestCandles.size,
+          base_volume: candleBaseVolume,
+          taker_buy_base_volume: takerBuyBaseVolume,
+          quote_volume: candleQuoteVolume,
+          taker_buy_quote_volume: takerBuyQuoteVolume,
+          source: "market_candles/binance-spot-klines",
+        },
         market_regime_score_components: {
           formula: "whaleNet*0.375 + techBreadth4h*0.5 + councilConsensus*0.125",
           supplied_score_used: Number.isFinite(suppliedScore),
