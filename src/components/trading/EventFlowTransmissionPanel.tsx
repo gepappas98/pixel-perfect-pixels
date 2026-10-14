@@ -37,7 +37,7 @@ export function EventFlowTransmissionPanel(){
       </span>
     </div>
 
-    <div className="mt-3 grid grid-cols-5 gap-1.5 text-[9px] font-mono">
+    <div className="mt-3 grid grid-cols-2 sm:grid-cols-5 gap-1.5 text-[9px] font-mono">
       <div className="rounded bg-muted/30 p-1.5"><div className="text-muted-foreground">Asset sentiment</div><div className="mt-0.5">{sentiment.length}</div></div>
       <div className="rounded bg-muted/30 p-1.5"><div className="text-muted-foreground">News</div><div className="mt-0.5">{news.length}</div></div>
       <div className="rounded bg-muted/30 p-1.5"><div className="text-muted-foreground">Market F&amp;G</div><div className="mt-0.5">{latestMarketSentiment ? `${latestMarketSentiment.value}/100` : "—"}</div></div>
