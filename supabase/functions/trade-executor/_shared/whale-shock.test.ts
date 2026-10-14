@@ -1,12 +1,39 @@
 import { describe, expect, it } from "vitest";
-import { aggregateWhaleShocks, DEFAULT_WHALE_SHOCK_CONFIG, evaluate1hTechnicalConfirmation, evaluateRegimeShockTransition, getRequiredVolumeFloor } from "./whale-shock.ts";
+import {
+  aggregateWhaleShocks,
+  DEFAULT_WHALE_SHOCK_CONFIG,
+  evaluate1hTechnicalConfirmation,
+  evaluateRegimeShockTransition,
+  getAssetTier,
+  getRequiredVolumeFloor,
+  WHALE_SHOCK_EXCLUDED_MAJORS,
+} from "./whale-shock.ts";
 
 describe("Whale Shock aggregation", () => {
-  it("uses configured tier floors for mid-caps and default floor for altcoins", () => {
-    expect(getRequiredVolumeFloor("INJ", DEFAULT_WHALE_SHOCK_CONFIG)).toBe(50_000);
-    expect(getRequiredVolumeFloor("AVAX", DEFAULT_WHALE_SHOCK_CONFIG)).toBe(50_000);
-    expect(getRequiredVolumeFloor("ONDO", DEFAULT_WHALE_SHOCK_CONFIG)).toBe(35_000);
-    expect(getRequiredVolumeFloor("PENDLE", DEFAULT_WHALE_SHOCK_CONFIG)).toBe(35_000);
+  it("classifies expanded mid-caps at $50,000 and dynamic altcoins at $30,000", () => {
+    for (const symbol of ["INJ", "TAO", "PENDLE", "AERO", "ADA", "XRP"]) {
+      expect(getAssetTier(symbol)).toBe("mid_cap");
+      expect(getRequiredVolumeFloor(symbol)).toBe(50_000);
+    }
+    for (const symbol of ["PENGU", "BERA", "CUSTOMCOIN"]) {
+      expect(getAssetTier(symbol)).toBe("altcoin");
+      expect(getRequiredVolumeFloor(symbol)).toBe(30_000);
+    }
+  });
+  it("qualifies an unlisted dynamic altcoin at $30k with 3 accumulation alerts", () => {
+    const candidates = aggregateWhaleShocks([
+      { symbol: "PENGU", direction: "accumulation", usd_value: 12_000 },
+      { symbol: "PENGU", direction: "accumulation", usd_value: 10_000 },
+      { symbol: "PENGU", direction: "accumulation", usd_value: 10_000 },
+    ]);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      symbol: "PENGU", assetTier: "altcoin", requiredFloorUsd: 30_000,
+      buyUsd: 32_000, alertCount: 3,
+    });
+  });
+  it("exposes only BTC, ETH and SOL as excluded majors", () => {
+    expect([...WHALE_SHOCK_EXCLUDED_MAJORS].sort()).toEqual(["BTC", "ETH", "SOL"]);
   });
   it("excludes majors (BTC/ETH/SOL) even with huge accumulation", () => {
     const majors = [
@@ -24,12 +51,12 @@ describe("Whale Shock aggregation", () => {
   });
   it("dynamically qualifies an unknown altcoin above the default floor", () => {
     const candidates = aggregateWhaleShocks([
+      { symbol: "PENDLE", direction: "accumulation", usd_value: 20_000 },
+      { symbol: "PENDLE", direction: "accumulation", usd_value: 18_000 },
       { symbol: "PENDLE", direction: "accumulation", usd_value: 15_000 },
-      { symbol: "PENDLE", direction: "accumulation", usd_value: 12_000 },
-      { symbol: "PENDLE", direction: "accumulation", usd_value: 10_000 },
     ]);
     expect(candidates).toHaveLength(1);
-    expect(candidates[0]).toMatchObject({ symbol: "PENDLE", assetTier: "altcoin", requiredFloorUsd: 35_000, buyUsd: 37_000 });
+    expect(candidates[0]).toMatchObject({ symbol: "PENDLE", assetTier: "mid_cap", requiredFloorUsd: 50_000, buyUsd: 53_000 });
   });
   it("qualifies a 3-alert accumulation cluster above floor and 75% buy ratio", () => {
     const candidates = aggregateWhaleShocks([
