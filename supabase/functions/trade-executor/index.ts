@@ -100,39 +100,55 @@ async function assessCurrentMarketRegime(
 ): Promise<LiveMarketRegime> {
   const now = Date.now();
   const nowIso = new Date(now).toISOString();
-  const whaleSince = new Date(now - 60 * 60 * 1000).toISOString();
-  const technicalSince = new Date(now - 6 * 60 * 60 * 1000).toISOString();
+  const whaleSince = new Date(now - 6 * 60 * 60 * 1000).toISOString();
   const councilSince = new Date(now - 30 * 60 * 1000).toISOString();
 
-  const [whales, indicators, councils] = await Promise.all([
+  const [whales, councils] = await Promise.all([
     supabase.from("whale_alerts").select("direction,usd_value,created_at")
-      .gte("created_at", whaleSince).lte("created_at", nowIso).limit(3000),
-    supabase.from("indicator_snapshots").select("symbol,timeframe,signal,created_at")
-      .eq("timeframe", "4h").gte("created_at", technicalSince).lte("created_at", nowIso)
-      .order("created_at", { ascending: false }).limit(1000),
+      .gte("created_at", whaleSince).lte("created_at", nowIso).limit(5000),
     supabase.from("council_signals").select("symbol,final_verdict,source_created_at")
       .gte("source_created_at", councilSince).lte("source_created_at", nowIso)
-      .order("source_created_at", { ascending: false }).limit(1000),
+      .order("source_created_at", { ascending: false }).limit(5000),
   ]);
 
-  const failures = [
+  const sourceFailures = [
     whales.error ? "whale flow: " + whales.error.message : null,
-    indicators.error ? "4h technicals: " + indicators.error.message : null,
     councils.error ? "AI council: " + councils.error.message : null,
   ].filter(Boolean);
-  if (failures.length) return { ready: false, assessment: null, reason: failures.join("; ") };
+  if (sourceFailures.length) {
+    return { ready: false, assessment: null, reason: sourceFailures.join("; ") };
+  }
 
-  const technicalSymbols = new Set((indicators.data ?? [])
-    .map((row) => String(row.symbol ?? "").toUpperCase()).filter(Boolean));
+  // Match the Market Regime panel: prefer 4h snapshots from 6h, then 24h, then 7d.
+  let indicatorRows: Array<{ symbol?: unknown; timeframe?: unknown; signal?: unknown }> = [];
+  let lastTechnicalError: string | null = null;
+  const technicalWindows = [6 * 60 * 60 * 1000, 24 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000];
+  for (const windowMs of technicalWindows) {
+    const since = new Date(now - windowMs).toISOString();
+    const result = await supabase.from("indicator_snapshots")
+      .select("symbol,timeframe,signal,created_at")
+      .eq("timeframe", "4h").gte("created_at", since).lte("created_at", nowIso)
+      .order("created_at", { ascending: false }).limit(5000);
+    if (result.error) {
+      lastTechnicalError = result.error.message;
+      continue;
+    }
+    indicatorRows = (result.data ?? []) as Array<{ symbol?: unknown; timeframe?: unknown; signal?: unknown }>;
+    if (indicatorRows.length) break;
+  }
+
+  const technicalSymbols = new Set(indicatorRows.map((row) => String(row.symbol ?? "").toUpperCase()).filter(Boolean));
   if (technicalSymbols.size === 0) {
-    return { ready: false, assessment: null, reason: "no fresh 4h indicator snapshots in the last 6h" };
+    return { ready: false, assessment: null, reason: lastTechnicalError
+      ? "4h technical snapshots unavailable: " + lastTechnicalError
+      : "no 4h indicator snapshots in the last 7d" };
   }
 
   return {
     ready: true,
     assessment: computeMarketRegimeAssessment({
       whales: (whales.data ?? []) as Array<{ direction?: unknown; usd_value?: unknown }>,
-      indicators: (indicators.data ?? []) as Array<{ symbol?: unknown; timeframe?: unknown; signal?: unknown }>,
+      indicators: indicatorRows,
       councils: (councils.data ?? []) as Array<{ symbol?: unknown; final_verdict?: unknown }>,
     }),
     reason: "",
