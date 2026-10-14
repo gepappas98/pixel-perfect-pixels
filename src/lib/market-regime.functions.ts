@@ -49,7 +49,7 @@ export const TECH_NEUTRAL_BAND = 0.10;
 export const COUNCIL_NEUTRAL_BAND = 0.10;
 
 export function getDirectionalSign(value: number, band: number): number {
-  if (!Number.isFinite(value) || value <= band && value >= -band) return 0;
+  if (!Number.isFinite(value) || (value <= band && value >= -band)) return 0;
   return value > band ? 1 : -1;
 }
 
