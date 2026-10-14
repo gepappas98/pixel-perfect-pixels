@@ -22,6 +22,9 @@ const SOURCES = [
   { name: "glassnode", url: "https://insights.glassnode.com/rss/" },
   { name: "santiment", url: "https://santiment.net/blog/feed/" },
   { name: "ethereum-foundation", url: "https://blog.ethereum.org/feed.xml" },
+  // Temporary public community RSS; Reddit announced RSS support ends 2026-11-13.
+  { name: "reddit-crypto-search", url: "https://www.reddit.com/search.rss?q=crypto&sort=new" },
+  { name: "reddit-cryptocurrency", url: "https://www.reddit.com/r/CryptoCurrency/new/.rss" },
 ];
 const POSITIVE = ["surge","rally","bullish","approval","approved","adoption","inflow","inflows","launch","launched","partnership","upgrade","growth","record","breakout","buy","accumulate","accumulation","etf","institutional","wins","positive","recovery","integrate","integration","funding","raises","raised","legal clarity"];
 const NEGATIVE = ["crash","drop","plunge","bearish","rejection","rejected","outflow","outflows","hack","hacked","exploit","lawsuit","ban","banned","sell","selling","liquidation","liquidations","fraud","scam","breach","bankruptcy","loss","losses","fear","warning","downgrade","delist","delisted","attack","stolen","negative","collapse","risk"];
