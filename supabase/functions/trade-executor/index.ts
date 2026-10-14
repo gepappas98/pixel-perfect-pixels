@@ -701,22 +701,6 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      const micro = await getCachedMicroAssessment(supabase, symbol, standardMicroCache);
-      if (!micro.ready || !micro.decision?.allowBuy) {
-        const reason = micro.ready ? (micro.decision?.reason ?? "micro gate rejected") : micro.reason;
-        auditEvents.push({
-          ts: new Date().toISOString(), symbol, signal_id: signalId,
-          stage: "MICRO_TF_GATE", decision: "REJECT", reason,
-          details: { state: micro.state, data_ready: micro.ready },
-        });
-        await supabase.from("repeated_buy_research_ledger")
-          .update({ research_decision: "rejected", research_reason: `micro_tf_gate: ${reason}` })
-          .eq("composite_signal_id", signalId)
-          .eq("research_decision", "pending_execution_audit");
-        console.log("[MICRO_GATE_REJECT]", symbol, reason);
-        continue;
-      }
-
       if (existingSignalIds.has(signalId)) {
         auditEvents.push({
           ts: new Date().toISOString(),
@@ -736,6 +720,22 @@ Deno.serve(async (req) => {
           .update({ research_decision: "duplicate_signal", research_reason: "duplicate_composite_signal_already_has_trade" })
           .eq("composite_signal_id", signalId)
           .eq("research_decision", "pending_execution_audit");
+        continue;
+      }
+
+      const micro = await getCachedMicroAssessment(supabase, symbol, standardMicroCache);
+      if (!micro.ready || !micro.decision?.allowBuy) {
+        const reason = micro.ready ? (micro.decision?.reason ?? "micro gate rejected") : micro.reason;
+        auditEvents.push({
+          ts: new Date().toISOString(), symbol, signal_id: signalId,
+          stage: "MICRO_TF_GATE", decision: "REJECT", reason,
+          details: { state: micro.state, data_ready: micro.ready },
+        });
+        await supabase.from("repeated_buy_research_ledger")
+          .update({ research_decision: "rejected", research_reason: `micro_tf_gate: ${reason}` })
+          .eq("composite_signal_id", signalId)
+          .eq("research_decision", "pending_execution_audit");
+        console.log("[MICRO_GATE_REJECT]", symbol, reason);
         continue;
       }
 
