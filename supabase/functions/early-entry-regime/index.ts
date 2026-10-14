@@ -60,8 +60,48 @@ Deno.serve(async (req) => {
     if (regimeError) throw regimeError;
     const canonicalRegime = (regimeRows ?? []).find((row) => row.regime_label)?.regime_label;
     const regime = String(canonicalRegime ?? body.market_regime ?? "unknown").toLowerCase();
-    const suppliedScore = Number(body.market_regime_score);
-    const score = Number.isFinite(suppliedScore) ? suppliedScore : null;
+
+    // Canonical Market Regime Score fallback. Missing components are neutral (0),
+    // and their sample counts are recorded so a neutral fallback is observable.
+    const suppliedRaw = body.market_regime_score;
+    const suppliedScore = suppliedRaw !== undefined && suppliedRaw !== null && String(suppliedRaw).trim() !== ""
+      ? Number(suppliedRaw) : Number.NaN;
+
+    const { data: indicators4h, error: indicators4hError } = await db.from("indicator_snapshots")
+      .select("symbol,signal,created_at")
+      .eq("timeframe", "4h").gte("created_at", since1h)
+      .order("created_at", { ascending: false }).limit(1000);
+    if (indicators4hError) throw indicators4hError;
+    const latest4h = new Map<string, string>();
+    for (const row of indicators4h ?? []) {
+      const sym = String(row.symbol ?? "").toUpperCase();
+      if (sym && !latest4h.has(sym)) latest4h.set(sym, String(row.signal ?? "neutral").toLowerCase());
+    }
+    let tech4hBull = 0, tech4hBear = 0;
+    for (const sig of latest4h.values()) {
+      if (sig === "bullish") tech4hBull++;
+      else if (sig === "bearish") tech4hBear++;
+    }
+    const techBreadth4h = latest4h.size ? (tech4hBull - tech4hBear) / latest4h.size : 0;
+
+    const { data: councils, error: councilError } = await db.from("council_signals")
+      .select("symbol,final_verdict,source_created_at")
+      .gte("source_created_at", since1h)
+      .order("source_created_at", { ascending: false }).limit(500);
+    if (councilError) throw councilError;
+    const latestCouncils = new Map<string, string>();
+    for (const row of councils ?? []) {
+      const sym = String(row.symbol ?? "").toUpperCase();
+      if (sym && !latestCouncils.has(sym)) latestCouncils.set(sym, String(row.final_verdict ?? "").toUpperCase());
+    }
+    let councilBuy = 0, councilSell = 0;
+    for (const verdict of latestCouncils.values()) {
+      if (verdict === "BUY") councilBuy++;
+      else if (verdict === "SELL") councilSell++;
+    }
+    const councilConsensus = latestCouncils.size ? (councilBuy - councilSell) / latestCouncils.size : 0;
+    const computedScore = Number((whaleNet * 0.375 + techBreadth4h * 0.5 + councilConsensus * 0.125).toFixed(4));
+    const score = Number.isFinite(suppliedScore) ? Number(suppliedScore.toFixed(4)) : computedScore;
     const breadthImproving = !!previous
       && breadth.bullish > Number(previous.technicals_1h_bullish ?? 0)
       && breadth.bearish < Number(previous.technicals_1h_bearish ?? 0);
@@ -168,6 +208,21 @@ Deno.serve(async (req) => {
       transition_state: finalTransition,
       details: {
         buy_usd: buyUsd, sell_usd: sellUsd, whale_net: whaleNet,
+        market_regime_score_components: {
+          formula: "whaleNet*0.375 + techBreadth4h*0.5 + councilConsensus*0.125",
+          supplied_score_used: Number.isFinite(suppliedScore),
+          whale_net: whaleNet,
+          tech_breadth_4h: techBreadth4h,
+          tech_4h_symbols: latest4h.size,
+          tech_4h_bullish: tech4hBull,
+          tech_4h_bearish: tech4hBear,
+          council_consensus: councilConsensus,
+          council_symbols: latestCouncils.size,
+          council_buy: councilBuy,
+          council_sell: councilSell,
+          missing_technical_component: latest4h.size === 0,
+          missing_council_component: latestCouncils.size === 0,
+        },
         breadth_improving: breadthImproving, whale_turning_positive: whaleTurningPositive,
         prior_regime: priorRegime, current_regime: regime,
         early_entry_opened: opened.length, early_entry_errors: entryErrors.length,
