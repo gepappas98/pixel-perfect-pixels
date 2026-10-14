@@ -141,43 +141,48 @@ async function collect(db:any,forceSocial=false){
   // Pull only current feed entries. Store compact metadata, never full XML or article bodies.
   const newsRows:any[]=[];
   const sourceStatus:Record<string,any>={};
-  // Fetch feeds concurrently in small batches: avoid a 16 x 12s sequential worst case.
-  const feedResults = await Promise.all(SOURCES.map(async (src) => {
-    try {
-      const xml = await fetchText(src.url);
-      const items = parseFeed(xml, src.name).slice(0, 40);
-      if (!items.length) {
-        sourceStatus[src.name] = { available: false, reason: "http_ok_but_no_feed_items" };
-        return [];
-      }
-      sourceStatus[src.name] = { available: true, items_read: items.length };
-      const rows: any[] = [];
-      for (const item of items) {
-        const articleText = item.title + " " + item.description;
-        const matched = assetsIn(articleText, assets);
-        const s = score(articleText);
-        const parsedTime = Date.parse(item.published || "");
-        const eventAt = Number.isFinite(parsedTime) ? new Date(parsedTime).toISOString() : now.toISOString();
-        for (const asset of matched) {
-          const aliases = ASSET_NAMES[asset] ?? [asset.toLowerCase()];
-          const relevance = aliases.some(k => hasToken(item.title, k)) ? .75 : .4;
-          const normalizedTitle = item.title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-          const fingerprint = await fp("rss|" + asset + "|" + normalizedTitle);
-          rows.push({
-            asset, event_at: eventAt, source: src.name, title: item.title.slice(0, 400), url: item.url || null,
-            sentiment_score: s.score, sentiment_label: s.score > .15 ? "bullish" : s.score < -.15 ? "bearish" : "neutral",
-            event_type: eventType(articleText), relevance, novelty: 1, shock_score: Math.abs(s.score) * relevance,
-            fingerprint
-          });
+  // Fetch at most four feeds concurrently to limit rate spikes and total runtime.
+  const feedResults: any[][] = [];
+  let sourceCursor = 0;
+  async function feedWorker() {
+    while (sourceCursor < SOURCES.length) {
+      const src = SOURCES[sourceCursor++];
+      try {
+        const xml = await fetchText(src.url);
+        const items = parseFeed(xml, src.name).slice(0, 40);
+        if (!items.length) {
+          sourceStatus[src.name] = { available: false, reason: "http_ok_but_no_feed_items" };
+          continue;
         }
+        sourceStatus[src.name] = { available: true, items_read: items.length };
+        const rows: any[] = [];
+        for (const item of items) {
+          const articleText = item.title + " " + item.description;
+          const matched = assetsIn(articleText, assets);
+          const s = score(articleText);
+          const parsedTime = Date.parse(item.published || "");
+          const eventAt = Number.isFinite(parsedTime) ? new Date(parsedTime).toISOString() : now.toISOString();
+          for (const asset of matched) {
+            const aliases = ASSET_NAMES[asset] ?? [asset.toLowerCase()];
+            const relevance = aliases.some(k => hasToken(item.title, k)) ? .75 : .4;
+            const normalizedTitle = item.title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+            const fingerprint = await fp("rss|" + asset + "|" + normalizedTitle);
+            rows.push({
+              asset, event_at: eventAt, source: src.name, title: item.title.slice(0, 400), url: item.url || null,
+              sentiment_score: s.score, sentiment_label: s.score > .15 ? "bullish" : s.score < -.15 ? "bearish" : "neutral",
+              event_type: eventType(articleText), relevance, novelty: 1, shock_score: Math.abs(s.score) * relevance,
+              fingerprint
+            });
+          }
+        }
+        feedResults.push(rows);
+      } catch (e) {
+        sourceStatus[src.name] = { available: false, error: e instanceof Error ? e.message : String(e).slice(0, 180) };
+        console.warn("[NEWS]", src.name, e);
       }
-      return rows;
-    } catch (e) {
-      sourceStatus[src.name] = { available: false, error: e instanceof Error ? e.message : String(e).slice(0, 180) };
-      console.warn("[NEWS]", src.name, e);
-      return [];
     }
-  }));
+  }
+  await Promise.all(Array.from({ length: Math.min(4, SOURCES.length) }, () => feedWorker()));
   newsRows.push(...feedResults.flat());
 
   const uniqueNews=new Map<string,any>();
