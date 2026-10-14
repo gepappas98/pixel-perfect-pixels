@@ -166,9 +166,16 @@ export function TradesPanel() {
               const pnl = fee?.netPnl ?? null;
               const pnlPct = fee?.netPnlPct ?? null;
               const positive = (pnl ?? 0) >= 0;
+              const variant = String((t as Trade & { entry_metadata?: { variant?: string; variant_label?: string } }).entry_metadata?.variant ?? "");
+              const isEarlyEntryVariant = ["early_entry_regime", "early_entry_b_reversal", "early_entry_c_adaptive"].includes(String(t.entry_source));
+              const earlyEntryLabel = variant === "B_EARLY_REVERSAL"
+                ? "B — EARLY REVERSAL"
+                : variant === "C_ADAPTIVE_REVERSAL"
+                  ? "C — ADAPTIVE REVERSAL"
+                  : "A — CURRENT EARLY ENTRY";
 
               return (
-                <tr key={t.id} className={`border-t border-border font-mono text-xs ${t.entry_source === "whale_shock" ? "bg-cyan-500/10 ring-1 ring-inset ring-cyan-500/30" : t.entry_source === "early_entry_regime" ? "bg-violet-500/10 ring-1 ring-inset ring-violet-500/30" : ""}`}>
+                <tr key={t.id} className={`border-t border-border font-mono text-xs ${t.entry_source === "whale_shock" ? "bg-cyan-500/10 ring-1 ring-inset ring-cyan-500/30" : isEarlyEntryVariant ? "bg-violet-500/10 ring-1 ring-inset ring-violet-500/30" : ""}`}>
                   <td className="py-1.5 font-semibold">
                     <span>{t.symbol}</span>
                     {t.entry_source === "whale_shock" && (
@@ -176,9 +183,9 @@ export function TradesPanel() {
                         WHALE SHOCK
                       </span>
                     )}
-                    {t.entry_source === "early_entry_regime" && (
+                    {isEarlyEntryVariant && (
                       <span className="ml-2 inline-flex rounded border border-violet-400/50 bg-violet-500/15 px-1.5 py-0.5 align-middle text-[9px] font-bold tracking-wide text-violet-300">
-                        EARLY ENTRY
+                        {earlyEntryLabel}
                       </span>
                     )}
                   </td>
