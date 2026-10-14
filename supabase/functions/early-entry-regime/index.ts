@@ -100,11 +100,8 @@ Deno.serve(async (req) => {
       else if (verdict === "SELL") councilSell++;
     }
     const councilConsensus = latestCouncils.size ? (councilBuy - councilSell) / latestCouncils.size : 0;
-    const computedScore = Number((whaleNet * 0.375 + techBreadth4h * 0.5 + councilConsensus * 0.125).toFixed(4));
-    const score = Number.isFinite(suppliedScore) ? Number(suppliedScore.toFixed(4)) : computedScore;
-
-    // Capture short-term aggressive-buy pressure from structured 5m candles.
-    // This is an explanatory research feature, not a new entry gate or score weight.
+    // Taker-buy imbalance is calculated in quote volume (comparable USD notionals),
+    // not by summing base units across different assets.
     const since15m = new Date(now.getTime() - 15 * 60 * 1000).toISOString();
     const { data: candles5m, error: candlesError } = await db.from("market_candles")
       .select("symbol,base_volume,taker_buy_base_volume,quote_volume,taker_buy_quote_volume,close_time")
@@ -120,8 +117,15 @@ Deno.serve(async (req) => {
       candleQuoteVolume += Math.max(0, Number(row.quote_volume) || 0);
       takerBuyQuoteVolume += Math.max(0, Number(row.taker_buy_quote_volume) || 0);
     }
-    const takerBuyImbalance5m = candleBaseVolume > 0
-      ? Number((2 * takerBuyBaseVolume / candleBaseVolume - 1).toFixed(4)) : null;
+    const takerBuyImbalance5m = candleQuoteVolume > 0
+      ? Number((2 * takerBuyQuoteVolume / candleQuoteVolume - 1).toFixed(4)) : null;
+    // Canonical weighted score: Whale 30%, 4h technical breadth 40%,
+    // Council 10%, short-term taker-buy imbalance 20%.
+    const computedScore = Number((whaleNet * 0.30 + techBreadth4h * 0.40
+      + councilConsensus * 0.10 + (takerBuyImbalance5m ?? 0) * 0.20).toFixed(4));
+    const score = computedScore;
+
+
     const breadthImproving = !!previous
       && breadth.bullish > Number(previous.technicals_1h_bullish ?? 0)
       && breadth.bearish < Number(previous.technicals_1h_bearish ?? 0);
@@ -130,8 +134,13 @@ Deno.serve(async (req) => {
     const priorRegime = String(previous?.market_regime ?? "unknown").toLowerCase();
     const priorWasBearishOrSideways = ["bear", "bearish", "strong_bear", "strong_bearish", "sideways"].includes(priorRegime);
     const currentIsBullish = ["bull", "bullish", "strong_bull", "strong_bullish"].includes(regime);
+    // New Early Entry confirmation: broad taker-buy pressure must be positive,
+    // fresh and supported by enough assets; candidate assets also need positive
+    // individual taker-buy imbalance. This remains paper-only.
+    const takerBuyConfirmed = takerBuyImbalance5m !== null
+      && takerBuyImbalance5m >= 0.05 && latestCandles.size >= 20;
     const finalTransition = !!previous && priorWasBearishOrSideways && currentIsBullish
-      && breadthImproving && whaleTurningPositive ? "EARLY_ENTRY_ACTIVE" : "STRICT";
+      && breadthImproving && whaleTurningPositive && takerBuyConfirmed ? "EARLY_ENTRY_ACTIVE" : "STRICT";
 
     // A transition opens paper research positions on the currently bullish 1h symbols.
     // This is deliberately separate from composite-signal execution and never submits
@@ -142,7 +151,14 @@ Deno.serve(async (req) => {
     const opened: Array<{ id: string; symbol: string; entry_price: number }> = [];
     const entryErrors: Array<{ symbol: string; error: string }> = [];
     if (finalTransition === "EARLY_ENTRY_ACTIVE" && activationKey) {
-      const candidates = [...latest.values()].filter((row) => row.signal === "bullish");
+      const candidates = [...latest.values()].filter((row) => {
+        if (row.signal !== "bullish") return false;
+        const candle = latestCandles.get(String(row.symbol ?? "").toUpperCase());
+        if (!candle) return false;
+        const quoteVolume = Number(candle.quote_volume) || 0;
+        const takerBuyQuote = Number(candle.taker_buy_quote_volume) || 0;
+        return quoteVolume > 0 && (2 * takerBuyQuote / quoteVolume - 1) >= 0.05;
+      });
       const { data: alreadyOpened, error: duplicateError } = await db.from("trades")
         .select("id")
         .eq("entry_source", "early_entry_regime")
@@ -258,6 +274,7 @@ Deno.serve(async (req) => {
           missing_technical_component: latest4h.size === 0,
           missing_council_component: latestCouncils.size === 0,
         },
+        taker_buy_confirmed: takerBuyConfirmed,
         breadth_improving: breadthImproving, whale_turning_positive: whaleTurningPositive,
         prior_regime: priorRegime, current_regime: regime,
         early_entry_opened: opened.length, early_entry_errors: entryErrors.length,
