@@ -201,7 +201,7 @@ const money = new Intl.NumberFormat("en-US", {
 
 export function RiskPanel() {
   const queryClient = useQueryClient();
-  const { data, error, dataUpdatedAt } = useQuery({
+  const { data, error } = useQuery({
     queryKey: ["risk-status"],
     queryFn: loadRiskStatus,
     refetchInterval: 30_000,
