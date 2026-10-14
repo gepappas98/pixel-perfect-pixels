@@ -50,7 +50,7 @@ export function EventFlowTransmissionPanel(){
         {latestMarketSentiment ? <><span className="font-semibold">{latestMarketSentiment.classification}</span>{" · "}<span>{Number(latestMarketSentiment.value)}/100</span>{" · "}<span>{ago(latestMarketSentiment.observed_at)} ago</span></> : <span>unavailable — waiting for Alternative.me data</span>}
       </div>
       <div className="mt-0.5 text-muted-foreground">Source: Alternative.me Fear &amp; Greed Index. Daily global context only, not asset-specific sentiment.</div>
-      <div className="mt-0.5 text-muted-foreground">Per-asset sentiment is unavailable until a reliable asset-level provider is configured; Reddit is not used.</div>
+      <div className="mt-0.5 text-muted-foreground">Per-asset social sentiment is unavailable; Reddit is not used. News events use CoinDesk, Cointelegraph and Decrypt feeds with transparent keyword-based labels.</div>
     </div>
 
     {latestShock && <div className="mt-2 rounded border border-border/60 bg-muted/20 p-2 text-[9px] font-mono">
