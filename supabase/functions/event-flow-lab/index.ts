@@ -45,6 +45,79 @@ async function collectMarketSentiment(db:any){
     return {available:false,source:"alternative.me-fear-greed",error};
   }
 }
+async function collectLunarCrushSentiment(assets:string[], observedAt:string){
+  const apiKey=Deno.env.get("LUNARCRUSH_API_KEY");
+  if(!apiKey)return {rows:[],status:{available:false,provider:"lunarcrush-api4",reason:"missing_lunarcrush_api_key",configured:false}};
+  try{
+    // One bulk request for the provider's tracked-coin catalogue; never issue one request per asset.
+    const response=await fetch("https://lunarcrush.com/api4/public/coins/list/v1",{
+      headers:{Authorization:"Bearer "+apiKey,Accept:"application/json"},
+      signal:AbortSignal.timeout(15000)
+    });
+    if(!response.ok){
+      const reason=response.status===401||response.status===403?"api_key_or_plan_not_authorized":"provider_http_error";
+      console.warn("[LUNARCRUSH] request failed: HTTP "+response.status);
+      return {rows:[],status:{available:false,provider:"lunarcrush-api4",configured:true,reason,http_status:response.status}};
+    }
+    const payload=await response.json();
+    const coins=Array.isArray(payload?.data)?payload.data:[];
+    if(!coins.length)return {rows:[],status:{available:false,provider:"lunarcrush-api4",configured:true,reason:"empty_or_unrecognized_response"}};
+    const bySymbol=new Map<string,any[]>();
+    for(const coin of coins){
+      const symbol=String(coin?.symbol??"").trim().toUpperCase();
+      if(!symbol)continue;
+      const list=bySymbol.get(symbol)??[];
+      list.push(coin);
+      bySymbol.set(symbol,list);
+    }
+    const rows:any[]=[];
+    let mapped=0,ambiguous=0,missing=0,withoutSocialActivity=0,missingSentiment=0;
+    for(const assetValue of assets){
+      const asset=String(assetValue).trim().toUpperCase();
+      const matches=bySymbol.get(asset)??[];
+      if(matches.length===0){missing++;continue;}
+      // Do not silently assign an ambiguous ticker to the wrong token.
+      if(matches.length!==1){ambiguous++;continue;}
+      mapped++;
+      const coin=matches[0];
+      const pct=finiteOrNull(coin?.sentiment);
+      const socialVolume=finiteOrNull(coin?.social_volume_24h);
+      const interactions=finiteOrNull(coin?.interactions_24h);
+      if(pct===null||pct<0||pct>100){missingSentiment++;continue;}
+      if(socialVolume===null||socialVolume<=0){withoutSocialActivity++;continue;}
+      // LunarCrush sentiment is 0..100 (% positive); downstream research schema uses -1..+1.
+      const normalized=Math.max(-1,Math.min(1,(pct-50)/50));
+      rows.push({
+        asset,observed_at:observedAt,source:"lunarcrush-api4",
+        mention_count:Math.max(0,Math.floor(socialVolume)),
+        unique_items:Math.max(0,Math.floor(socialVolume)),
+        bullish_count:0,bearish_count:0,neutral_count:0,
+        sentiment_score:normalized,
+        raw:{
+          provider:"LunarCrush API v4",provider_generated_at:payload?.config?.generated??null,
+          coin_id:coin?.id??null,symbol:coin?.symbol??asset,name:coin?.name??null,
+          sentiment_percent:pct,social_volume_24h:socialVolume,interactions_24h:interactions,
+          social_dominance:finiteOrNull(coin?.social_dominance),
+          galaxy_score:finiteOrNull(coin?.galaxy_score),alt_rank:finiteOrNull(coin?.alt_rank),
+          counts_available:false,normalization:"(sentiment_percent - 50) / 50",
+          social_volume_definition:"LunarCrush social_volume_24h; not a count of bullish/bearish posts"
+        }
+      });
+    }
+    return {rows,status:{
+      available:rows.length>0,provider:"lunarcrush-api4",configured:true,
+      universe_assets:assets.length,provider_catalog_size:coins.length,mapped_assets:mapped,
+      assets_with_sentiment_and_social_activity:rows.length,missing_assets:missing,
+      ambiguous_symbols:ambiguous,without_social_activity:withoutSocialActivity,missing_sentiment:missingSentiment,
+      provider_generated_at:payload?.config?.generated??null,observed_at:observedAt
+    }};
+  }catch(e){
+    const error=e instanceof Error?e.message:String(e);
+    console.warn("[LUNARCRUSH] unavailable: "+error);
+    return {rows:[],status:{available:false,provider:"lunarcrush-api4",configured:true,reason:"request_or_parse_error",error}};
+  }
+}
+
 function eventType(text:string){const t=text.toLowerCase();if(/etf|sec|regulat|law|senate|congress|mica|ban/.test(t))return"regulation";if(/hack|exploit|breach|stolen|attack/.test(t))return"security";if(/listing|delist|exchange|binance|coinbase/.test(t))return"exchange";if(/upgrade|fork|mainnet|network/.test(t))return"network";if(/partnership|integrat|adoption/.test(t))return"adoption";if(/liquidat|funding|whale|flow/.test(t))return"market";return"other";}
 async function fp(s:string){const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(s));return Array.from(new Uint8Array(b)).map(x=>x.toString(16).padStart(2,"0")).join("");}
 
@@ -122,15 +195,17 @@ async function collect(db:any,forceSocial=false){
 
   const collectSocial = forceSocial || new Date(now).getUTCMinutes()%15===0;
   const socialRows = collectSocial ? await coinLoreSocialSnapshots(db, assets, observedAt) : [];
-  // Never synthesize per-asset/social sentiment when no reliable asset-level provider is configured.
-  // Alternative.me is global market context, stored separately and never attributed to individual assets.
-  const sentimentRows:any[]=[];
+  // LunarCrush is optional and research-only. No key means explicit unavailability, not synthetic/zero sentiment.
+  const lunarCrushResult = collectSocial
+    ? await collectLunarCrushSentiment(assets, observedAt)
+    : {rows:[],status:{available:false,provider:"lunarcrush-api4",configured:Boolean(Deno.env.get("LUNARCRUSH_API_KEY")),reason:"not_due_for_collection"}};
+  const sentimentRows:any[] = lunarCrushResult.rows;
   const marketSentiment=await collectMarketSentiment(db);
 
   const newsRows:any[]=[];
   for(const src of SOURCES){try{const xml=await fetchText(src.url);for(const item of parseFeed(xml,src.name).slice(0,100)){const matched=assetsIn(item.title+" "+item.description,assets);const s=score(item.title+" "+item.description);for(const asset of matched){const relevance=(ASSET_NAMES[asset]??[asset]).some(k=>item.title.toLowerCase().includes(k.toLowerCase())) ? .75 : .4;newsRows.push({asset,event_at:new Date(item.published||now).toISOString(),source:src.name,title:item.title,url:item.url||null,sentiment_score:s.score,sentiment_label:s.score>.15?"bullish":s.score<-.15?"bearish":"neutral",event_type:eventType(item.title+" "+item.description),relevance,novelty:1,shock_score:Math.abs(s.score)*relevance,fingerprint:await fp(src.name+"|"+asset+"|"+item.title.toLowerCase().replace(/\s+/g," ").trim()),raw:item});}}}catch(e){console.warn("[NEWS]",src.name,e);}}
 
-  for(const row of sentimentRows){const {data:prev}=await db.from("asset_sentiment_snapshots").select("sentiment_score,mention_count").eq("asset",row.asset).gte("observed_at",new Date(now.getTime()-21600000).toISOString()).lt("observed_at",row.observed_at).order("observed_at",{ascending:false}).limit(72);const p=prev??[];if(p.length){const mean=p.reduce((a:any,b:any)=>a+Number(b.sentiment_score||0),0)/p.length;const mm=p.reduce((a:any,b:any)=>a+Number(b.mention_count||0),0)/p.length;const sd=Math.sqrt(p.reduce((a:any,b:any)=>a+Math.pow(Number(b.sentiment_score||0)-mean,2),0)/p.length)||.1;row.sentiment_velocity=(row.sentiment_score-mean)/Math.max(.1,sd);row.mention_velocity=(Number(row.mention_count)-mm)/Math.max(1,mm);row.shock_score=Math.abs(row.sentiment_velocity)+(Math.abs(row.mention_velocity)>1?Math.min(3,Math.abs(row.mention_velocity)):0);}else row.shock_score=Math.abs(row.sentiment_score)*2;}
+  for(const row of sentimentRows){const {data:prev}=await db.from("asset_sentiment_snapshots").select("sentiment_score,mention_count").eq("asset",row.asset).eq("source",row.source).gte("observed_at",new Date(now.getTime()-21600000).toISOString()).lt("observed_at",row.observed_at).order("observed_at",{ascending:false}).limit(72);const p=prev??[];if(p.length){const mean=p.reduce((a:any,b:any)=>a+Number(b.sentiment_score||0),0)/p.length;const mm=p.reduce((a:any,b:any)=>a+Number(b.mention_count||0),0)/p.length;const sd=Math.sqrt(p.reduce((a:any,b:any)=>a+Math.pow(Number(b.sentiment_score||0)-mean,2),0)/p.length)||.1;row.sentiment_velocity=(row.sentiment_score-mean)/Math.max(.1,sd);row.mention_velocity=(Number(row.mention_count)-mm)/Math.max(1,mm);row.shock_score=Math.abs(row.sentiment_velocity)+(Math.abs(row.mention_velocity)>1?Math.min(3,Math.abs(row.mention_velocity)):0);}else row.shock_score=Math.abs(row.sentiment_score)*2;}
 
   const inserts=[
     priceRows=>priceRows.length?db.from("asset_price_snapshots").upsert(priceRows,{onConflict:"asset,observed_at,source"}):Promise.resolve(),
@@ -144,6 +219,6 @@ async function collect(db:any,forceSocial=false){
   const {data:socialRefresh,error:socialRefreshErr}=await db.rpc("refresh_mature_influential_social_transmissions",{p_lookback_hours:168});if(socialRefreshErr)console.warn("[SOCIAL_CHAIN_REFRESH]",socialRefreshErr);
   const {data:shock,error:shockErr}=await db.rpc("refresh_whale_flow_shock_followups",{p_lookback_hours:48});if(shockErr)console.warn("[FLOW_SHOCK]",shockErr);
   const {data:classification,error:classificationErr}=await db.rpc("refresh_whale_flow_transition_classification",{p_lookback_hours:168});if(classificationErr)console.warn("[FLOW_CLASSIFICATION]",classificationErr);
-  return{ok:true,assets:assets.length,prices:prices.filter(Boolean).length,flows:flowRows.filter(Boolean).length,sentiment:sentimentRows.length,sentiment_status:{available:false,reason:"no_reliable_per_asset_sentiment_provider_configured"},market_sentiment:marketSentiment,social_activity:socialRows.length,transmissions_refreshed:tx??0,flow_shock_followups_refreshed:shock??0,flow_transition_classification_refreshed:classification??0,event_flow_study_snapshots_captured:study??0,social_chain_maturation:socialRefresh??{examined:0,processed:0,failed:0,research_only:true},observed_at:observedAt};
+  return{ok:true,assets:assets.length,prices:prices.filter(Boolean).length,flows:flowRows.filter(Boolean).length,sentiment:sentimentRows.length,sentiment_status:lunarCrushResult.status,market_sentiment:marketSentiment,social_activity:socialRows.length,transmissions_refreshed:tx??0,flow_shock_followups_refreshed:shock??0,flow_transition_classification_refreshed:classification??0,event_flow_study_snapshots_captured:study??0,social_chain_maturation:socialRefresh??{examined:0,processed:0,failed:0,research_only:true},observed_at:observedAt};
 }
 Deno.serve(async req=>{const pre=handleOptions(req);if(pre)return pre;try{const db=getServiceClient();const body=await req.json().catch(()=>({}));if(body?.action==="discover"){const universe=await discoverAssets(db);return new Response(JSON.stringify({ok:true,selected:universe.length,assets:universe.map((x:any)=>x.asset)}),{headers:{...corsHeaders,"Content-Type":"application/json"}});}if(body?.action==="analyze"){const {data,error}=await db.from("event_flow_transmissions").select("*").order("event_at",{ascending:false}).limit(100);if(error)throw error;return new Response(JSON.stringify({ok:true,rows:data??[]}),{headers:{...corsHeaders,"Content-Type":"application/json"}});}const result=await collect(db,body?.action==="collect_social");return new Response(JSON.stringify(result),{headers:{...corsHeaders,"Content-Type":"application/json"}});}catch(e){console.error("[EVENT_FLOW_LAB]",e);return new Response(JSON.stringify({ok:false,error:e instanceof Error?e.message:String(e)}),{status:500,headers:{...corsHeaders,"Content-Type":"application/json"}});}});
