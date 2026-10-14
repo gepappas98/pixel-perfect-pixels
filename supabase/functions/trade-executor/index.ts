@@ -2,6 +2,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { binancePair, decideExit, normalizeExitSettings, type OpenTradeRow } from "../_shared/trade-exit.ts";
 import { aggregateWhaleShocks, DEFAULT_WHALE_SHOCK_CONFIG, evaluate1hTechnicalConfirmation, evaluateRegimeShockTransition } from "./_shared/whale-shock.ts";
 import { evaluateMicroTimeframeGate, type MicroTimeframeState } from "./_shared/micro-trend-gate.ts";
+import { computeMarketRegimeAssessment, evaluateSidewaysEntryGate, type MarketRegimeAssessment } from "./_shared/market-regime-gate.ts";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -30,6 +31,12 @@ type MicroGateAssessment = {
   ready: boolean;
   state: MicroTimeframeState | null;
   decision: ReturnType<typeof evaluateMicroTimeframeGate> | null;
+  reason: string;
+};
+
+type LiveMarketRegime = {
+  ready: boolean;
+  assessment: MarketRegimeAssessment | null;
   reason: string;
 };
 
@@ -86,6 +93,57 @@ async function assessMicroTimeframes(
     rsi1h: byTf.get("1h")?.rsi == null ? null : Number(byTf.get("1h").rsi),
   };
   return { ready: true, state, decision: evaluateMicroTimeframeGate(state), reason: "" };
+}
+
+async function assessCurrentMarketRegime(
+  supabase: ReturnType<typeof getServiceClient>,
+): Promise<LiveMarketRegime> {
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
+  const whaleSince = new Date(now - 6 * 60 * 60 * 1000).toISOString();
+  const councilSince = new Date(now - 30 * 60 * 1000).toISOString();
+
+  const [whales, councils] = await Promise.all([
+    supabase.from("whale_alerts").select("direction,usd_value,created_at")
+      .gte("created_at", whaleSince).lte("created_at", nowIso).limit(5000),
+    supabase.from("council_signals").select("symbol,final_verdict,source_created_at")
+      .gte("source_created_at", councilSince).lte("source_created_at", nowIso)
+      .order("source_created_at", { ascending: false }).limit(5000),
+  ]);
+
+  const sourceFailures = [
+    whales.error ? "whale flow: " + whales.error.message : null,
+    councils.error ? "AI council: " + councils.error.message : null,
+  ].filter(Boolean);
+  if (sourceFailures.length) {
+    return { ready: false, assessment: null, reason: sourceFailures.join("; ") };
+  }
+
+  // Execution gate requires fresh 4h inputs. Unlike the display panel fallback,
+  // do not classify from 24h/7d technicals because they may be stale for entries.
+  const technicalSince = new Date(now - 6 * 60 * 60 * 1000).toISOString();
+  const indicators = await supabase.from("indicator_snapshots")
+    .select("symbol,timeframe,signal,created_at")
+    .eq("timeframe", "4h").gte("created_at", technicalSince).lte("created_at", nowIso)
+    .order("created_at", { ascending: false }).limit(5000);
+  if (indicators.error) {
+    return { ready: false, assessment: null, reason: "4h technicals: " + indicators.error.message };
+  }
+  const indicatorRows = (indicators.data ?? []) as Array<{ symbol?: unknown; timeframe?: unknown; signal?: unknown }>;
+  const technicalSymbols = new Set(indicatorRows.map((row) => String(row.symbol ?? "").toUpperCase()).filter(Boolean));
+  if (technicalSymbols.size === 0) {
+    return { ready: false, assessment: null, reason: "no fresh 4h indicator snapshots in the last 6h" };
+  }
+
+  return {
+    ready: true,
+    assessment: computeMarketRegimeAssessment({
+      whales: (whales.data ?? []) as Array<{ direction?: unknown; usd_value?: unknown }>,
+      indicators: indicatorRows,
+      councils: (councils.data ?? []) as Array<{ symbol?: unknown; final_verdict?: unknown }>,
+    }),
+    reason: "",
+  };
 }
 
 async function getCachedMicroAssessment(
@@ -386,7 +444,7 @@ async function enrichEntryContextSnapshot(
  * Separate paper-only entry path for clustered whale accumulation.
  * Failure is isolated: it must never prevent the standard signal pipeline from running.
  */
-async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServiceClient>) {
+async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServiceClient>, marketRegime: LiveMarketRegime) {
   const config = DEFAULT_WHALE_SHOCK_CONFIG;
   const now = Date.now();
   const sinceIso = new Date(now - config.windowMinutes * 60_000).toISOString();
@@ -409,6 +467,12 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
     const candidates = aggregateWhaleShocks(alerts ?? [], config);
     result.candidates = candidates.length;
     if (!candidates.length) return result;
+    if (!marketRegime.ready || !marketRegime.assessment) {
+      result.status = "error";
+      errors.push("market regime unavailable; entries blocked: " + marketRegime.reason);
+      result.skipped = candidates.length;
+      return result;
+    }
 
     const symbols = candidates.map((candidate) => candidate.symbol);
     const { data: recentTrades, error: cooldownErr } = await supabase
@@ -487,6 +551,23 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
           symbol: candidate.symbol,
           reason: micro.ready ? micro.decision?.reason : micro.reason,
           state: micro.state,
+        });
+        continue;
+      }
+
+      const sidewaysGate = evaluateSidewaysEntryGate(
+        marketRegime.assessment!.score,
+        marketRegime.assessment!.whaleNet,
+        micro.state!,
+      );
+      if (!sidewaysGate.allowBuy) {
+        result.skipped = Number(result.skipped) + 1;
+        console.log("[WHALE_SHOCK] sideways market gate blocked", {
+          symbol: candidate.symbol,
+          market_score: marketRegime.assessment!.score,
+          whale_net: marketRegime.assessment!.whaleNet,
+          reason: sidewaysGate.reason,
+          micro_state: micro.state,
         });
         continue;
       }
@@ -582,6 +663,8 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
           technicals: { ...techCheck, timeframe: "1h" },
           micro_gate: micro.decision,
           micro_state: micro.state,
+          sideways_market_gate: sidewaysGate,
+          market_regime_assessment: marketRegime.assessment,
           ai_council: null,
         },
         execution_context: {
@@ -651,7 +734,14 @@ Deno.serve(async (req) => {
     }
 
 
-    const whaleShockStage = await executeWhaleShockTradesStage(supabase);
+    const liveMarketRegime = await assessCurrentMarketRegime(supabase);
+    console.log("[MARKET_REGIME_ENTRY_GATE]", JSON.stringify({
+      ready: liveMarketRegime.ready,
+      reason: liveMarketRegime.reason,
+      assessment: liveMarketRegime.assessment,
+    }));
+
+    const whaleShockStage = await executeWhaleShockTradesStage(supabase, liveMarketRegime);
 
     const { data: signals, error: signalError } = await getEligibleSignals(supabase);
     if (signalError) throw signalError;
@@ -723,6 +813,20 @@ Deno.serve(async (req) => {
         continue;
       }
 
+      if (!liveMarketRegime.ready || !liveMarketRegime.assessment) {
+        const reason = "market regime unavailable; entry blocked: " + liveMarketRegime.reason;
+        auditEvents.push({
+          ts: new Date().toISOString(), symbol, signal_id: signalId,
+          stage: "MARKET_REGIME_GATE", decision: "REJECT", reason,
+          details: { data_ready: false },
+        });
+        await supabase.from("repeated_buy_research_ledger")
+          .update({ research_decision: "rejected", research_reason: reason })
+          .eq("composite_signal_id", signalId)
+          .eq("research_decision", "pending_execution_audit");
+        continue;
+      }
+
       const micro = await getCachedMicroAssessment(supabase, symbol, standardMicroCache);
       if (!micro.ready || !micro.decision?.allowBuy) {
         const reason = micro.ready ? (micro.decision?.reason ?? "micro gate rejected") : micro.reason;
@@ -739,6 +843,31 @@ Deno.serve(async (req) => {
         continue;
       }
 
+      const sidewaysGate = evaluateSidewaysEntryGate(
+        liveMarketRegime.assessment!.score,
+        liveMarketRegime.assessment!.whaleNet,
+        micro.state!,
+      );
+      if (!sidewaysGate.allowBuy) {
+        auditEvents.push({
+          ts: new Date().toISOString(), symbol, signal_id: signalId,
+          stage: "SIDEWAYS_MARKET_GATE", decision: "REJECT",
+          reason: sidewaysGate.reason,
+          details: {
+            market_score: liveMarketRegime.assessment!.score,
+            market_regime: liveMarketRegime.assessment!.label,
+            whale_net: liveMarketRegime.assessment!.whaleNet,
+            micro_state: micro.state,
+          },
+        });
+        await supabase.from("repeated_buy_research_ledger")
+          .update({ research_decision: "rejected", research_reason: "sideways_market_gate: " + sidewaysGate.reason })
+          .eq("composite_signal_id", signalId)
+          .eq("research_decision", "pending_execution_audit");
+        console.log("[SIDEWAYS_MARKET_GATE_REJECT]", symbol, sidewaysGate.reason);
+        continue;
+      }
+
       auditEvents.push({
         ts: new Date().toISOString(),
         symbol,
@@ -752,6 +881,8 @@ Deno.serve(async (req) => {
           window_minutes: EXECUTION_WINDOW_MINUTES,
           research_mode: true,
           capacity_gate: "bypassed",
+          market_regime: liveMarketRegime.assessment,
+          sideways_market_gate: sidewaysGate,
         },
       });
 
@@ -915,6 +1046,7 @@ Deno.serve(async (req) => {
       mode: "paper",
       research_mode: true,
       exits: exitStage,
+      market_regime_gate: liveMarketRegime,
       whale_shock: whaleShockStage,
       opened: opened.length,
       skipped: auditEvents.filter((event) => event.decision === "SKIP").length,
