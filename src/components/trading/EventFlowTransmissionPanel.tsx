@@ -21,6 +21,9 @@ export function EventFlowTransmissionPanel(){
   const {rows:news}=useLiveTable<NewsEvent>("asset_news_events",20,"event_at");
   const {rows:marketSentiment}=useLiveTable<MarketSentiment>("market_sentiment_snapshots",1,"observed_at");
   const latestMarketSentiment=marketSentiment[0];
+  const lunarCrushRows=sentiment.filter(x=>x.source==="lunarcrush-api4");
+  const lunarCrushAssetCount=new Set(lunarCrushRows.map(x=>x.asset)).size;
+  const latestLunarCrush=lunarCrushRows.reduce((latest,row)=>!latest||row.observed_at>latest.observed_at?row:latest,undefined as SentimentSnapshot|undefined);
   const complete=tx.filter(x=>x.data_quality==="complete").length;
   const followed=tx.filter(x=>x.transmission_class==="flow_followed").length;
   const diverged=tx.filter(x=>x.transmission_class==="flow_diverged").length;
@@ -50,7 +53,8 @@ export function EventFlowTransmissionPanel(){
         {latestMarketSentiment ? <><span className="font-semibold">{latestMarketSentiment.classification}</span>{" · "}<span>{Number(latestMarketSentiment.value)}/100</span>{" · "}<span>{ago(latestMarketSentiment.observed_at)} ago</span></> : <span>unavailable — waiting for Alternative.me data</span>}
       </div>
       <div className="mt-0.5 text-muted-foreground">Source: Alternative.me Fear &amp; Greed Index. Daily global context only, not asset-specific sentiment.</div>
-      <div className="mt-0.5 text-muted-foreground">Per-asset social sentiment is unavailable; Reddit is not used. News events use CoinDesk, Cointelegraph and Decrypt feeds with transparent keyword-based labels.</div>
+      <div className="mt-0.5 text-muted-foreground">{latestLunarCrush ? `Per-asset social sentiment: LunarCrush API v4 · ${lunarCrushAssetCount} assets in loaded snapshots · latest ${ago(latestLunarCrush.observed_at)} ago. Only provider-returned assets with valid sentiment and nonzero social volume are recorded; missing/ambiguous assets remain unavailable.` : "Per-asset social sentiment: no recent LunarCrush snapshots available. Missing/ambiguous assets are not assigned synthetic values. Reddit is not used."}</div>
+      <div className="mt-0.5 text-muted-foreground">News events use CoinDesk, Cointelegraph and Decrypt feeds with transparent keyword-based labels; global Fear &amp; Greed remains separate.</div>
     </div>
 
     {latestShock && <div className="mt-2 rounded border border-border/60 bg-muted/20 p-2 text-[9px] font-mono">
