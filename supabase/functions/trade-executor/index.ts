@@ -549,16 +549,16 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
       }
 
       const sidewaysGate = evaluateSidewaysEntryGate(
-        marketRegime.assessment.score,
-        marketRegime.assessment.whaleNet,
+        marketRegime.assessment!.score,
+        marketRegime.assessment!.whaleNet,
         micro.state!,
       );
       if (!sidewaysGate.allowBuy) {
         result.skipped = Number(result.skipped) + 1;
         console.log("[WHALE_SHOCK] sideways market gate blocked", {
           symbol: candidate.symbol,
-          market_score: marketRegime.assessment.score,
-          whale_net: marketRegime.assessment.whaleNet,
+          market_score: marketRegime.assessment!.score,
+          whale_net: marketRegime.assessment!.whaleNet,
           reason: sidewaysGate.reason,
           micro_state: micro.state,
         });
@@ -837,8 +837,8 @@ Deno.serve(async (req) => {
       }
 
       const sidewaysGate = evaluateSidewaysEntryGate(
-        liveMarketRegime.assessment.score,
-        liveMarketRegime.assessment.whaleNet,
+        liveMarketRegime.assessment!.score,
+        liveMarketRegime.assessment!.whaleNet,
         micro.state!,
       );
       if (!sidewaysGate.allowBuy) {
@@ -847,9 +847,9 @@ Deno.serve(async (req) => {
           stage: "SIDEWAYS_MARKET_GATE", decision: "REJECT",
           reason: sidewaysGate.reason,
           details: {
-            market_score: liveMarketRegime.assessment.score,
-            market_regime: liveMarketRegime.assessment.label,
-            whale_net: liveMarketRegime.assessment.whaleNet,
+            market_score: liveMarketRegime.assessment!.score,
+            market_regime: liveMarketRegime.assessment!.label,
+            whale_net: liveMarketRegime.assessment!.whaleNet,
             micro_state: micro.state,
           },
         });
