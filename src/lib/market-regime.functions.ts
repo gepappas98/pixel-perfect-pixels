@@ -42,6 +42,17 @@ export interface MarketRegime {
 
 /* ───────────── Regime classification ───────────── */
 
+// Components below their source-specific neutral band are treated as noise,
+// not as directional votes. Values are normalized ratios in [-1, 1].
+const WHALE_NEUTRAL_BAND = 0.03;
+const TECH_NEUTRAL_BAND = 0.05;
+const COUNCIL_NEUTRAL_BAND = 0.05;
+
+function getDirectionalSign(value: number, band: number): number {
+  if (!Number.isFinite(value) || Math.abs(value) < band) return 0;
+  return Math.sign(value);
+}
+
 function classifyRegime(score: number): RegimeLabel {
   if (score >= 0.5) return "strong_bull";
   if (score >= 0.15) return "bull";
@@ -217,51 +228,58 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
         techBreadth * 0.5 +
         councilConsensus * 0.125;
 
-      // ── Directional agreement ──
-      // The previous implementation used |sum(signs)| / 4. That is
-      // cancellation, not agreement: 3 bearish + 1 bullish produced 50%.
-      // Agreement now means the share of non-neutral components on the
-      // dominant side. This makes "agreement" match what the UI says.
+      // ── Directional agreement with neutral deadbands ──
+      // Agreement is measured against all three pillars, not only the
+      // non-neutral subset; one bullish pillar + two neutral pillars = 33%.
       const signs = [
-        Math.sign(whaleNet),
-        Math.sign(techBreadth),
-        Math.sign(councilConsensus),
+        getDirectionalSign(whaleNet, WHALE_NEUTRAL_BAND),
+        getDirectionalSign(techBreadth, TECH_NEUTRAL_BAND),
+        getDirectionalSign(councilConsensus, COUNCIL_NEUTRAL_BAND),
       ];
       const nonNeutralSigns = signs.filter((s) => s !== 0);
-      const bullishComponents = nonNeutralSigns.filter((s) => s > 0).length;
-      const bearishComponents = nonNeutralSigns.filter((s) => s < 0).length;
+      const bullishComponents = signs.filter((s) => s > 0).length;
+      const bearishComponents = signs.filter((s) => s < 0).length;
+      const neutralComponents = signs.filter((s) => s === 0).length;
       const dominantComponents = Math.max(
         bullishComponents,
         bearishComponents,
       );
       const confidence =
-        nonNeutralSigns.length > 0
-          ? dominantComponents / nonNeutralSigns.length
-          : 0;
+        nonNeutralSigns.length > 0 ? dominantComponents / signs.length : 0;
 
       const regime = classifyRegime(score);
       const recommended_preset = recommendPreset(score, confidence);
 
       // ── Reasoning ──
       const reasons: string[] = [];
-      if (Math.abs(whaleNet) > 0.15) {
+      if (Math.abs(whaleNet) >= WHALE_NEUTRAL_BAND) {
         reasons.push(
           `whales net ${whaleNet > 0 ? "buying" : "selling"} (${(Math.abs(whaleNet) * 100).toFixed(0)}% skew)`,
         );
+      } else {
+        reasons.push(`whale flow balanced/flat (${(whaleNet * 100).toFixed(1)}%)`);
       }
-      if (Math.abs(techBreadth) > 0.15) {
+
+      if (totalTech === 0) {
+        reasons.push("technicals unavailable");
+      } else if (Math.abs(techBreadth) >= TECH_NEUTRAL_BAND) {
         reasons.push(
           techBreadth > 0
             ? `${techBull}/${totalTech} coins technically bullish`
             : `${techBear}/${totalTech} coins technically bearish`,
         );
+      } else {
+        reasons.push(`technicals neutral/mixed (${techNeu}/${totalTech} neutral)`);
       }
-      if (Math.abs(councilConsensus) > 0.15) {
+
+      if (Math.abs(councilConsensus) >= COUNCIL_NEUTRAL_BAND) {
         reasons.push(
-          councilConsensus > 0
-            ? `${cBuy} BUY / ${cSell} SELL / ${cHold} HOLD / ${cAvoid} AVOID (${directionalCouncil}/${totalCouncil} directional verdicts)`
-            : `${cSell} SELL / ${cBuy} BUY / ${cHold} HOLD / ${cAvoid} AVOID (${directionalCouncil}/${totalCouncil} directional verdicts)`,
+          `${cBuy} BUY / ${cSell} SELL / ${cHold} HOLD / ${cAvoid} AVOID (${directionalCouncil}/${totalCouncil} directional verdicts)`,
         );
+      } else if (totalCouncil === 0) {
+        reasons.push("AI council awaiting signals");
+      } else {
+        reasons.push(`AI council neutral (${cHold} hold / ${cAvoid} avoid)`);
       }
 
       const agreementDirection =
@@ -269,14 +287,16 @@ export const getMarketRegime = createServerFn({ method: "GET" }).handler(
           ? "bullish"
           : bearishComponents > bullishComponents
             ? "bearish"
-            : "mixed";
-      if (nonNeutralSigns.length > 0) {
+            : "neutral/mixed";
+      if (dominantComponents >= 2) {
         reasons.push(
-          `${dominantComponents}/${nonNeutralSigns.length} directional components agree ${agreementDirection}`,
+          `${dominantComponents}/3 components agree ${agreementDirection}`,
+        );
+      } else {
+        reasons.push(
+          `market signals fragmented/sideways (${neutralComponents}/3 neutral)`,
         );
       }
-
-      if (reasons.length === 0) reasons.push("signals mixed or unclear");
 
       // Diagnostic: αν τα technicals είναι 0, πρόσθεσέ το στο reasoning
       if (totalTech === 0) {
