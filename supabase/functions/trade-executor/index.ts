@@ -904,7 +904,12 @@ Deno.serve(async (req) => {
 
     // Independent shadow task. The baseline assessment and all entry gates remain unchanged.
     if (liveMarketRegime.ready && liveMarketRegime.assessment) {
-      EdgeRuntime.waitUntil(recordRegimeShadowTelemetry(supabase, liveMarketRegime.assessment));
+      const telemetryPromise = recordRegimeShadowTelemetry(supabase, liveMarketRegime.assessment);
+      const edgeRuntime = (globalThis as unknown as {
+        EdgeRuntime?: { waitUntil: (promise: Promise<unknown>) => void };
+      }).EdgeRuntime;
+      if (edgeRuntime?.waitUntil) edgeRuntime.waitUntil(telemetryPromise);
+      else void telemetryPromise;
     } else {
       console.warn("[SHADOW_TELEMETRY] skipped: baseline market regime unavailable", liveMarketRegime.reason);
     }
