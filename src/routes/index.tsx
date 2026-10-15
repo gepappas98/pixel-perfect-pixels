@@ -9,6 +9,7 @@ import { EventFlowTransmissionPanel } from "@/components/trading/EventFlowTransm
 import { IndicatorPanel } from "@/components/trading/IndicatorPanel";
 import { CouncilPanel } from "@/components/trading/CouncilPanel";
 import { RegimePanel } from "@/components/trading/RegimePanel";
+import { CmcMarketStructurePanel } from "@/components/trading/CmcMarketStructurePanel";
 import { StrategyPanel } from "@/components/trading/StrategyPanel";
 import { LessonsPanel } from "@/components/trading/LessonsPanel";
 import { VariantComparisonPanel } from "@/components/trading/VariantComparisonPanel";
@@ -329,6 +330,7 @@ function CommandCenter() {
         <IndicatorPanel />
         <CouncilPanel />
         <RegimePanel />
+        <CmcMarketStructurePanel />
         <StrategyPanel />
         <LessonsPanel />
         <VariantComparisonPanel />

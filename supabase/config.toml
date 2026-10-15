@@ -2,3 +2,9 @@ project_id = "yckewtpfttvwiptmmrfq"
 
 [functions.trade-position-watchdog]
 verify_jwt = false
+
+[functions.cmc-macro-sync]
+verify_jwt = true
+
+[functions.cmc-listings-sync]
+verify_jwt = true
