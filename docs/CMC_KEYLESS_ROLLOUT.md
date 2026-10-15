@@ -30,13 +30,17 @@ Table: `public.cmc_macro_snapshots`.
 
 Function: `supabase/functions/cmc-listings-sync/index.ts`
 
-Endpoint: `/v3/cryptocurrency/listings/latest?start=1&limit=200&convert=USD`
+Endpoint: `/v3/cryptocurrency/listings/latest?start={1,201,401,601,801}&limit=200&convert=USD`
 
+- Each successful refresh requests up to 1,000 ranked assets in five sequential pages (or stops early if the provider returns a short page).
+- This is broader than Top 200, but is **not a claim that every CMC asset is exposed by the keyless endpoint**. Actual returned coverage is recorded in function diagnostics.
 - Successful snapshots are throttled to one every 6 hours.
 - Stores bounded structured fields only; does not persist the complete raw response.
 - A snapshot must contain at least 50 valid assets or it is rejected.
 - Historical listings snapshots are append-only; there is no automatic pruning or deletion.
-- Listings are not merged into the active watchlist yet and do not bypass the Binance Spot execution-availability checks.
+- During a dynamic watchlist refresh, CMC candidates with at least $5M 24h volume (or $3M for already-selected symbols) can join Hyperliquid candidates, provided Binance exchange metadata explicitly confirms a USDT Spot-tradable base asset.
+- CMC candidates are not accepted on a failed/empty Binance metadata response; CMC rank or volume never substitutes for venue tradability.
+- The active watchlist remains capped at 150 dynamic/core symbols plus existing open positions and pinned entries. CMC does not create BUY signals or change execution rules.
 - Storage growth must be monitored before considering any explicit retention policy.
 
 Table: `public.cmc_listing_snapshots`.
@@ -66,5 +70,5 @@ Both new functions have explicit `verify_jwt = true` in `supabase/config.toml`. 
 ## Later phases — intentionally not included
 
 - Entry-context persistence and post-mortem cohorts for CMC macro values.
-- CMC listings candidate comparison against HL dynamic candidates and Binance USDT pairs.
+- Broader CMC discovery beyond the first 1,000 ranked assets, only if the public keyless endpoints demonstrably expose it and request/storage budgets support it.
 - Any soft sizing/confidence modifier. This requires observed telemetry and documented validation first.
