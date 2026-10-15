@@ -16,6 +16,7 @@ type CmcMacro = {
   altcoin_season_value: number | null;
   altcoin_season_label: string | null;
   mcap_change_pct: number | null;
+  mcap_change_window_minutes: number | null;
   dominance_regime: string;
   market_structure_tag: string;
   source_status: Record<string, { ok?: boolean; status?: number | null; error?: string | null }>;
@@ -59,7 +60,7 @@ export function CmcMarketStructurePanel() {
     queryKey: ["cmc-macro-latest"],
     queryFn: async () => {
       const { data, error } = await (supabase.from as any)("cmc_macro_snapshots")
-        .select("captured_at,btc_dominance,eth_dominance,total_mcap,total_volume_24h,fg_value,fg_classification,fg_observed_at,altcoin_season_value,altcoin_season_label,mcap_change_pct,dominance_regime,market_structure_tag,source_status")
+        .select("captured_at,btc_dominance,eth_dominance,total_mcap,total_volume_24h,fg_value,fg_classification,fg_observed_at,altcoin_season_value,altcoin_season_label,mcap_change_pct,mcap_change_window_minutes,dominance_regime,market_structure_tag,source_status")
         .order("captured_at", { ascending: false }).limit(1).maybeSingle();
       if (error) throw error;
       return data as CmcMacro | null;
@@ -121,7 +122,7 @@ export function CmcMarketStructurePanel() {
             <div className="rounded-md border border-border/70 p-3">
               <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Total market cap</p>
               <p className="mt-1 font-mono text-sm">{compactUsd(row.total_mcap)}</p>
-              <p className="mt-1 text-[10px] text-muted-foreground">Δ snapshot: {pct(row.mcap_change_pct)}</p>
+              <p className="mt-1 text-[10px] text-muted-foreground">Δ prior snapshot: {pct(row.mcap_change_pct)}{row.mcap_change_window_minutes == null ? "" : ` · ${Math.round(row.mcap_change_window_minutes)}m`}</p>
             </div>
             <div className="rounded-md border border-border/70 p-3">
               <p className="text-[10px] uppercase tracking-wider text-muted-foreground">BTC dominance</p>
