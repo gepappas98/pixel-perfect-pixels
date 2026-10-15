@@ -51,7 +51,12 @@ Deno.serve(async (req) => {
       const symbol = typeof coin?.symbol === "string" ? coin.symbol.trim().toUpperCase() : "";
       const name = typeof coin?.name === "string" ? coin.name.trim() : "";
       if (cmcId == null || !symbol || !name) return [];
-      const quote = coin?.quote?.USD ?? {};
+      // CMC V3 listings examples expose quote as an array of quote objects (with symbol "USD");
+      // tolerate the keyed-object shape too, so a response-shape variation cannot silently null every price.
+      const quoteContainer = coin?.quote;
+      const quote = Array.isArray(quoteContainer)
+        ? quoteContainer.find((item: any) => String(item?.symbol ?? "").toUpperCase() === "USD") ?? quoteContainer[0] ?? {}
+        : quoteContainer?.USD ?? quoteContainer ?? {};
       return [{
         captured_at: capturedAt,
         cmc_id: Math.trunc(cmcId),
