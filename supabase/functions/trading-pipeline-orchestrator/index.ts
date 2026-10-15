@@ -96,7 +96,7 @@ async function call(name: string, timeout: number) {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     // Keep trade-executor JWT verification enabled; authenticate this internal
     // service-to-service call with the server-side service-role token.
-    if (name === "trade-executor") {
+    if (name === "trade-executor" || name === "cmc-macro-sync" || name === "cmc-listings-sync") {
       const internalToken = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
       if (!internalToken) {
         throw new Error("Missing server-side service token for trade-executor call");
@@ -208,8 +208,9 @@ Deno.serve(async (req) => {
       call("tradingview-signals", 70000),
       call("council-sync", 55000),
       call("strategy-auto-switch", 35000),
-      // CMC macro is optional telemetry: this stage is deliberately non-critical.
+      // CMC stages are authenticated, optional telemetry; failures must never block the existing pipeline.
       call("cmc-macro-sync", 12000),
+      call("cmc-listings-sync", 12000),
     ]);
     results.push(...phase1);
     await updateRunProgress("phase_1_ingestion_complete");
