@@ -43,10 +43,12 @@ async function activeCoinContext(db:any){
  const {data}=await db.from("dynamic_watchlist_snapshots").select("symbols,expires_at").order("computed_at",{ascending:false}).limit(1).maybeSingle();
  const w=data?.symbols&&Array.isArray(data.symbols)&&new Date(String(data.expires_at??"")).getTime()>Date.now()?data.symbols:CORE_FALLBACK;
  const since30m=new Date(Date.now()-30*60_000).toISOString();
- const [{data:alerts},{data:hot},{data:openTrades}]=await Promise.all([
+ const since45m=new Date(Date.now()-45*60_000).toISOString();
+ const [{data:alerts},{data:hot},{data:openTrades},{data:recentBuys}]=await Promise.all([
   db.from("whale_alerts").select("symbol").gte("created_at",since30m).limit(100),
   db.from("hot_whale_signals").select("symbol").gte("last_seen_at",since30m).limit(50),
   db.from("trades").select("symbol").eq("status","open").limit(50),
+  db.from("composite_signals").select("symbol").gte("created_at",since45m).eq("recommendation","buy").order("created_at",{ascending:false}).limit(50),
  ]);
  const prioritySymbols=new Set<string>();
  // BTC is a permanent market-leader priority so 5m/15m snapshots are refreshed every cycle.
@@ -54,6 +56,7 @@ async function activeCoinContext(db:any){
  for(const r of alerts??[])if(r.symbol)prioritySymbols.add(String(r.symbol).toUpperCase().replace(/USDT$/,""));
  for(const r of hot??[])if(r.symbol)prioritySymbols.add(String(r.symbol).toUpperCase().replace(/USDT$/,""));
  for(const r of openTrades??[])if(r.symbol)prioritySymbols.add(String(r.symbol).toUpperCase().replace(/USDT$/,""));
+ for(const r of recentBuys??[])if(r.symbol)prioritySymbols.add(String(r.symbol).toUpperCase().replace(/USDT$/,""));
  const allSymbols=[...new Set([...w,...prioritySymbols].map((x:any)=>String(x).toUpperCase().replace(/USDT$/,"")).filter(Boolean))];
  return {allSymbols,prioritySymbols};
 }
