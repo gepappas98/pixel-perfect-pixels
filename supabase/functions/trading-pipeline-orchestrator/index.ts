@@ -118,7 +118,8 @@ async function call(name: string, timeout: number) {
     }
     return {
       name,
-      ok: response.ok,
+      // CMC functions intentionally return HTTP 200 on fail-open errors; preserve their body-level failure in pipeline diagnostics.
+      ok: response.ok && (!(name === "cmc-macro-sync" || name === "cmc-listings-sync") || body?.ok !== false),
       status: response.status,
       duration_ms: Date.now() - t,
       result: body,
