@@ -203,15 +203,18 @@ Deno.serve(async (req) => {
   };
 
   try {
-    // Phase 1: independent ingestion stages run concurrently.
+    // CMC listings must finish before whale-watch resolves its dynamic watchlist.
+    // This remains optional telemetry: even a fail-open CMC error must not block existing ingestion.
+    const cmcListingsStage = await call("cmc-listings-sync", 50000);
+    results.push(cmcListingsStage);
+
+    // The remaining independent ingestion stages run concurrently after CMC discovery is available.
     const phase1 = await Promise.all([
       call("whale-watch", 65000),
       call("tradingview-signals", 70000),
       call("council-sync", 55000),
       call("strategy-auto-switch", 35000),
-      // CMC stages are authenticated, optional telemetry; failures must never block the existing pipeline.
       call("cmc-macro-sync", 12000),
-      call("cmc-listings-sync", 12000),
     ]);
     results.push(...phase1);
     await updateRunProgress("phase_1_ingestion_complete");

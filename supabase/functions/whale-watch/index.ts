@@ -101,6 +101,32 @@ async function fetchBinanceUSDTBases(): Promise<Set<string>> {
   }
 }
 
+async function fetchRevolutXActiveBases(): Promise<Set<string>> {
+  try {
+    // Public EEA pair configuration; no API key or user account is required.
+    const res = await fetch("https://revx.revolut.com/api/1.0/public/configuration/pairs?region=EEA", {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) throw new Error(`RevolutX public pair configuration error: ${res.status}`);
+    const payload = await res.json();
+    const pairMap = payload?.data && typeof payload.data === "object" ? payload.data : payload;
+    if (!pairMap || typeof pairMap !== "object" || Array.isArray(pairMap)) {
+      throw new Error("unexpected RevolutX pair configuration shape");
+    }
+    const bases = new Set<string>();
+    for (const [pairName, pair] of Object.entries(pairMap as Record<string, any>)) {
+      const base = String(pair?.base ?? String(pairName).split("/")[0] ?? "").trim().toUpperCase();
+      if (base && String(pair?.status ?? "").toLowerCase() === "active") bases.add(base);
+    }
+    if (!bases.size) throw new Error("empty active RevolutX pair configuration");
+    return bases;
+  } catch (e) {
+    console.warn("[WATCHLIST] RevolutX public pair configuration unavailable; CMC-only candidates fail closed", e);
+    return new Set();
+  }
+}
+
 async function fetchRecentTrades(coin: string): Promise<HyperliquidTrade[]> {
   const res = await fetch("https://api.hyperliquid.xyz/info", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -180,7 +206,7 @@ function normalizeCoinLobster(raw: CoinLobsterTrade) {
 
 async function loadPreviousSnapshot(supabase: ReturnType<typeof getServiceClient>) {
   const { data, error } = await supabase.from("dynamic_watchlist_snapshots")
-    .select("symbols,hl_candidates,hl_above_threshold,binance_filtered,pinned_symbols,dynamic_symbols,computed_at,expires_at")
+    .select("symbols,hl_candidates,hl_above_threshold,binance_filtered,pinned_symbols,dynamic_symbols,computed_at,expires_at,cmc_snapshot_at")
     .order("computed_at", { ascending: false }).limit(1).maybeSingle();
   if (error) { console.error("[WATCHLIST] snapshot read failed:", error); return null; }
   return data;
@@ -192,12 +218,45 @@ async function loadOpenPositions(supabase: ReturnType<typeof getServiceClient>) 
   return new Set((data ?? []).map((r: { symbol: string }) => r.symbol));
 }
 
+
+async function loadLatestCmcCandidates(supabase: ReturnType<typeof getServiceClient>) {
+  // Read only the most recent complete-looking CMC batch; never mix snapshots.
+  const { data, error } = await supabase.from("cmc_listing_snapshots")
+    .select("symbol,volume_24h_usd,captured_at")
+    .order("captured_at", { ascending: false })
+    .limit(1000);
+  if (error) {
+    console.warn("[WATCHLIST] CMC candidate snapshot read failed:", error.message);
+    return { candidates: new Map<string, number>(), capturedAt: null as string | null };
+  }
+  if (!data?.length) return { candidates: new Map<string, number>(), capturedAt: null as string | null };
+  const capturedAt = data[0].captured_at as string;
+  const candidates = new Map<string, number>();
+  for (const row of data) {
+    if (row.captured_at !== capturedAt) continue;
+    const symbol = String(row.symbol ?? "").trim().toUpperCase();
+    const volume = Number(row.volume_24h_usd);
+    if (!symbol || !Number.isFinite(volume) || volume <= 0) continue;
+    // CMC can contain duplicate symbols; preserve the highest reported 24h volume.
+    candidates.set(symbol, Math.max(candidates.get(symbol) ?? 0, volume));
+  }
+  return { candidates, capturedAt };
+}
+
 async function resolveWatchlist(supabase: ReturnType<typeof getServiceClient>) {
   const previous = await loadPreviousSnapshot(supabase);
   const openPositions = await loadOpenPositions(supabase);
+  const cmcSnapshot = await loadLatestCmcCandidates(supabase);
   const now = Date.now();
+  const previousCmcSnapshotAt = previous?.cmc_snapshot_at
+    ? new Date(previous.cmc_snapshot_at).getTime()
+    : 0;
+  const cmcSnapshotIsNew = !!cmcSnapshot.capturedAt
+    && new Date(cmcSnapshot.capturedAt).getTime() > previousCmcSnapshotAt;
 
-  if (previous?.expires_at && new Date(previous.expires_at).getTime() > now) {
+  // Refresh once when CMC data is first introduced or a newer batch arrives.
+  // Persisting the consumed batch timestamp prevents repeated full refreshes.
+  if (previous?.expires_at && new Date(previous.expires_at).getTime() > now && !cmcSnapshotIsNew) {
     const symbols = [...(previous.symbols ?? [])];
     const seen = new Set(symbols);
     for (const symbol of openPositions) if (!seen.has(symbol)) { symbols.push(symbol); seen.add(symbol); }
@@ -205,6 +264,7 @@ async function resolveWatchlist(supabase: ReturnType<typeof getServiceClient>) {
       symbols: symbols.slice(0, MAX_COINS + openPositions.size),
       source: "cache", hlCandidates: previous.hl_candidates ?? 0,
       hlAboveThreshold: previous.hl_above_threshold ?? 0, binanceFiltered: previous.binance_filtered ?? 0,
+      cmcCandidates: cmcSnapshot.candidates.size, cmcEligible: 0,
       pinned: [...new Set([...CORE_ALWAYS_INCLUDE, ...openPositions])], dynamic: previous.dynamic_symbols ?? [],
     };
   }
@@ -224,12 +284,29 @@ async function resolveWatchlist(supabase: ReturnType<typeof getServiceClient>) {
     volume = new Map<string, number>();
   }
 
-  const binance = await fetchBinanceUSDTBases();
+  const [binance, revolutxBases] = await Promise.all([
+    fetchBinanceUSDTBases(),
+    fetchRevolutXActiveBases(),
+  ]);
   const previousSymbols = new Set(previous?.symbols ?? []);
-  const eligible = [...volume.entries()].filter(([symbol, v]) => {
+  const hlEligible = [...volume.entries()].filter(([symbol, v]) => {
     const threshold = previousSymbols.has(symbol) ? REMOVE_THRESHOLD_USD : ADD_THRESHOLD_USD;
     return v >= threshold && (binance.size === 0 || binance.has(symbol));
   }).sort((a, b) => b[1] - a[1]);
+
+  // CMC is a third dynamic discovery source, not a static coin list.
+  // Only use a stored CMC batch and require an explicit Binance USDT Spot listing.
+  // If Binance metadata is unavailable, do not infer tradability from CMC alone.
+  const cmcEligible = binance.size > 0 && revolutxBases.size > 0
+    ? [...cmcSnapshot.candidates.entries()].filter(([symbol, v]) => {
+        const threshold = previousSymbols.has(symbol) ? REMOVE_THRESHOLD_USD : ADD_THRESHOLD_USD;
+        return v >= threshold && binance.has(symbol) && revolutxBases.has(symbol);
+      })
+    : [];
+  const merged = new Map<string, number>();
+  for (const [symbol, v] of hlEligible) merged.set(symbol, Math.max(merged.get(symbol) ?? 0, v));
+  for (const [symbol, v] of cmcEligible) merged.set(symbol, Math.max(merged.get(symbol) ?? 0, v));
+  const eligible = [...merged.entries()].sort((a, b) => b[1] - a[1]);
 
   const pinned = new Set([...CORE_ALWAYS_INCLUDE, ...openPositions, ...REVOLUTX_DISCOVERED_SYMBOLS.filter((s) => binance.size === 0 || binance.has(s))]);
   const symbols: string[] = [];
@@ -244,12 +321,14 @@ async function resolveWatchlist(supabase: ReturnType<typeof getServiceClient>) {
   const expiresAt = new Date(now + STABILITY_HOURS * 3600000).toISOString();
   const { error: insertError } = await supabase.from("dynamic_watchlist_snapshots").insert({
     symbols, source: "refreshed", hl_candidates: volume.size,
-    hl_above_threshold: eligible.length, binance_filtered: eligible.length,
+    hl_above_threshold: hlEligible.length, binance_filtered: eligible.length,
     pinned_symbols: [...pinned], dynamic_symbols: dynamic, expires_at: expiresAt,
+    cmc_snapshot_at: cmcSnapshot.capturedAt,
   });
   if (insertError) console.error("[WATCHLIST] snapshot insert failed:", insertError);
 
-  return { symbols, source: "refreshed", hlCandidates: volume.size, hlAboveThreshold: eligible.length, binanceFiltered: eligible.length, pinned: [...pinned], dynamic };
+  console.log(`[WATCHLIST] merged candidates hl=${volume.size} hl_eligible=${hlEligible.length} cmc_snapshot=${cmcSnapshot.candidates.size} cmc_eligible_both_venues=${cmcEligible.length} merged=${eligible.length} binance_bases=${binance.size} revolutx_bases=${revolutxBases.size}`);
+  return { symbols, source: "refreshed", hlCandidates: volume.size, hlAboveThreshold: hlEligible.length, binanceFiltered: eligible.length, cmcCandidates: cmcSnapshot.candidates.size, cmcEligible: cmcEligible.length, pinned: [...pinned], dynamic };
 }
 
 async function recordHotWhale(supabase: ReturnType<typeof getServiceClient>, symbol: string, usd: number, isBuy: boolean, source: string) {
@@ -382,7 +461,10 @@ Deno.serve(async (req) => {
       watchlist: {
         total: watchlist.symbols.length, source: watchlist.source,
         hl_candidates: watchlist.hlCandidates, hl_above_threshold: watchlist.hlAboveThreshold,
-        binance_filtered: watchlist.binanceFiltered, pinned: watchlist.pinned, dynamic: watchlist.dynamic.length,
+        binance_filtered: watchlist.binanceFiltered,
+        cmc_candidates: (watchlist as any).cmcCandidates ?? 0,
+        cmc_eligible: (watchlist as any).cmcEligible ?? 0,
+        pinned: watchlist.pinned, dynamic: watchlist.dynamic.length,
       },
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" }});
   } catch (err) {
