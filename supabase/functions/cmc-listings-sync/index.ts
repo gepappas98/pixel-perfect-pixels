@@ -3,6 +3,8 @@ import { getServiceClient } from "../_shared/supabase.ts";
 const BASE = "https://pro-api.coinmarketcap.com/public-api";
 const REQUEST_TIMEOUT_MS = 8_000;
 const SUCCESS_TTL_MS = 6 * 60 * 60 * 1000;
+// Keep one week of compact CMC listing history; prune only after a complete new batch is stored.
+const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const PAGE_SIZE = 200;
 // Expand beyond the first 200 CMC-ranked assets without a key. Keep request count bounded.
 const MAX_ASSETS = 1_000;
@@ -94,11 +96,25 @@ Deno.serve(async (req) => {
     const { error: insertError } = await db.from("cmc_listing_snapshots").insert(rows);
     if (insertError) throw insertError;
 
+    // Retention runs only after a complete batch has been inserted, so a failed fetch
+    // never prunes the last usable snapshot. The dynamic watchlist consumes only the
+    // latest batch; keep seven days for short-term research/debugging.
+    const cutoff = new Date(Date.now() - RETENTION_MS).toISOString();
+    const { count: deletedRows, error: pruneError } = await db.from("cmc_listing_snapshots")
+      .delete({ count: "exact" })
+      .lt("captured_at", cutoff);
+    if (pruneError) {
+      // Pruning is maintenance, not a reason to mark a successful discovery refresh as failed.
+      console.warn("[CMC_KEYLESS_LISTINGS] retention cleanup failed", pruneError.message);
+    }
+
     return Response.json({
       ok: true, inserted: rows.length, requested_limit: MAX_ASSETS, page_size: PAGE_SIZE, pages_fetched: pages.length, captured_at: capturedAt,
       http_status: httpStatus, duration_ms: Date.now() - started,
+      pruned_rows: pruneError ? null : (deletedRows ?? 0), retention_days: 7,
+      retention_cleanup_error: pruneError?.message ?? null,
       research_only: true, discovery_only: true,
-      history_policy: "append_only_no_automatic_deletion",
+      history_policy: "retain_7_days_then_prune_after_successful_snapshot",
       note: "Snapshots up to the first 1,000 ranked assets available from the keyless listings endpoint. These candidates feed watchlist discovery only; they do not create or modify trade signals.",
     });
   } catch (error) {
