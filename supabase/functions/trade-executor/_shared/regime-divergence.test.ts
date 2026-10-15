@@ -1,6 +1,7 @@
 import {
   computeDivergenceAssessment,
   evaluateBtcTrend,
+  evaluateBtcDowntrendEntryGate,
 } from "./regime-divergence.ts";
 import {
   computeDivergenceAssessment as computeFrontendDivergenceAssessment,
@@ -67,4 +68,28 @@ Deno.test("Frontend pure module treats missing BTC data as unconfirmed", () => {
   const result = computeFrontendDivergenceAssessment(null, 0.4, -0.22, 0);
   assert(!result.isDivergent, "missing BTC data must not count as divergence");
   assert(result.shadowScore === result.baselineScore, "missing data must preserve the baseline score");
+});
+
+Deno.test("Active BTC downtrend gate rejects SUI-like mixed/bearish micro trend", () => {
+  const btc = evaluateBtcTrend(80000, 81000, 83000, 82000);
+  const decision = evaluateBtcDowntrendEntryGate(btc, 0.20, -0.20, 0, {
+    tf5m: "bullish", tf15m: "neutral", tf1h: "bearish",
+  });
+  assert(decision.required && !decision.allowBuy, "BTC downtrend must reject a BUY without a confirmed bounce");
+});
+
+Deno.test("Active BTC downtrend gate permits only confirmed bounce when score is not bearish", () => {
+  const btc = evaluateBtcTrend(80000, 81000, 83000, 82000);
+  const decision = evaluateBtcDowntrendEntryGate(btc, 0.20, -0.20, 0, {
+    tf5m: "bullish", tf15m: "bullish", tf1h: "neutral",
+  });
+  assert(decision.required && decision.allowBuy, "two bullish and zero bearish micro readings should pass a non-bearish adjusted regime");
+});
+
+Deno.test("Active BTC downtrend gate blocks a bearish whale-decoupled market score", () => {
+  const btc = evaluateBtcTrend(80000, 81000, 83000, 82000);
+  const decision = evaluateBtcDowntrendEntryGate(btc, 1, -0.40, 0, {
+    tf5m: "bullish", tf15m: "bullish", tf1h: "neutral",
+  });
+  assert(decision.required && !decision.allowBuy, "bearish adjusted regime must block even with a micro bounce");
 });
