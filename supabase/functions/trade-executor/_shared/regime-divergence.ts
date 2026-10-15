@@ -15,6 +15,57 @@ export interface BtcTrendMetrics {
 export type RegimeLabel = "bullish" | "bearish" | "sideways";
 export type DivergenceType = "whale_absorption_in_btc_drop" | "none";
 
+export interface BtcDowntrendEntryDecision {
+  required: boolean;
+  allowBuy: boolean;
+  reason: string;
+}
+
+/**
+ * Active paper-entry gate: during a confirmed BTC downtrend, a new BUY must
+ * show a confirmed micro bounce (at least two bullish 5m/15m/1h readings and
+ * no bearish readings). If positive market whale flow is decoupled and the
+ * resulting shadow regime is bearish, reject regardless of the micro bounce.
+ * Missing BTC data does not manufacture a downtrend.
+ */
+export function evaluateBtcDowntrendEntryGate(
+  btc: BtcTrendMetrics | null,
+  whaleNet: number,
+  techBreadth: number,
+  councilConsensus: number,
+  micro: { tf5m: string; tf15m: string; tf1h: string },
+): BtcDowntrendEntryDecision {
+  if (!btc?.isDowntrend) {
+    return { required: false, allowBuy: true, reason: btc ? "btc_downtrend_not_confirmed" : "btc_data_unavailable_no_downtrend_inferred" };
+  }
+
+  const states = [micro.tf5m, micro.tf15m, micro.tf1h].map((value) => String(value).toLowerCase());
+  const bulls = states.filter((value) => value === "bullish").length;
+  const bears = states.filter((value) => value === "bearish").length;
+  if (bulls < 2 || bears > 0) {
+    return {
+      required: true,
+      allowBuy: false,
+      reason: `BTC downtrend active; BUY requires confirmed micro bounce (>=2 bullish and 0 bearish on 5m/15m/1h), observed ${states.join("/")}`,
+    };
+  }
+
+  const divergence = computeDivergenceAssessment(btc, whaleNet, techBreadth, councilConsensus);
+  if (divergence.isDivergent && divergence.shadowRegime === "bearish") {
+    return {
+      required: true,
+      allowBuy: false,
+      reason: `BTC downtrend + positive whale flow decoupled; adjusted market regime is bearish (score ${divergence.shadowScore.toFixed(3)})`,
+    };
+  }
+
+  return {
+    required: true,
+    allowBuy: true,
+    reason: `BTC downtrend gate passed: confirmed micro bounce (${bulls}/3 bullish, 0 bearish); adjusted regime ${divergence.shadowRegime}`,
+  };
+}
+
 export interface DivergenceAssessment {
   btc: BtcTrendMetrics | null;
   whaleNet: number;
