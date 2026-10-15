@@ -68,7 +68,7 @@ Deno.serve(async (req) => {
     const allFreshSourcesSucceeded = ["global_metrics", "fear_and_greed", "altcoin_season"]
       .every((key) => status?.[key]?.ok === true);
     const ageMs = latest?.captured_at ? Date.now() - new Date(latest.captured_at).getTime() : Infinity;
-    if (allFreshSourcesSucceeded && ageMs >= 0 && ageMs < SUCCESS_TTL_MS) {
+    if (latest && allFreshSourcesSucceeded && ageMs >= 0 && ageMs < SUCCESS_TTL_MS) {
       return Response.json({
         ok: true, skipped: true, reason: "fresh_successful_snapshot",
         age_ms: ageMs, captured_at: latest.captured_at, research_only: true,
