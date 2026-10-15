@@ -7,7 +7,7 @@
 - CMC data is context and discovery telemetry only. It must never create a BUY by itself.
 - Existing Hyperliquid whale flow, Binance/Bybit candles, Council, composite thresholds, auto-switch, trade-executor and live-order settings are unchanged.
 - No historical trades, signals, pipeline runs, or existing research rows are deleted or reset.
-- CMC macro and listing snapshots are append-only research history; no automatic deletion/pruning is performed. Any future retention policy must be explicitly reviewed against research-cohort needs and storage monitoring before adoption.
+- CMC macro snapshots remain append-only. Ranked CMC listing snapshots retain seven days of history; after a complete successful listings batch is inserted, the sync function prunes only `cmc_listing_snapshots` rows older than seven days. If fetching/inserting a new batch fails, cleanup does not run. Cleanup failure is logged and reported without invalidating the successful new batch.
 - CMC sync functions must require JWT verification and be called internally by the orchestrator using its server-side service token.
 - Every CMC stage is optional. Errors must be logged and returned as HTTP 200 diagnostics to preserve fail-open orchestration.
 
@@ -37,7 +37,7 @@ Endpoint: `/v3/cryptocurrency/listings/latest?start={1,201,401,601,801}&limit=20
 - Successful snapshots are throttled to one every 6 hours.
 - Stores bounded structured fields only; does not persist the complete raw response.
 - A snapshot must contain at least 50 valid assets or it is rejected.
-- Historical listings snapshots are append-only; there is no automatic pruning or deletion.
+- Listings history is retained for seven days. Only after a complete valid batch is inserted, the function deletes rows in `cmc_listing_snapshots` older than the seven-day cutoff and reports `pruned_rows`; cleanup errors are logged/reported separately and do not turn the successful sync into a failure. This retention does not touch macro snapshots, watchlist snapshots, signals, trades, pipeline runs, or paper-trading history.
 - During a dynamic watchlist refresh, CMC candidates with at least $5M 24h volume (or $3M for already-selected symbols) can join Hyperliquid candidates only when both Binance USDT Spot metadata and RevolutX's public EEA pair configuration confirm an active market for the base asset.
 - CMC candidates fail closed if either venue's market metadata is unavailable/empty; CMC rank or volume never substitutes for venue tradability. Hyperliquid candidate eligibility and existing pinned/open-position behavior remain separate.
 - The orchestrator awaits the optional listings sync before starting `whale-watch`, so a newly completed CMC batch is available to the same cycle's watchlist resolution. The call has a 50-second ceiling to cover up to five 8-second page requests; fail-open errors do not block the existing pipeline.
@@ -68,6 +68,7 @@ Both new functions have explicit `verify_jwt = true` in `supabase/config.toml`. 
 9. Confirm no new CMC-derived values enter composite scoring, strategy auto-switch or trade-executor.
 10. Confirm RLS: anon/authenticated SELECT works; writes are denied; service role can write.
 11. Monitor pipeline runtime, database growth, and 429 frequency before any watchlist merge.
+12. Confirm the listing sync reports `retention_days: 7`, a numeric `pruned_rows` count (or a separately reported cleanup error), and that only listing rows older than seven days are removed.
 
 ## Later phases — intentionally not included
 
