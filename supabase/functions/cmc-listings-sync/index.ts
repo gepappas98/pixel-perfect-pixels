@@ -24,13 +24,13 @@ Deno.serve(async (req) => {
   const db = getServiceClient();
   try {
     const { data: latest, error: latestError } = await db.from("cmc_listing_snapshots")
-      .select("captured_at")
+      .select("captured_at,batch_version")
       .order("captured_at", { ascending: false })
       .limit(1)
       .maybeSingle();
     if (latestError) throw latestError;
     const ageMs = latest?.captured_at ? Date.now() - new Date(latest.captured_at).getTime() : Infinity;
-    if (latest && ageMs >= 0 && ageMs < SUCCESS_TTL_MS) {
+    if (latest && Number(latest.batch_version ?? 1) >= 2 && ageMs >= 0 && ageMs < SUCCESS_TTL_MS) {
       return Response.json({ ok: true, skipped: true, reason: "fresh_listings_snapshot", age_ms: ageMs, captured_at: latest.captured_at, research_only: true });
     }
 
@@ -72,6 +72,7 @@ Deno.serve(async (req) => {
         : quoteContainer?.USD ?? quoteContainer ?? {};
       return [{
         captured_at: capturedAt,
+        batch_version: 2,
         cmc_id: Math.trunc(cmcId),
         name: name.slice(0, 160),
         symbol: symbol.slice(0, 32),
@@ -92,7 +93,7 @@ Deno.serve(async (req) => {
     });
     if (rows.length < 50) throw new Error("too_few_valid_listing_rows:" + rows.length);
 
-    // Append-only research history: do not prune prior listing snapshots automatically.
+    // Store the completed paginated batch, marked so the first v2 deployment refreshes old v1 batches once.
     const { error: insertError } = await db.from("cmc_listing_snapshots").insert(rows);
     if (insertError) throw insertError;
 
@@ -109,7 +110,7 @@ Deno.serve(async (req) => {
     }
 
     return Response.json({
-      ok: true, inserted: rows.length, requested_limit: MAX_ASSETS, page_size: PAGE_SIZE, pages_fetched: pages.length, captured_at: capturedAt,
+      ok: true, inserted: rows.length, requested_limit: MAX_ASSETS, page_size: PAGE_SIZE, pages_fetched: pages.length, batch_version: 2, captured_at: capturedAt,
       http_status: httpStatus, duration_ms: Date.now() - started,
       pruned_rows: pruneError ? null : (deletedRows ?? 0), retention_days: 7,
       retention_cleanup_error: pruneError?.message ?? null,
