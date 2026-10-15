@@ -4,7 +4,6 @@ const BASE = "https://pro-api.coinmarketcap.com/public-api";
 const REQUEST_TIMEOUT_MS = 8_000;
 const SUCCESS_TTL_MS = 6 * 60 * 60 * 1000;
 const LIMIT = 200;
-const RETENTION_DAYS = 30;
 
 function finite(value: unknown): number | null {
   const n = Number(value);
@@ -79,16 +78,15 @@ Deno.serve(async (req) => {
     });
     if (rows.length < 50) throw new Error("too_few_valid_listing_rows:" + rows.length);
 
+    // Append-only research history: do not prune prior listing snapshots automatically.
     const { error: insertError } = await db.from("cmc_listing_snapshots").insert(rows);
     if (insertError) throw insertError;
-    const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
-    const { error: cleanupError } = await db.from("cmc_listing_snapshots").delete().lt("captured_at", cutoff);
-    if (cleanupError) console.warn("[CMC_KEYLESS_LISTINGS] retention cleanup failed", cleanupError.message);
 
     return Response.json({
       ok: true, inserted: rows.length, requested_limit: LIMIT, captured_at: capturedAt,
       http_status: httpStatus, duration_ms: Date.now() - started,
       research_only: true, discovery_only: true,
+      history_policy: "append_only_no_automatic_deletion",
       note: "Does not add assets to the active watchlist or create/modify trade signals.",
     });
   } catch (error) {
