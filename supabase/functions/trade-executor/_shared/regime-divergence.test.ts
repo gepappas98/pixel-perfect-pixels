@@ -2,6 +2,10 @@ import {
   computeDivergenceAssessment,
   evaluateBtcTrend,
 } from "./regime-divergence.ts";
+import {
+  computeDivergenceAssessment as computeFrontendDivergenceAssessment,
+  evaluateBtcTrend as evaluateFrontendBtcTrend,
+} from "../../../../src/lib/regime-divergence.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -48,4 +52,19 @@ Deno.test("BTC trend: detects 4h/24h negative returns and price below SMA", () =
   assert(btc.isDowntrend, "expected BTC downtrend");
   assert(btc.isBelowSma24h, "expected BTC below 24h SMA");
   assertClose(btc.return4hPct, -1.8072, 0.001);
+});
+
+Deno.test("Frontend pure module matches the shadow-score contract", () => {
+  const btc = evaluateFrontendBtcTrend(81640, 82500, 83400, 82700);
+  const result = computeFrontendDivergenceAssessment(btc, 0.356, -0.22, 0);
+  assert(result.isDivergent, "expected frontend divergence");
+  assertClose(result.baselineScore, 0.0235);
+  assertClose(result.shadowScore, -0.11);
+  assert(result.shadowRegime === "sideways", "frontend must classify -0.110 as sideways");
+});
+
+Deno.test("Frontend pure module treats missing BTC data as unconfirmed", () => {
+  const result = computeFrontendDivergenceAssessment(null, 0.4, -0.22, 0);
+  assert(!result.isDivergent, "missing BTC data must not count as divergence");
+  assert(result.shadowScore === result.baselineScore, "missing data must preserve the baseline score");
 });
