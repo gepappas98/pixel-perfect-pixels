@@ -1,6 +1,6 @@
 /**
  * BTC Trend & Whale Divergence Decoupling Engine.
- * Pure shadow-only logic: it never changes production entry decisions.
+ * Computes the counterfactual score used by telemetry and the active paper-entry gate.
  */
 
 export interface BtcTrendMetrics {
@@ -143,7 +143,7 @@ export function computeDivergenceAssessment(
     explanation = "BTC trend data unavailable; divergence is unconfirmed and baseline flow is preserved.";
   } else if (isDivergent) {
     explanation =
-      `BTC downtrend (${btc.return24hPct.toFixed(1)}% 24h) decoupled whale buying (+${(whaleNet * 100).toFixed(1)}%). Score shifted from ${baselineScore.toFixed(3)} [${baselineRegime}] to ${shadowScore.toFixed(3)} [${shadowRegime}]. Shadow-only; production decisions unchanged.`;
+      `BTC downtrend (${btc.return24hPct.toFixed(1)}% 24h) decoupled whale buying (+${(whaleNet * 100).toFixed(1)}%). Counterfactual score shifted from ${baselineScore.toFixed(3)} [${baselineRegime}] to ${shadowScore.toFixed(3)} [${shadowRegime}]; active BUY eligibility is evaluated separately by the BTC downtrend entry gate.`;
   }
 
   return {
