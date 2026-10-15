@@ -28,5 +28,8 @@ jobs:
         with:
           deno-version: v2.x
 
-      - name: Type-check active modified Edge Functions
-        run: deno check --no-lock supabase/functions/signal-combiner/index.ts supabase/functions/council-sync/index.ts supabase/functions/trading-pipeline-orchestrator/index.ts
+      - name: Type-check active Edge Functions
+        run: deno check --no-lock supabase/functions/trade-executor/index.ts supabase/functions/tradingview-signals/index.ts supabase/functions/signal-combiner/index.ts supabase/functions/council-sync/index.ts supabase/functions/trading-pipeline-orchestrator/index.ts
+
+      - name: Run BTC divergence regression tests
+        run: deno test --no-lock supabase/functions/trade-executor/_shared/regime-divergence.test.ts
