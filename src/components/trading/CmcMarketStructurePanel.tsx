@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Globe2, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
+import { Activity, Globe2, TrendingDown, TrendingUp } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 
 type CmcMacro = {
