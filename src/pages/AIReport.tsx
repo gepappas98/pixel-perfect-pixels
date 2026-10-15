@@ -52,6 +52,12 @@ type NewBuyAlert = {
   created_at: string;
 };
 
+type NewOpenPositionAlert = {
+  id: string;
+  symbol: string;
+  created_at: string;
+};
+
 type ResearchAlert = {
   id: string;
   alert_type: string;
@@ -79,6 +85,7 @@ const EXECUTION_CONFIDENCE_THRESHOLD = 0.6;
  * ============================================================ */
 
 const SEEN_BUY_IDS_KEY = "ai_report_seen_buy_signal_ids_v1";
+const SEEN_OPEN_TRADE_IDS_KEY = "ai_report_seen_open_trade_ids_v1";
 const SEEN_RESEARCH_ALERT_IDS_KEY = "ai_report_seen_research_alert_ids_v1";
 const SOUND_ENABLED_KEY = "ai_report_sound_enabled_v1";
 const POLL_INTERVAL_MS = 60_000;
@@ -96,6 +103,27 @@ function loadSeenBuyIds(): Set<string> {
   } catch {
     return new Set();
   }
+}
+
+function loadSeenOpenTradeIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(SEEN_OPEN_TRADE_IDS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((x): x is string => typeof x === "string"));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveSeenOpenTradeIds(ids: Set<string>): void {
+  try {
+    localStorage.setItem(
+      SEEN_OPEN_TRADE_IDS_KEY,
+      JSON.stringify([...ids].slice(-MAX_SEEN_IDS)),
+    );
+  } catch {}
 }
 
 function loadSeenResearchAlertIds(): Set<string> {
@@ -156,10 +184,13 @@ export default function AIReport() {
     loadSoundEnabled(),
   );
   const [newBuys, setNewBuys] = useState<NewBuyAlert[]>([]);
+  const [newOpenPositions, setNewOpenPositions] = useState<NewOpenPositionAlert[]>([]);
   const [researchAlerts, setResearchAlerts] = useState<ResearchAlert[]>([]);
 
   const audioCtxRef = useRef<AudioContext | null>(null);
   const seenBuyIdsRef = useRef<Set<string>>(loadSeenBuyIds());
+  const seenOpenTradeIdsRef = useRef<Set<string>>(loadSeenOpenTradeIds());
+  const openTradeDetectionPrimedRef = useRef<boolean>(seenOpenTradeIdsRef.current.size > 0);
   const seenResearchAlertIdsRef = useRef<Set<string>>(loadSeenResearchAlertIds());
   const primedRef = useRef<boolean>(false);
   const soundEnabledRef = useRef<boolean>(soundEnabled);
@@ -167,6 +198,16 @@ export default function AIReport() {
   useEffect(() => {
     soundEnabledRef.current = soundEnabled;
   }, [soundEnabled]);
+
+  // Keep sounding while a newly opened paper position is awaiting acknowledgement.
+  // The alarm stops when the banner is dismissed or sound is switched off.
+  useEffect(() => {
+    if (!soundEnabled || newOpenPositions.length === 0) return;
+    const playAlarm = () => playBuyAlert();
+    playAlarm();
+    const intervalId = window.setInterval(playAlarm, 1_200);
+    return () => window.clearInterval(intervalId);
+  }, [soundEnabled, newOpenPositions.length, playBuyAlert]);
 
   /* ============================================================
    * SOUND PLAYBACK — Web Audio API beep
@@ -299,6 +340,10 @@ export default function AIReport() {
     setNewBuys([]);
   }, []);
 
+  const acknowledgeOpenPositions = useCallback(() => {
+    setNewOpenPositions([]);
+  }, []);
+
   /* ============================================================
    * MAIN LOAD
    * ============================================================ */
@@ -354,6 +399,36 @@ export default function AIReport() {
       const openTrades = (open.data ?? []) as Row[];
       const closedTrades = (closed.data ?? []) as Row[];
       const variantRows = (variants.data ?? []) as Row[];
+
+      // Alert on newly opened BUY positions, not merely on a BUY signal.
+      const seenOpenIds = seenOpenTradeIdsRef.current;
+      const currentOpenIds = new Set(
+        openTrades.map((trade) => String(trade.id ?? "")).filter(Boolean),
+      );
+      if (!openTradeDetectionPrimedRef.current) {
+        for (const id of currentOpenIds) seenOpenIds.add(id);
+        saveSeenOpenTradeIds(seenOpenIds);
+        openTradeDetectionPrimedRef.current = true;
+      } else {
+        const newlyOpened = openTrades.filter(
+          (trade) => !seenOpenIds.has(String(trade.id ?? "")),
+        );
+        if (newlyOpened.length > 0) {
+          const alerts: NewOpenPositionAlert[] = newlyOpened.map((trade) => ({
+            id: String(trade.id ?? ""),
+            symbol: String(trade.symbol ?? "UNKNOWN"),
+            created_at: String(trade.created_at ?? ""),
+          }));
+          setNewOpenPositions((previous) => {
+            const merged = new Map<string, NewOpenPositionAlert>();
+            for (const position of previous) merged.set(position.id, position);
+            for (const position of alerts) merged.set(position.id, position);
+            return [...merged.values()];
+          });
+        }
+        for (const id of currentOpenIds) seenOpenIds.add(id);
+        saveSeenOpenTradeIds(seenOpenIds);
+      }
       const pipelineErrors = (errors.data ?? []) as Row[];
       const currentResearchAlerts = (research.data ?? []) as unknown as ResearchAlert[];
       const priceRows = (marks.data ?? []) as Row[];
@@ -1143,6 +1218,42 @@ Interpretation rules:
         </div>
       )}
 
+      {/* ───────── New position-open alarm banner ───────── */}
+      {newOpenPositions.length > 0 && (
+        <div className="sticky top-0 z-[60] rounded border-2 border-red-600 bg-red-50 p-4 shadow-lg">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1">
+              <div className="text-lg font-bold text-red-800">
+                🚨 NEW POSITION OPENED — {newOpenPositions.length}
+                {soundEnabled ? " · CONTINUOUS ALARM ON" : " · SOUND OFF"}
+              </div>
+              <ul className="mt-2 space-y-1 text-sm text-red-900">
+                {newOpenPositions.map((position) => (
+                  <li key={position.id}>
+                    <span className="font-mono font-semibold">{position.symbol}</span>
+                    {position.created_at && (
+                      <span className="ml-2 text-xs text-red-700">
+                        ({new Date(position.created_at).toLocaleTimeString()})
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 text-xs text-red-800">
+                The alarm repeats until you acknowledge this notification. Sound requires Sound: ON.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={acknowledgeOpenPositions}
+              className="rounded border border-red-700 bg-white px-3 py-1 text-sm font-medium text-red-800 hover:bg-red-100"
+            >
+              Stop alarm
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ───────── New BUY alert banner ───────── */}
       {newBuys.length > 0 && (
         <div className="sticky top-0 z-50 rounded border-2 border-green-600 bg-green-50 p-4 shadow-lg">
@@ -1212,7 +1323,7 @@ Interpretation rules:
             }
             title={
               soundEnabled
-                ? "Sound is ON — you will hear a chime on new eligible BUY"
+                ? "Sound is ON — continuous alarm on newly opened positions; chime on new eligible BUY signals"
                 : "Sound is OFF — click to enable"
             }
           >
