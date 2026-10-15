@@ -48,6 +48,8 @@ async function activeCoinContext(db:any){
   db.from("trades").select("symbol").eq("status","open").limit(50),
  ]);
  const prioritySymbols=new Set<string>();
+ // BTC is a permanent market-leader priority so 5m/15m snapshots are refreshed every cycle.
+ prioritySymbols.add("BTC");
  for(const r of alerts??[])if(r.symbol)prioritySymbols.add(String(r.symbol).toUpperCase().replace(/USDT$/,""));
  for(const r of hot??[])if(r.symbol)prioritySymbols.add(String(r.symbol).toUpperCase().replace(/USDT$/,""));
  for(const r of openTrades??[])if(r.symbol)prioritySymbols.add(String(r.symbol).toUpperCase().replace(/USDT$/,""));
