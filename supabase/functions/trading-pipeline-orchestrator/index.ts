@@ -208,6 +208,8 @@ Deno.serve(async (req) => {
       call("tradingview-signals", 70000),
       call("council-sync", 55000),
       call("strategy-auto-switch", 35000),
+      // CMC macro is optional telemetry: this stage is deliberately non-critical.
+      call("cmc-macro-sync", 12000),
     ]);
     results.push(...phase1);
     await updateRunProgress("phase_1_ingestion_complete");
