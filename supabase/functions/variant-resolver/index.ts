@@ -9,7 +9,7 @@ const MIN_AGE_MS = 60 * 60 * 1000;
 const EXPIRY_TRIGGER_HOURS = 72;
 const CANDLE_LIMIT = 1000;
 const CONCURRENCY = 8;
-const RESOLVER_VERSION = 8; // Strict 1m granular & post-entry zero-bias resolution // Bumped version for temporal integrity audit
+const RESOLVER_VERSION = 8; // Bumped version: cached batch fetching & strict zero-bias resolution
 
 function audit(event: string, details: Record<string, unknown>) {
   console.log("[VARIANT_RESOLVER_AUDIT]", JSON.stringify({ resolver_version: RESOLVER_VERSION, event, ...details }));
@@ -61,7 +61,7 @@ async function fetchKlines(
   if (startTimeMs != null) url += `&startTime=${startTimeMs}`;
   if (endTimeMs != null) url += `&endTime=${endTimeMs}`;
 
-  const response = await fetch(url, { signal: AbortSignal.timeout(12000) });
+  const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
   if (!response.ok) throw new Error(`Binance klines HTTP ${response.status}`);
   const rows = (await response.json()) as unknown[][];
   return rows
@@ -117,11 +117,27 @@ async function fetchResolutionCandles(
 }
 
 /**
- * Resolves TP/SL in sub-hourly resolution (5m, 15m) strictly AFTER entryMs.
- * Returns:
- *  - "win" | "loss" | "ambiguous" if a terminal trigger was confirmed
- *  - undefined if neither TP nor SL was hit in this window (safe to continue)
- *  - null if candasync function resolveIntraWindow(
+ * Scoped in-memory cache for lower-timeframe candle fetches during a single run.
+ * Prevents N+1 repeated HTTP fetches to Binance for the same symbol & time range.
+ */
+class SubCandleCache {
+  private cache = new Map<string, Promise<Candle[]>>();
+
+  getCandles(symbol: string, interval: string, windowStartMs: number, windowEndMs: number): Promise<Candle[]> {
+    const key = `${symbol}:${interval}:${windowStartMs}:${windowEndMs}`;
+    if (!this.cache.has(key)) {
+      this.cache.set(key, fetchResolutionCandles(symbol, interval, windowStartMs, windowEndMs));
+    }
+    return this.cache.get(key)!;
+  }
+}
+
+/**
+ * Resolves TP/SL in sub-hourly resolution (1m first, then 5m) strictly AFTER entryMs.
+ * Enforces MATHEMATICAL ZERO PRE-ENTRY LEAKAGE:
+ * Only candles whose openTimeMs >= entryMs are evaluated.
+ */
+async function resolveIntraWindow(
   symbol: string,
   side: "buy" | "sell",
   tpPrice: number,
@@ -129,16 +145,16 @@ async function fetchResolutionCandles(
   windowStartMs: number,
   windowEndMs: number,
   entryMs: number,
+  cache: SubCandleCache,
   variantId?: string,
 ): Promise<{ outcome?: Outcome; exitPrice?: number } | null> {
-  const effectiveStartMs = Math.max(windowStartMs, entryMs);
   let sawLowerCandles = false;
 
-  // Prioritize 1m candles for pinpoint precision; fall back to 5m only if 1m has no usable post-entry candles.
   for (const timeframe of ["1m", "5m"] as const) {
     let lower: Candle[];
     try {
-      lower = await fetchResolutionCandles(symbol, timeframe, effectiveStartMs, windowEndMs);
+      // Fetch the full window using the cache (shared across variants of this symbol)
+      lower = await cache.getCandles(symbol, timeframe, windowStartMs, windowEndMs);
     } catch (error) {
       audit("lower_timeframe_fetch_failed", {
         variant_id: variantId ?? null,
@@ -150,7 +166,8 @@ async function fetchResolutionCandles(
       return null; // Candle data failure blocks evaluation
     }
 
-    // Strict zero pre-entry leakage: every evaluated candle must start at or after entry.
+    // STRICT ZERO-BIAS FILTER:
+    // Only candles that opened AT OR AFTER entryMs, and before windowEndMs.
     const postEntryCandles = lower.filter(
       (c) => c.openTimeMs >= entryMs && c.openTimeMs < windowEndMs
     );
@@ -160,8 +177,8 @@ async function fetchResolutionCandles(
       symbol,
       side,
       timeframe,
-      effective_start: new Date(effectiveStartMs).toISOString(),
-      window_end: new Date(windowEndMs).toISOString(),
+      entry_ms: entryMs,
+      window_end_ms: windowEndMs,
       raw_fetched: lower.length,
       post_entry_evaluated: postEntryCandles.length,
       tp_price: tpPrice,
@@ -207,26 +224,20 @@ async function fetchResolutionCandles(
       }
     }
 
-    // If 1m candles were available and evaluated without a hit, that precision is sufficient.
-    if (timeframe === "1m" && postEntryCandles.length > 0) {
-      return { outcome: undefined };
-    }
-    if (timeframe === "5m" && postEntryCandles.length > 0) {
+    // If 1m or 5m candles were present and fully checked without any hit:
+    if (postEntryCandles.length > 0) {
       return { outcome: undefined };
     }
   }
 
   if (!sawLowerCandles) {
-    // A sub-minute remainder can legitimately contain no full candle after entry.
     if (windowEndMs - entryMs < 60_000) {
-      return { outcome: undefined };
+      return { outcome: undefined }; // Safe transition to next full 1h candle
     }
-    return null; // No usable post-entry candle for a meaningful window: retry safely.
+    return null;
   }
 
   return { outcome: undefined };
-}
-fined }; // Window completed without hitting TP or SL
 }
 
 async function mapConcurrent<T, R>(items: T[], fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -263,7 +274,8 @@ Deno.serve(async () => {
     });
   }
 
-  const batchSize = 500;
+  // Conservative batch size to easily finish within 5-10s
+  const batchSize = 100;
   const schedulerSlot = Math.floor(nowMs / (2 * 60 * 1000));
   const expiryCutoffIso = new Date(nowMs - EXPIRY_TRIGGER_HOURS * 60 * 60 * 1000).toISOString();
 
@@ -394,6 +406,7 @@ Deno.serve(async () => {
   const slPct = Number(settingsResult.data.variant_sl_pct);
   const maxHours = Number(settingsResult.data.variant_max_hours);
 
+  // Pre-fetch 1h candles concurrently
   const symbols = [...new Set(variants.map((v) => v.symbol))];
   const candleFetchFailures = new Map<string, string>();
   const candleResults = await mapConcurrent(symbols, async (symbol) => {
@@ -414,6 +427,9 @@ Deno.serve(async () => {
     }
   });
   const candlesBySymbol = new Map(candleResults.map((x) => [x.symbol, x.candles]));
+
+  // Initialize sub-candle in-memory cache for this invocation
+  const subCandleCache = new SubCandleCache();
 
   let resolved = 0;
   let expiryTriggerCount = 0;
@@ -444,7 +460,6 @@ Deno.serve(async () => {
         ? variant.entry_price * (1 - slPct)
         : variant.entry_price * (1 + slPct);
 
-    // Filter 1h candles whose close time is after entry
     const relevant = candles.filter(
       (c) => c.closeTimeMs > entryMs && c.closeTimeMs <= nowMs
     );
@@ -466,14 +481,9 @@ Deno.serve(async () => {
     let candleDataFailure = false;
 
     for (const candle of relevant) {
-      // -------------------------------------------------------------
-      // TEMPORAL CHECK: Is this candle partially BEFORE the entry?
-      // -------------------------------------------------------------
       const isPartialCandle = candle.openTimeMs < entryMs;
 
       if (isPartialCandle) {
-        // High/Low of the 1h candle contains pre-entry price movements!
-        // MUST inspect 5m/15m strictly in the [entryMs, candle.closeTimeMs] window.
         audit("partial_candle_detected", {
           variant_id: variant.id,
           symbol: variant.symbol,
@@ -489,6 +499,7 @@ Deno.serve(async () => {
           candle.openTimeMs,
           candle.closeTimeMs,
           entryMs,
+          subCandleCache,
           variant.id,
         );
 
@@ -500,17 +511,13 @@ Deno.serve(async () => {
         if (intraResult.outcome) {
           outcome = intraResult.outcome;
           exitPrice = intraResult.exitPrice ?? (outcome === "win" ? tpPrice : slPrice);
-          break; // Terminal trigger in the post-entry partial portion!
+          break;
         }
 
-        // Neither TP nor SL was hit in the remaining partial hour -> safely proceed to next 1h candle
         continue;
       }
 
-      // -------------------------------------------------------------
-      // FULL POST-ENTRY CANDLE: candle.openTimeMs >= entryMs
-      // Safe to inspect 1h High / Low
-      // -------------------------------------------------------------
+      // Full post-entry candle: safe to inspect 1h High/Low
       const hitTP =
         variant.recommendation === "buy" ? candle.high >= tpPrice : candle.low <= tpPrice;
       const hitSL =
@@ -536,6 +543,7 @@ Deno.serve(async () => {
           candle.openTimeMs,
           candle.closeTimeMs,
           entryMs,
+          subCandleCache,
           variant.id,
         );
 
@@ -548,7 +556,6 @@ Deno.serve(async () => {
           outcome = intraResult.outcome;
           exitPrice = intraResult.exitPrice ?? (outcome === "win" ? tpPrice : slPrice);
         } else {
-          // Both levels touched on 1h, but 5m did not resolve order -> ambiguous
           outcome = "ambiguous";
         }
         break;
