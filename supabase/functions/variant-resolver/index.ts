@@ -9,7 +9,7 @@ const MIN_AGE_MS = 60 * 60 * 1000;
 const EXPIRY_TRIGGER_HOURS = 72;
 const CANDLE_LIMIT = 1000;
 const CONCURRENCY = 8;
-const RESOLVER_VERSION = 7; // Bumped version for temporal integrity audit
+const RESOLVER_VERSION = 8; // Strict 1m granular & post-entry zero-bias resolution // Bumped version for temporal integrity audit
 
 function audit(event: string, details: Record<string, unknown>) {
   console.log("[VARIANT_RESOLVER_AUDIT]", JSON.stringify({ resolver_version: RESOLVER_VERSION, event, ...details }));
@@ -121,9 +121,7 @@ async function fetchResolutionCandles(
  * Returns:
  *  - "win" | "loss" | "ambiguous" if a terminal trigger was confirmed
  *  - undefined if neither TP nor SL was hit in this window (safe to continue)
- *  - null if candle data failed (blocks premature resolution/expiry)
- */
-async function resolveIntraWindow(
+ *  - null if candasync function resolveIntraWindow(
   symbol: string,
   side: "buy" | "sell",
   tpPrice: number,
@@ -133,11 +131,11 @@ async function resolveIntraWindow(
   entryMs: number,
   variantId?: string,
 ): Promise<{ outcome?: Outcome; exitPrice?: number } | null> {
-  // STRICT TEMPORAL BOUND: We never inspect candles that completed before or at entry
   const effectiveStartMs = Math.max(windowStartMs, entryMs);
   let sawLowerCandles = false;
 
-  for (const timeframe of ["5m", "15m"] as const) {
+  // Prioritize 1m candles for pinpoint precision; fall back to 5m only if 1m has no usable post-entry candles.
+  for (const timeframe of ["1m", "5m"] as const) {
     let lower: Candle[];
     try {
       lower = await fetchResolutionCandles(symbol, timeframe, effectiveStartMs, windowEndMs);
@@ -149,12 +147,12 @@ async function resolveIntraWindow(
         timeframe,
         error: error instanceof Error ? error.message : String(error),
       });
-      return null; // Candle data failure
+      return null; // Candle data failure blocks evaluation
     }
 
-    // Filter strictly to candles that ended after entryMs and started before windowEndMs
+    // Strict zero pre-entry leakage: every evaluated candle must start at or after entry.
     const postEntryCandles = lower.filter(
-      (c) => c.closeTimeMs > entryMs && c.openTimeMs < windowEndMs
+      (c) => c.openTimeMs >= entryMs && c.openTimeMs < windowEndMs
     );
 
     audit("lower_timeframe_scan", {
@@ -164,7 +162,8 @@ async function resolveIntraWindow(
       timeframe,
       effective_start: new Date(effectiveStartMs).toISOString(),
       window_end: new Date(windowEndMs).toISOString(),
-      candle_count: postEntryCandles.length,
+      raw_fetched: lower.length,
+      post_entry_evaluated: postEntryCandles.length,
       tp_price: tpPrice,
       sl_price: slPrice,
     });
@@ -208,14 +207,26 @@ async function resolveIntraWindow(
       }
     }
 
-    // If 5m candles were present and fully checked without triggers, do not re-scan 15m
+    // If 1m candles were available and evaluated without a hit, that precision is sufficient.
+    if (timeframe === "1m" && postEntryCandles.length > 0) {
+      return { outcome: undefined };
+    }
     if (timeframe === "5m" && postEntryCandles.length > 0) {
       return { outcome: undefined };
     }
   }
 
-  if (!sawLowerCandles) return null; // No candles fetched -> retry later
-  return { outcome: undefined }; // Window completed without hitting TP or SL
+  if (!sawLowerCandles) {
+    // A sub-minute remainder can legitimately contain no full candle after entry.
+    if (windowEndMs - entryMs < 60_000) {
+      return { outcome: undefined };
+    }
+    return null; // No usable post-entry candle for a meaningful window: retry safely.
+  }
+
+  return { outcome: undefined };
+}
+fined }; // Window completed without hitting TP or SL
 }
 
 async function mapConcurrent<T, R>(items: T[], fn: (item: T) => Promise<R>): Promise<R[]> {
