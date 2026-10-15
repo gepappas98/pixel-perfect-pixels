@@ -199,16 +199,6 @@ export default function AIReport() {
     soundEnabledRef.current = soundEnabled;
   }, [soundEnabled]);
 
-  // Keep sounding while a newly opened paper position is awaiting acknowledgement.
-  // The alarm stops when the banner is dismissed or sound is switched off.
-  useEffect(() => {
-    if (!soundEnabled || newOpenPositions.length === 0) return;
-    const playAlarm = () => playBuyAlert();
-    playAlarm();
-    const intervalId = window.setInterval(playAlarm, 1_200);
-    return () => window.clearInterval(intervalId);
-  }, [soundEnabled, newOpenPositions.length, playBuyAlert]);
-
   /* ============================================================
    * SOUND PLAYBACK — Web Audio API beep
    * Two-tone chime: 880 Hz then 1320 Hz.
@@ -255,6 +245,16 @@ export default function AIReport() {
       console.warn("[AIReport] sound playback failed:", e);
     }
   }, []);
+
+  // Keep sounding while a newly opened paper position is awaiting acknowledgement.
+  // The alarm stops when the banner is dismissed or sound is switched off.
+  useEffect(() => {
+    if (!soundEnabled || newOpenPositions.length === 0) return;
+    const playAlarm = () => playBuyAlert();
+    playAlarm();
+    const intervalId = window.setInterval(playAlarm, 1_200);
+    return () => window.clearInterval(intervalId);
+  }, [soundEnabled, newOpenPositions.length, playBuyAlert]);
 
   const playResearchAlert = useCallback(() => {
     try {
