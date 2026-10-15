@@ -8,12 +8,14 @@ type EndpointResult = { ok: boolean; status: number | null; data?: any; error?: 
 
 async function fetchEndpoint(path: string): Promise<EndpointResult> {
   const started = Date.now();
+  let httpStatus: number | null = null;
   try {
     const response = await fetch(BASE + path, {
       method: "GET",
       headers: { Accept: "application/json" },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
+    httpStatus = response.status;
     const text = await response.text();
     let payload: any;
     try { payload = text ? JSON.parse(text) : null; }
@@ -28,7 +30,7 @@ async function fetchEndpoint(path: string): Promise<EndpointResult> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn("[CMC_KEYLESS] endpoint failed", path, message);
-    return { ok: false, status: null, error: message, duration_ms: Date.now() - started };
+    return { ok: false, status: httpStatus, error: message, duration_ms: Date.now() - started };
   }
 }
 
