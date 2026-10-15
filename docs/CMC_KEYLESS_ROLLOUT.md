@@ -40,6 +40,8 @@ Endpoint: `/v3/cryptocurrency/listings/latest?start={1,201,401,601,801}&limit=20
 - Historical listings snapshots are append-only; there is no automatic pruning or deletion.
 - During a dynamic watchlist refresh, CMC candidates with at least $5M 24h volume (or $3M for already-selected symbols) can join Hyperliquid candidates, provided Binance exchange metadata explicitly confirms a USDT Spot-tradable base asset.
 - CMC candidates are not accepted on a failed/empty Binance metadata response; CMC rank or volume never substitutes for venue tradability.
+- The orchestrator awaits the optional listings sync before starting `whale-watch`, so a newly completed CMC batch is available to the same cycle's watchlist resolution. The call has a 50-second ceiling to cover up to five 8-second page requests; fail-open errors do not block the existing pipeline.
+- `dynamic_watchlist_snapshots.cmc_snapshot_at` records the CMC batch consumed. A new batch (or first rollout with a historical batch) bypasses the cache once, then the existing 6-hour stability cache resumes.
 - The active watchlist remains capped at 150 dynamic/core symbols plus existing open positions and pinned entries. CMC does not create BUY signals or change execution rules.
 - Storage growth must be monitored before considering any explicit retention policy.
 
@@ -61,7 +63,7 @@ Both new functions have explicit `verify_jwt = true` in `supabase/config.toml`. 
 4. Confirm each endpoint's JSON shape and `status.error_code` handling in logs.
 5. Confirm macro rows have plausible value ranges and per-source statuses.
 6. Confirm V3 listings `quote` parsing handles the documented USD quote array (and the keyed-object fallback); verify price, volume, market cap and 24h change are populated rather than silently null.
-7. Confirm listings snapshot has 50–200 rows and the top 5 shown in UI are from the same captured batch.
+7. Confirm listings snapshot has 50–1,000 rows (depending on provider paging/availability) and the top 5 shown in UI are from the same captured batch.
 8. Simulate/observe HTTP 429, timeout, and one-endpoint partial failure; ensure the orchestrator still completes the existing critical stages.
 9. Confirm no new CMC-derived values enter composite scoring, strategy auto-switch or trade-executor.
 10. Confirm RLS: anon/authenticated SELECT works; writes are denied; service role can write.
