@@ -78,6 +78,32 @@ type ResearchAlert = {
  * 15 minutes = 0.25 hours.
  */
 const EXECUTION_WINDOW_HOURS = 0.25;
+
+type NotifyStatus = "default" | "granted" | "denied" | "unsupported" | "insecure";
+
+function readNotifyStatus(): NotifyStatus {
+  if (typeof window === "undefined") return "unsupported";
+  if (!window.isSecureContext) return "insecure";
+  if (!("Notification" in window)) return "unsupported";
+  return Notification.permission as NotifyStatus;
+}
+
+function sendPositionNotification(position: { id: string; symbol: string }) {
+  try {
+    if (readNotifyStatus() !== "granted") return;
+    const n = new Notification("Research Lab · New position opened", {
+      body: `${position.symbol} paper BUY position opened`,
+      tag: `position-${position.id}`,
+    });
+    n.onclick = () => {
+      window.focus();
+      n.close();
+    };
+  } catch {
+    // Some mobile browsers (e.g. Android Chrome) only allow notifications via a
+    // service worker; failure is ignored — the in-page alarm still fires.
+  }
+}
 const EXECUTION_CONFIDENCE_THRESHOLD = 0.6;
 
 /* ============================================================
@@ -194,10 +220,34 @@ export default function AIReport() {
   const seenResearchAlertIdsRef = useRef<Set<string>>(loadSeenResearchAlertIds());
   const primedRef = useRef<boolean>(false);
   const soundEnabledRef = useRef<boolean>(soundEnabled);
+  const [notifyStatus, setNotifyStatus] = useState<NotifyStatus>("unsupported");
+  const notifyStatusRef = useRef<NotifyStatus>("unsupported");
 
   useEffect(() => {
     soundEnabledRef.current = soundEnabled;
   }, [soundEnabled]);
+
+  useEffect(() => {
+    setNotifyStatus(readNotifyStatus());
+  }, []);
+
+  useEffect(() => {
+    notifyStatusRef.current = notifyStatus;
+  }, [notifyStatus]);
+
+  const handleEnableNotifications = useCallback(async () => {
+    const current = readNotifyStatus();
+    if (current !== "default") {
+      setNotifyStatus(current);
+      return;
+    }
+    try {
+      const result = await Notification.requestPermission();
+      setNotifyStatus(result === "granted" ? "granted" : result === "denied" ? "denied" : "default");
+    } catch {
+      setNotifyStatus("unsupported");
+    }
+  }, []);
 
   /* ============================================================
    * SOUND PLAYBACK — Web Audio API beep
@@ -419,6 +469,10 @@ export default function AIReport() {
             symbol: String(trade.symbol ?? "UNKNOWN"),
             created_at: String(trade.created_at ?? ""),
           }));
+          // One OS notification per newly detected ID (seen-set dedupes polls).
+          if (notifyStatusRef.current === "granted") {
+            for (const position of alerts) sendPositionNotification(position);
+          }
           setNewOpenPositions((previous) => {
             const merged = new Map<string, NewOpenPositionAlert>();
             for (const position of previous) merged.set(position.id, position);
@@ -1217,6 +1271,34 @@ Interpretation rules:
           </div>
         </div>
       )}
+
+      {/* ───────── Mobile / OS notification control ───────── */}
+      <div className="flex flex-wrap items-center gap-2 rounded border border-border bg-muted/30 p-2 text-xs">
+        {notifyStatus === "default" && (
+          <button
+            type="button"
+            onClick={handleEnableNotifications}
+            className="rounded border border-border bg-background px-3 py-1 font-medium hover:bg-muted"
+          >
+            Enable mobile notifications
+          </button>
+        )}
+        <span className="font-mono">
+          Notifications:{" "}
+          {notifyStatus === "granted"
+            ? "ENABLED"
+            : notifyStatus === "denied"
+              ? "DENIED — allow them in your browser settings"
+              : notifyStatus === "insecure"
+                ? "UNAVAILABLE — page must be opened over HTTPS"
+                : notifyStatus === "unsupported"
+                  ? "UNSUPPORTED on this browser (on iPhone, add the site to Home Screen first)"
+                  : "OFF"}
+        </span>
+        <span className="text-muted-foreground">
+          Works only while this page is open or in the background; not delivered when the browser/tab is fully closed.
+        </span>
+      </div>
 
       {/* ───────── New position-open alarm banner ───────── */}
       {newOpenPositions.length > 0 && (
