@@ -93,9 +93,19 @@ async function call(name: string, timeout: number) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    // Keep trade-executor JWT verification enabled; authenticate this internal
+    // service-to-service call with the server-side service-role token.
+    if (name === "trade-executor") {
+      const internalToken = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+      if (!internalToken) {
+        throw new Error("Missing server-side service token for trade-executor call");
+      }
+      headers.Authorization = "Bearer " + internalToken;
+    }
     const response = await fetch(URL + "/functions/v1/" + name, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: "{}",
       signal: controller.signal,
     });
