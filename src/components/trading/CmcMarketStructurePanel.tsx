@@ -75,7 +75,7 @@ export function CmcMarketStructurePanel() {
     queryFn: async () => {
       const { data, error } = await (supabase.from as any)("market_sentiment_snapshots")
         .select("observed_at,value,classification,source")
-        .eq("source", "alternative.me")
+        .eq("source", "alternative.me-fear-greed")
         .order("observed_at", { ascending: false }).limit(1).maybeSingle();
       if (error) throw error;
       return data as { observed_at: string; value: number; classification: string; source: string } | null;
