@@ -3,6 +3,7 @@ import { binancePair, decideExit, getBreakevenStopLossUpdate, normalizeExitSetti
 import { aggregateWhaleShocks, DEFAULT_WHALE_SHOCK_CONFIG, evaluate1hTechnicalConfirmation, evaluateRegimeShockTransition } from "./_shared/whale-shock.ts";
 import { evaluateMicroTimeframeGate, type MicroTimeframeState } from "./_shared/micro-trend-gate.ts";
 import { computeMarketRegimeAssessment, evaluateSidewaysEntryGate, type MarketRegimeAssessment } from "./_shared/market-regime-gate.ts";
+import { computeDivergenceAssessment, evaluateBtcTrend, type BtcTrendMetrics } from "./_shared/regime-divergence.ts";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -175,6 +176,100 @@ async function assessCurrentMarketRegime(
     }),
     reason: "",
   };
+}
+
+/**
+ * Shadow-only BTC/Whale divergence telemetry.
+ * Fetches a compact 1h BTC kline window in the background; it never gates execution.
+ */
+async function fetchBtcTrendForShadow(): Promise<{ metrics: BtcTrendMetrics; source: string } | null> {
+  const hosts = ["https://api.binance.com", "https://data-api.binance.vision"];
+  for (const host of hosts) {
+    try {
+      const response = await fetch(
+        `${host}/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=30`,
+        { signal: AbortSignal.timeout(7000) },
+      );
+      if (!response.ok) continue;
+      const rows = await response.json() as unknown[][];
+      const closes = rows.map((row) => Number(row[4]));
+      if (closes.length < 25 || closes.some((value) => !Number.isFinite(value) || value <= 0)) continue;
+
+      const currentPrice = closes.at(-1)!;
+      const price4hAgo = closes.at(-5)!;
+      const price24hAgo = closes.at(-25)!;
+      // Use the 24 hourly closes preceding the current, potentially incomplete candle.
+      const smaCloses = closes.slice(-25, -1);
+      if (smaCloses.length !== 24) continue;
+      const sma24h = smaCloses.reduce((sum, value) => sum + value, 0) / smaCloses.length;
+      if (!Number.isFinite(sma24h) || sma24h <= 0) continue;
+
+      return {
+        metrics: evaluateBtcTrend(currentPrice, price4hAgo, price24hAgo, sma24h),
+        source: host.includes("data-api.binance.vision") ? "binance-vision" : "binance",
+      };
+    } catch (error) {
+      console.warn("[SHADOW_TELEMETRY] BTC kline source failed", {
+        host,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return null;
+}
+
+async function recordRegimeShadowTelemetry(
+  supabase: ReturnType<typeof getServiceClient>,
+  assessment: MarketRegimeAssessment,
+): Promise<void> {
+  try {
+    const btcResult = await fetchBtcTrendForShadow();
+    const divergence = computeDivergenceAssessment(
+      btcResult?.metrics ?? null,
+      assessment.whaleNet,
+      assessment.techBreadth,
+      assessment.councilConsensus,
+    );
+    const metrics = btcResult?.metrics ?? null;
+    const { error } = await supabase.from("market_regime_telemetry").insert({
+      data_status: metrics ? "ok" : "btc_unavailable",
+      btc_source: btcResult?.source ?? null,
+      btc_price: metrics?.currentPrice ?? null,
+      btc_sma_24h: metrics?.sma24h ?? null,
+      btc_return_4h_pct: metrics?.return4hPct ?? null,
+      btc_return_24h_pct: metrics?.return24hPct ?? null,
+      btc_below_sma_24h: metrics?.isBelowSma24h ?? null,
+      btc_is_downtrend: metrics?.isDowntrend ?? null,
+      whale_net: divergence.whaleNet,
+      shadow_whale_net: divergence.shadowWhaleNet,
+      tech_breadth: divergence.techBreadth,
+      council_consensus: divergence.councilConsensus,
+      baseline_score: divergence.baselineScore,
+      baseline_regime: divergence.baselineRegime,
+      shadow_score: divergence.shadowScore,
+      shadow_regime: divergence.shadowRegime,
+      is_divergent: divergence.isDivergent,
+      divergence_type: divergence.divergenceType,
+      entry_blocked_by_rule: divergence.entryBlockedByRule,
+      explanation: divergence.explanation,
+    });
+    if (error) {
+      console.error("[SHADOW_TELEMETRY] insert failed", error.message);
+      return;
+    }
+    console.log("[SHADOW_TELEMETRY] recorded", JSON.stringify({
+      data_status: metrics ? "ok" : "btc_unavailable",
+      divergent: divergence.isDivergent,
+      baseline_score: divergence.baselineScore,
+      shadow_score: divergence.shadowScore,
+      baseline_regime: divergence.baselineRegime,
+      shadow_regime: divergence.shadowRegime,
+      counterfactual_entry_block: divergence.entryBlockedByRule,
+    }));
+  } catch (error) {
+    // Shadow telemetry must never affect the active execution path.
+    console.error("[SHADOW_TELEMETRY] unexpected failure", error instanceof Error ? error.message : String(error));
+  }
 }
 
 async function getCachedMicroAssessment(
@@ -806,6 +901,13 @@ Deno.serve(async (req) => {
       reason: liveMarketRegime.reason,
       assessment: liveMarketRegime.assessment,
     }));
+
+    // Independent shadow task. The baseline assessment and all entry gates remain unchanged.
+    if (liveMarketRegime.ready && liveMarketRegime.assessment) {
+      EdgeRuntime.waitUntil(recordRegimeShadowTelemetry(supabase, liveMarketRegime.assessment));
+    } else {
+      console.warn("[SHADOW_TELEMETRY] skipped: baseline market regime unavailable", liveMarketRegime.reason);
+    }
 
     const whaleShockStage = await executeWhaleShockTradesStage(supabase, liveMarketRegime);
 
