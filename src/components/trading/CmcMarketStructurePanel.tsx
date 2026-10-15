@@ -70,6 +70,21 @@ export function CmcMarketStructurePanel() {
     retry: 1,
   });
 
+  const alternativeFg = useQuery({
+    queryKey: ["alternative-me-fg-latest"],
+    queryFn: async () => {
+      const { data, error } = await (supabase.from as any)("market_sentiment_snapshots")
+        .select("observed_at,value,classification,source")
+        .eq("source", "alternative.me")
+        .order("observed_at", { ascending: false }).limit(1).maybeSingle();
+      if (error) throw error;
+      return data as { observed_at: string; value: number; classification: string; source: string } | null;
+    },
+    staleTime: 60_000,
+    refetchInterval: 5 * 60_000,
+    retry: 1,
+  });
+
   const listings = useQuery({
     queryKey: ["cmc-listings-latest"],
     queryFn: async () => {
@@ -133,6 +148,19 @@ export function CmcMarketStructurePanel() {
               <p className="text-[10px] uppercase tracking-wider text-muted-foreground">CMC Fear & Greed</p>
               <p className="mt-1 font-mono text-sm">{row.fg_value == null ? "—" : `${row.fg_value}/100`}</p>
               <p className="mt-1 text-[10px] text-muted-foreground">{row.fg_classification ?? "No classification"}</p>
+              <p className="mt-2 border-t border-border/50 pt-2 text-[10px] text-muted-foreground">
+                Alternative.me: {alternativeFg.data?.value == null ? "—" : `${alternativeFg.data.value}/100`}
+                {alternativeFg.data?.classification ? ` · ${alternativeFg.data.classification}` : ""}
+              </p>
+              {row.fg_value != null && alternativeFg.data?.value != null && (
+                <p className={`mt-1 text-[10px] font-medium ${Math.abs(row.fg_value - alternativeFg.data.value) >= 20 ? "text-amber-500" : "text-muted-foreground"}`}>
+                  Δ {Math.abs(row.fg_value - alternativeFg.data.value)} pts
+                  {Math.abs(row.fg_value - alternativeFg.data.value) >= 20 ? " · divergence" : " · comparison"}
+                </p>
+              )}
+              <p className="mt-1 text-[9px] text-muted-foreground">
+                Alt.me captured: {alternativeFg.data?.observed_at ? freshness(alternativeFg.data.observed_at) : "not available"}
+              </p>
             </div>
             <div className="rounded-md border border-border/70 p-3">
               <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Altcoin season</p>
