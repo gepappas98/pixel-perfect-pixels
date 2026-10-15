@@ -101,6 +101,32 @@ async function fetchBinanceUSDTBases(): Promise<Set<string>> {
   }
 }
 
+async function fetchRevolutXActiveBases(): Promise<Set<string>> {
+  try {
+    // Public EEA pair configuration; no API key or user account is required.
+    const res = await fetch("https://revx.revolut.com/api/1.0/public/configuration/pairs?region=EEA", {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) throw new Error(`RevolutX public pair configuration error: ${res.status}`);
+    const payload = await res.json();
+    const pairMap = payload?.data && typeof payload.data === "object" ? payload.data : payload;
+    if (!pairMap || typeof pairMap !== "object" || Array.isArray(pairMap)) {
+      throw new Error("unexpected RevolutX pair configuration shape");
+    }
+    const bases = new Set<string>();
+    for (const [pairName, pair] of Object.entries(pairMap as Record<string, any>)) {
+      const base = String(pair?.base ?? String(pairName).split("/")[0] ?? "").trim().toUpperCase();
+      if (base && String(pair?.status ?? "").toLowerCase() === "active") bases.add(base);
+    }
+    if (!bases.size) throw new Error("empty active RevolutX pair configuration");
+    return bases;
+  } catch (e) {
+    console.warn("[WATCHLIST] RevolutX public pair configuration unavailable; CMC-only candidates fail closed", e);
+    return new Set();
+  }
+}
+
 async function fetchRecentTrades(coin: string): Promise<HyperliquidTrade[]> {
   const res = await fetch("https://api.hyperliquid.xyz/info", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -258,7 +284,10 @@ async function resolveWatchlist(supabase: ReturnType<typeof getServiceClient>) {
     volume = new Map<string, number>();
   }
 
-  const binance = await fetchBinanceUSDTBases();
+  const [binance, revolutxBases] = await Promise.all([
+    fetchBinanceUSDTBases(),
+    fetchRevolutXActiveBases(),
+  ]);
   const previousSymbols = new Set(previous?.symbols ?? []);
   const hlEligible = [...volume.entries()].filter(([symbol, v]) => {
     const threshold = previousSymbols.has(symbol) ? REMOVE_THRESHOLD_USD : ADD_THRESHOLD_USD;
@@ -268,10 +297,10 @@ async function resolveWatchlist(supabase: ReturnType<typeof getServiceClient>) {
   // CMC is a third dynamic discovery source, not a static coin list.
   // Only use a stored CMC batch and require an explicit Binance USDT Spot listing.
   // If Binance metadata is unavailable, do not infer tradability from CMC alone.
-  const cmcEligible = binance.size > 0
+  const cmcEligible = binance.size > 0 && revolutxBases.size > 0
     ? [...cmcSnapshot.candidates.entries()].filter(([symbol, v]) => {
         const threshold = previousSymbols.has(symbol) ? REMOVE_THRESHOLD_USD : ADD_THRESHOLD_USD;
-        return v >= threshold && binance.has(symbol);
+        return v >= threshold && binance.has(symbol) && revolutxBases.has(symbol);
       })
     : [];
   const merged = new Map<string, number>();
@@ -298,7 +327,7 @@ async function resolveWatchlist(supabase: ReturnType<typeof getServiceClient>) {
   });
   if (insertError) console.error("[WATCHLIST] snapshot insert failed:", insertError);
 
-  console.log(`[WATCHLIST] merged candidates hl=${volume.size} hl_eligible=${hlEligible.length} cmc_snapshot=${cmcSnapshot.candidates.size} cmc_eligible=${cmcEligible.length} merged=${eligible.length} binance_bases=${binance.size}`);
+  console.log(`[WATCHLIST] merged candidates hl=${volume.size} hl_eligible=${hlEligible.length} cmc_snapshot=${cmcSnapshot.candidates.size} cmc_eligible_both_venues=${cmcEligible.length} merged=${eligible.length} binance_bases=${binance.size} revolutx_bases=${revolutxBases.size}`);
   return { symbols, source: "refreshed", hlCandidates: volume.size, hlAboveThreshold: hlEligible.length, binanceFiltered: eligible.length, cmcCandidates: cmcSnapshot.candidates.size, cmcEligible: cmcEligible.length, pinned: [...pinned], dynamic };
 }
 
