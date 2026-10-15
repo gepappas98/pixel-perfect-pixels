@@ -7,6 +7,7 @@
 - CMC data is context and discovery telemetry only. It must never create a BUY by itself.
 - Existing Hyperliquid whale flow, Binance/Bybit candles, Council, composite thresholds, auto-switch, trade-executor and live-order settings are unchanged.
 - No historical trades, signals, pipeline runs, or existing research rows are deleted or reset.
+- CMC macro and listing snapshots are append-only research history; no automatic deletion/pruning is performed. Any future retention policy must be explicitly reviewed against research-cohort needs and storage monitoring before adoption.
 - CMC sync functions must require JWT verification and be called internally by the orchestrator using its server-side service token.
 - Every CMC stage is optional. Errors must be logged and returned as HTTP 200 diagnostics to preserve fail-open orchestration.
 
@@ -34,8 +35,9 @@ Endpoint: `/v3/cryptocurrency/listings/latest?start=1&limit=200&convert=USD`
 - Successful snapshots are throttled to one every 6 hours.
 - Stores bounded structured fields only; does not persist the complete raw response.
 - A snapshot must contain at least 50 valid assets or it is rejected.
-- The table retains 30 days of listings observations.
+- Historical listings snapshots are append-only; there is no automatic pruning or deletion.
 - Listings are not merged into the active watchlist yet and do not bypass the Binance Spot execution-availability checks.
+- Storage growth must be monitored before considering any explicit retention policy.
 
 Table: `public.cmc_listing_snapshots`.
 
