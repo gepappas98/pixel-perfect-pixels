@@ -13,6 +13,7 @@ create table if not exists public.cmc_macro_snapshots (
   altcoin_season_value integer check (altcoin_season_value is null or altcoin_season_value between 0 and 100),
   altcoin_season_label text,
   mcap_change_pct numeric,
+  mcap_change_window_minutes numeric,
   dominance_regime text not null default 'unknown'
     check (dominance_regime in ('btc_heavy','alt_rotation','neutral','unknown')),
   market_structure_tag text not null default 'unknown'
