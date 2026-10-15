@@ -9,9 +9,10 @@ const MIN_AGE_MS = 60 * 60 * 1000;
 const EXPIRY_TRIGGER_HOURS = 72;
 const CANDLE_LIMIT = 1000;
 const CONCURRENCY = 8;
-const RESOLVER_VERSION = 6;
+const RESOLVER_VERSION = 7; // Bumped version for temporal integrity audit
+
 function audit(event: string, details: Record<string, unknown>) {
-  console.log("[VARIANT_RESOLVER_AUDIT]", JSON.stringify({resolver_version: RESOLVER_VERSION,event,...details}));
+  console.log("[VARIANT_RESOLVER_AUDIT]", JSON.stringify({ resolver_version: RESOLVER_VERSION, event, ...details }));
 }
 
 type Candle = {
@@ -34,11 +35,9 @@ type Variant = {
 type Outcome = "win" | "loss" | "expired" | "ambiguous";
 
 function toBinanceSpotSymbol(symbol: string): string {
-  const normalized = symbol.trim().toUpperCase().replace(/[\\/_-]/g, "");
+  const normalized = symbol.trim().toUpperCase().replace(/[\/_-]/g, "");
   if (!normalized) throw new Error("empty symbol for Binance klines");
 
-  // Explicit symbol migrations for assets renamed on Binance Spot.
-  // Keep this list intentionally small and evidence-based.
   const aliases: Record<string, string> = { MATIC: "POL" };
   const quoteSuffix = /(USDT|USDC|BUSD|FDUSD|TUSD|USDP|DAI|EUR|TRY|BRL|GBP|AUD|JPY)$/;
   const match = normalized.match(quoteSuffix);
@@ -51,86 +50,172 @@ function toBinanceSpotSymbol(symbol: string): string {
   return `${base}USDT`;
 }
 
-async function fetchKlines(symbol: string, interval: string): Promise<Candle[]> {
+async function fetchKlines(
+  symbol: string,
+  interval: string,
+  startTimeMs?: number,
+  endTimeMs?: number,
+): Promise<Candle[]> {
   const pair = toBinanceSpotSymbol(symbol);
-  const url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(pair)}&interval=${interval}&limit=${CANDLE_LIMIT}`;
+  let url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(pair)}&interval=${interval}&limit=${CANDLE_LIMIT}`;
+  if (startTimeMs != null) url += `&startTime=${startTimeMs}`;
+  if (endTimeMs != null) url += `&endTime=${endTimeMs}`;
+
   const response = await fetch(url, { signal: AbortSignal.timeout(12000) });
   if (!response.ok) throw new Error(`Binance klines HTTP ${response.status}`);
-  const rows = await response.json() as unknown[][];
-  return rows.map((r) => ({
-    open: Number(r[1]),
-    high: Number(r[2]),
-    low: Number(r[3]),
-    close: Number(r[4]),
-    openTimeMs: Number(r[0]),
-    closeTimeMs: Number(r[6]),
-  })).filter((c) =>
-    Number.isFinite(c.open) && Number.isFinite(c.high) &&
-    Number.isFinite(c.low) && Number.isFinite(c.close) &&
-    Number.isFinite(c.openTimeMs) && Number.isFinite(c.closeTimeMs)
-  ).sort((a, b) => a.openTimeMs - b.openTimeMs);
+  const rows = (await response.json()) as unknown[][];
+  return rows
+    .map((r) => ({
+      open: Number(r[1]),
+      high: Number(r[2]),
+      low: Number(r[3]),
+      close: Number(r[4]),
+      openTimeMs: Number(r[0]),
+      closeTimeMs: Number(r[6]),
+    }))
+    .filter((c) =>
+      Number.isFinite(c.open) &&
+      Number.isFinite(c.high) &&
+      Number.isFinite(c.low) &&
+      Number.isFinite(c.close) &&
+      Number.isFinite(c.openTimeMs) &&
+      Number.isFinite(c.closeTimeMs)
+    )
+    .sort((a, b) => a.openTimeMs - b.openTimeMs);
 }
 
-async function fetchResolutionCandles(symbol: string, interval: string, openTimeMs?: number, closeTimeMs?: number): Promise<Candle[]> {
+async function fetchResolutionCandles(
+  symbol: string,
+  interval: string,
+  openTimeMs?: number,
+  closeTimeMs?: number,
+): Promise<Candle[]> {
   try {
-    const candles = await fetchKlines(symbol, interval);
+    const candles = await fetchKlines(symbol, interval, openTimeMs, closeTimeMs);
     return candles.filter((c) =>
       (openTimeMs == null || c.closeTimeMs > openTimeMs) &&
       (closeTimeMs == null || c.openTimeMs < closeTimeMs)
     );
   } catch (error) {
     let pair = "unresolved";
-    try { pair = toBinanceSpotSymbol(symbol); } catch { /* preserve original error */ }
-    console.warn("[VARIANT_RESOLVER_CANDLE_FETCH_FAILED]", JSON.stringify({
-      symbol, pair, interval, error: error instanceof Error ? error.message : String(error),
-    }));
+    try {
+      pair = toBinanceSpotSymbol(symbol);
+    } catch {
+      /* preserve original error */
+    }
+    console.warn(
+      "[VARIANT_RESOLVER_CANDLE_FETCH_FAILED]",
+      JSON.stringify({
+        symbol,
+        pair,
+        interval,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
     throw error;
   }
 }
 
-async function resolveAmbiguous(
+/**
+ * Resolves TP/SL in sub-hourly resolution (5m, 15m) strictly AFTER entryMs.
+ * Returns:
+ *  - "win" | "loss" | "ambiguous" if a terminal trigger was confirmed
+ *  - undefined if neither TP nor SL was hit in this window (safe to continue)
+ *  - null if candle data failed (blocks premature resolution/expiry)
+ */
+async function resolveIntraWindow(
   symbol: string,
   side: "buy" | "sell",
   tpPrice: number,
   slPrice: number,
-  parent: Candle,
+  windowStartMs: number,
+  windowEndMs: number,
+  entryMs: number,
   variantId?: string,
-): Promise<Outcome | null> {
+): Promise<{ outcome?: Outcome; exitPrice?: number } | null> {
+  // STRICT TEMPORAL BOUND: We never inspect candles that completed before or at entry
+  const effectiveStartMs = Math.max(windowStartMs, entryMs);
   let sawLowerCandles = false;
+
   for (const timeframe of ["5m", "15m"] as const) {
     let lower: Candle[];
     try {
-      lower = await fetchResolutionCandles(symbol, timeframe, parent.openTimeMs, parent.closeTimeMs);
+      lower = await fetchResolutionCandles(symbol, timeframe, effectiveStartMs, windowEndMs);
     } catch (error) {
       audit("lower_timeframe_fetch_failed", {
-        variant_id: variantId ?? null, symbol, side, timeframe,
+        variant_id: variantId ?? null,
+        symbol,
+        side,
+        timeframe,
         error: error instanceof Error ? error.message : String(error),
       });
-      // Missing lower-timeframe data is not evidence for AMBIGUOUS or expiry.
-      return null;
+      return null; // Candle data failure
     }
-    audit("lower_timeframe_scan",{variant_id:variantId??null,symbol,side,timeframe,parent_open_time:new Date(parent.openTimeMs).toISOString(),parent_close_time:new Date(parent.closeTimeMs).toISOString(),candle_count:lower.length,tp_price:tpPrice,sl_price:slPrice});
-    if (lower.length === 0) continue;
+
+    // Filter strictly to candles that ended after entryMs and started before windowEndMs
+    const postEntryCandles = lower.filter(
+      (c) => c.closeTimeMs > entryMs && c.openTimeMs < windowEndMs
+    );
+
+    audit("lower_timeframe_scan", {
+      variant_id: variantId ?? null,
+      symbol,
+      side,
+      timeframe,
+      effective_start: new Date(effectiveStartMs).toISOString(),
+      window_end: new Date(windowEndMs).toISOString(),
+      candle_count: postEntryCandles.length,
+      tp_price: tpPrice,
+      sl_price: slPrice,
+    });
+
+    if (postEntryCandles.length === 0) continue;
     sawLowerCandles = true;
 
-    for (const candle of lower) {
+    for (const candle of postEntryCandles) {
       const hitTP = side === "buy" ? candle.high >= tpPrice : candle.low <= tpPrice;
       const hitSL = side === "buy" ? candle.low <= slPrice : candle.high >= slPrice;
 
-      // Same lower-timeframe candle touched both levels: terminal AMBIGUOUS.
-      if (hitTP && hitSL) { audit("lower_timeframe_ambiguous",{variant_id:variantId??null,symbol,timeframe,candle_open_time:new Date(candle.openTimeMs).toISOString(),high:candle.high,low:candle.low,close:candle.close}); return "ambiguous"; }
-      if (hitTP) { audit("lower_timeframe_tp_first",{variant_id:variantId??null,symbol,timeframe,candle_open_time:new Date(candle.openTimeMs).toISOString()}); return "win"; }
-      if (hitSL) { audit("lower_timeframe_sl_first",{variant_id:variantId??null,symbol,timeframe,candle_open_time:new Date(candle.openTimeMs).toISOString()}); return "loss"; }
+      if (hitTP && hitSL) {
+        audit("lower_timeframe_ambiguous", {
+          variant_id: variantId ?? null,
+          symbol,
+          timeframe,
+          candle_open_time: new Date(candle.openTimeMs).toISOString(),
+          high: candle.high,
+          low: candle.low,
+          close: candle.close,
+        });
+        return { outcome: "ambiguous", exitPrice: undefined };
+      }
+      if (hitTP) {
+        audit("lower_timeframe_tp_first", {
+          variant_id: variantId ?? null,
+          symbol,
+          timeframe,
+          candle_open_time: new Date(candle.openTimeMs).toISOString(),
+        });
+        return { outcome: "win", exitPrice: tpPrice };
+      }
+      if (hitSL) {
+        audit("lower_timeframe_sl_first", {
+          variant_id: variantId ?? null,
+          symbol,
+          timeframe,
+          candle_open_time: new Date(candle.openTimeMs).toISOString(),
+        });
+        return { outcome: "loss", exitPrice: slPrice };
+      }
+    }
+
+    // If 5m candles were present and fully checked without triggers, do not re-scan 15m
+    if (timeframe === "5m" && postEntryCandles.length > 0) {
+      return { outcome: undefined };
     }
   }
 
-  // No returned lower-timeframe candles means there is no evidence to
-  // resolve this row. Keep it open and retry later; do not terminally label
-  // missing data as AMBIGUOUS.
-  if (!sawLowerCandles) return null;
-
-  // Candles were available, but neither timeframe established a first hit.
-  return "ambiguous";
+  if (!sawLowerCandles) return null; // No candles fetched -> retry later
+  return { outcome: undefined }; // Window completed without hitting TP or SL
 }
 
 async function mapConcurrent<T, R>(items: T[], fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -171,9 +256,6 @@ Deno.serve(async () => {
   const schedulerSlot = Math.floor(nowMs / (2 * 60 * 1000));
   const expiryCutoffIso = new Date(nowMs - EXPIRY_TRIGGER_HOURS * 60 * 60 * 1000).toISOString();
 
-  // Always give matured rows first access to a batch. Otherwise the rotating
-  // offset can repeatedly skip 72h+ rows when the eligible count/page count
-  // changes as other rows resolve.
   const { count: maturedCount, error: maturedCountError } = await supabase
     .from("strategy_variant_signals")
     .select("id", { count: "exact", head: true })
@@ -212,9 +294,6 @@ Deno.serve(async () => {
     });
   }
 
-  // Rotate the remaining slots through rows that have not yet reached the
-  // 72h expiry threshold. This keeps data-failure rows from monopolizing the
-  // ordinary research batch while ensuring matured rows are never skipped.
   const regularCount = Math.max(0, (eligibleCount ?? 0) - (maturedCount ?? 0));
   const regularSlots = batchSize;
   let regularRows: typeof maturedRows = [];
@@ -263,16 +342,20 @@ Deno.serve(async () => {
   });
 
   const rows = [...(maturedRows ?? []), ...(regularRows ?? [])];
-  const variants = rows.map((r) => ({
-    id: String(r.id),
-    symbol: String(r.symbol),
-    recommendation: String(r.recommendation).toLowerCase() as "buy" | "sell",
-    entry_price: Number(r.entry_price),
-    created_at: String(r.created_at),
-  })).filter((v) =>
-    Number.isFinite(v.entry_price) && v.entry_price > 0 &&
-    (v.recommendation === "buy" || v.recommendation === "sell")
-  ) as Variant[];
+  const variants = rows
+    .map((r) => ({
+      id: String(r.id),
+      symbol: String(r.symbol),
+      recommendation: String(r.recommendation).toLowerCase() as "buy" | "sell",
+      entry_price: Number(r.entry_price),
+      created_at: String(r.created_at),
+    }))
+    .filter(
+      (v) =>
+        Number.isFinite(v.entry_price) &&
+        v.entry_price > 0 &&
+        (v.recommendation === "buy" || v.recommendation === "sell"),
+    ) as Variant[];
 
   if (variants.length === 0) {
     return new Response(JSON.stringify({ ok: true, resolved: 0, skipped_historical: true }), {
@@ -287,10 +370,13 @@ Deno.serve(async () => {
     .single();
 
   if (settingsResult.error || !settingsResult.data) {
-    return new Response(JSON.stringify({
-      ok: false,
-      error: settingsResult.error?.message ?? "pipeline settings unavailable",
-    }), { status: 500, headers: { "Content-Type": "application/json" } });
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        error: settingsResult.error?.message ?? "pipeline settings unavailable",
+      }),
+      { status: 500, headers: { "Content-Type": "application/json" } },
+    );
   }
 
   const tpPct = Number(settingsResult.data.variant_tp_pct);
@@ -304,7 +390,13 @@ Deno.serve(async () => {
       return { symbol, candles: await fetchResolutionCandles(symbol, "1h") };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const pair = (() => { try { return toBinanceSpotSymbol(symbol); } catch { return "unresolved"; } })();
+      const pair = (() => {
+        try {
+          return toBinanceSpotSymbol(symbol);
+        } catch {
+          return "unresolved";
+        }
+      })();
       candleFetchFailures.set(symbol, message);
       audit("symbol_candle_fetch_failed", { symbol, pair, interval: "1h", error: message });
       return { symbol, candles: [] as Candle[] };
@@ -322,92 +414,229 @@ Deno.serve(async () => {
     if (!Number.isFinite(entryMs)) continue;
 
     const candles = candlesBySymbol.get(variant.symbol) ?? [];
-    audit("candidate_selected",{variant_id:variant.id,symbol:variant.symbol,side:variant.recommendation,created_at:variant.created_at,entry_price:variant.entry_price,age_hours:Number(((nowMs-entryMs)/3600000).toFixed(3)),candle_count_1h:candles.length});
-    const tpPrice = variant.recommendation === "buy"
-      ? variant.entry_price * (1 + tpPct)
-      : variant.entry_price * (1 - tpPct);
-    const slPrice = variant.recommendation === "buy"
-      ? variant.entry_price * (1 - slPct)
-      : variant.entry_price * (1 + slPct);
+    audit("candidate_selected", {
+      variant_id: variant.id,
+      symbol: variant.symbol,
+      side: variant.recommendation,
+      created_at: variant.created_at,
+      entry_price: variant.entry_price,
+      age_hours: Number(((nowMs - entryMs) / 3600000).toFixed(3)),
+      candle_count_1h: candles.length,
+    });
 
-    const relevant = candles.filter((c) =>
-      c.closeTimeMs > entryMs && c.closeTimeMs <= nowMs
+    const tpPrice =
+      variant.recommendation === "buy"
+        ? variant.entry_price * (1 + tpPct)
+        : variant.entry_price * (1 - tpPct);
+    const slPrice =
+      variant.recommendation === "buy"
+        ? variant.entry_price * (1 - slPct)
+        : variant.entry_price * (1 + slPct);
+
+    // Filter 1h candles whose close time is after entry
+    const relevant = candles.filter(
+      (c) => c.closeTimeMs > entryMs && c.closeTimeMs <= nowMs
     );
-    audit("1h_window",{variant_id:variant.id,symbol:variant.symbol,candle_count:relevant.length,first_candle_open_time:relevant[0]?new Date(relevant[0].openTimeMs).toISOString():null,last_candle_open_time:relevant[relevant.length-1]?new Date(relevant[relevant.length-1].openTimeMs).toISOString():null,tp_price:tpPrice,sl_price:slPrice});
+
+    audit("1h_window", {
+      variant_id: variant.id,
+      symbol: variant.symbol,
+      candle_count: relevant.length,
+      first_candle_open_time: relevant[0] ? new Date(relevant[0].openTimeMs).toISOString() : null,
+      last_candle_open_time: relevant[relevant.length - 1]
+        ? new Date(relevant[relevant.length - 1].openTimeMs).toISOString()
+        : null,
+      tp_price: tpPrice,
+      sl_price: slPrice,
+    });
 
     let outcome: Outcome | null = null;
     let exitPrice: number | null = null;
     let candleDataFailure = false;
 
     for (const candle of relevant) {
-      const hitTP = variant.recommendation === "buy" ? candle.high >= tpPrice : candle.low <= tpPrice;
-      const hitSL = variant.recommendation === "buy" ? candle.low <= slPrice : candle.high >= slPrice;
+      // -------------------------------------------------------------
+      // TEMPORAL CHECK: Is this candle partially BEFORE the entry?
+      // -------------------------------------------------------------
+      const isPartialCandle = candle.openTimeMs < entryMs;
 
-      if (hitTP && hitSL) {
-        audit("1h_same_candle_tp_sl",{variant_id:variant.id,symbol:variant.symbol,candle_open_time:new Date(candle.openTimeMs).toISOString(),high:candle.high,low:candle.low,close:candle.close,tp_price:tpPrice,sl_price:slPrice});
-        outcome = await resolveAmbiguous(
+      if (isPartialCandle) {
+        // High/Low of the 1h candle contains pre-entry price movements!
+        // MUST inspect 5m/15m strictly in the [entryMs, candle.closeTimeMs] window.
+        audit("partial_candle_detected", {
+          variant_id: variant.id,
+          symbol: variant.symbol,
+          candle_open_time: new Date(candle.openTimeMs).toISOString(),
+          entry_time: variant.created_at,
+        });
+
+        const intraResult = await resolveIntraWindow(
           variant.symbol,
           variant.recommendation,
           tpPrice,
           slPrice,
-          candle,
+          candle.openTimeMs,
+          candle.closeTimeMs,
+          entryMs,
           variant.id,
         );
-        if (outcome === null) candleDataFailure = true;
-        if (outcome === "win") exitPrice = tpPrice;
-        if (outcome === "loss") exitPrice = slPrice;
+
+        if (intraResult === null) {
+          candleDataFailure = true;
+          break;
+        }
+
+        if (intraResult.outcome) {
+          outcome = intraResult.outcome;
+          exitPrice = intraResult.exitPrice ?? (outcome === "win" ? tpPrice : slPrice);
+          break; // Terminal trigger in the post-entry partial portion!
+        }
+
+        // Neither TP nor SL was hit in the remaining partial hour -> safely proceed to next 1h candle
+        continue;
+      }
+
+      // -------------------------------------------------------------
+      // FULL POST-ENTRY CANDLE: candle.openTimeMs >= entryMs
+      // Safe to inspect 1h High / Low
+      // -------------------------------------------------------------
+      const hitTP =
+        variant.recommendation === "buy" ? candle.high >= tpPrice : candle.low <= tpPrice;
+      const hitSL =
+        variant.recommendation === "buy" ? candle.low <= slPrice : candle.high >= slPrice;
+
+      if (hitTP && hitSL) {
+        audit("1h_same_candle_tp_sl", {
+          variant_id: variant.id,
+          symbol: variant.symbol,
+          candle_open_time: new Date(candle.openTimeMs).toISOString(),
+          high: candle.high,
+          low: candle.low,
+          close: candle.close,
+          tp_price: tpPrice,
+          sl_price: slPrice,
+        });
+
+        const intraResult = await resolveIntraWindow(
+          variant.symbol,
+          variant.recommendation,
+          tpPrice,
+          slPrice,
+          candle.openTimeMs,
+          candle.closeTimeMs,
+          entryMs,
+          variant.id,
+        );
+
+        if (intraResult === null) {
+          candleDataFailure = true;
+          break;
+        }
+
+        if (intraResult.outcome) {
+          outcome = intraResult.outcome;
+          exitPrice = intraResult.exitPrice ?? (outcome === "win" ? tpPrice : slPrice);
+        } else {
+          // Both levels touched on 1h, but 5m did not resolve order -> ambiguous
+          outcome = "ambiguous";
+        }
         break;
       }
+
       if (hitTP) {
-        audit("1h_tp_hit",{variant_id:variant.id,symbol:variant.symbol,candle_open_time:new Date(candle.openTimeMs).toISOString(),high:candle.high,low:candle.low,close:candle.close,tp_price:tpPrice});
+        audit("1h_tp_hit", {
+          variant_id: variant.id,
+          symbol: variant.symbol,
+          candle_open_time: new Date(candle.openTimeMs).toISOString(),
+          high: candle.high,
+          low: candle.low,
+          close: candle.close,
+          tp_price: tpPrice,
+        });
         outcome = "win";
         exitPrice = tpPrice;
         break;
       }
+
       if (hitSL) {
-        audit("1h_sl_hit",{variant_id:variant.id,symbol:variant.symbol,candle_open_time:new Date(candle.openTimeMs).toISOString(),high:candle.high,low:candle.low,close:candle.close,sl_price:slPrice});
+        audit("1h_sl_hit", {
+          variant_id: variant.id,
+          symbol: variant.symbol,
+          candle_open_time: new Date(candle.openTimeMs).toISOString(),
+          high: candle.high,
+          low: candle.low,
+          close: candle.close,
+          sl_price: slPrice,
+        });
         outcome = "loss";
         exitPrice = slPrice;
         break;
       }
     }
 
-    // Do not expire or terminally mark a row when candle retrieval failed.
     if (candleDataFailure) continue;
 
     const ageHours = (nowMs - entryMs) / 3_600_000;
     if (!outcome && ageHours >= EXPIRY_TRIGGER_HOURS) {
       expiryTriggerCount += 1;
-      audit("72h_trigger",{variant_id:variant.id,symbol:variant.symbol,created_at:variant.created_at,age_hours:Number(ageHours.toFixed(3)),trigger_hours:EXPIRY_TRIGGER_HOURS,max_hours:maxHours});
+      audit("72h_trigger", {
+        variant_id: variant.id,
+        symbol: variant.symbol,
+        created_at: variant.created_at,
+        age_hours: Number(ageHours.toFixed(3)),
+        trigger_hours: EXPIRY_TRIGGER_HOURS,
+        max_hours: maxHours,
+      });
       expiryTriggerSymbols.push(variant.symbol);
-      console.warn("[VARIANT_72H_TRIGGER]", JSON.stringify({ id: variant.id, symbol: variant.symbol, created_at: variant.created_at, age_hours: Number(ageHours.toFixed(2)), trigger_hours: EXPIRY_TRIGGER_HOURS }));
+      console.warn(
+        "[VARIANT_72H_TRIGGER]",
+        JSON.stringify({
+          id: variant.id,
+          symbol: variant.symbol,
+          created_at: variant.created_at,
+          age_hours: Number(ageHours.toFixed(2)),
+          trigger_hours: EXPIRY_TRIGGER_HOURS,
+        }),
+      );
     }
 
     if (!outcome && ageHours >= maxHours) {
       const expiryCandle = relevant[relevant.length - 1];
       if (expiryCandle) {
-        audit("expiry_decision",{variant_id:variant.id,symbol:variant.symbol,expiry_candle_open_time:new Date(expiryCandle.openTimeMs).toISOString(),close:expiryCandle.close,age_hours:Number(ageHours.toFixed(3)),max_hours:maxHours});
+        audit("expiry_decision", {
+          variant_id: variant.id,
+          symbol: variant.symbol,
+          expiry_candle_open_time: new Date(expiryCandle.openTimeMs).toISOString(),
+          close: expiryCandle.close,
+          age_hours: Number(ageHours.toFixed(3)),
+          max_hours: maxHours,
+        });
         outcome = "expired";
         exitPrice = expiryCandle.close;
       } else if (candleFetchFailures.has(variant.symbol)) {
         audit("expiry_blocked_candle_fetch_failed", {
-          variant_id: variant.id, symbol: variant.symbol,
-          age_hours: Number(ageHours.toFixed(3)), max_hours: maxHours,
+          variant_id: variant.id,
+          symbol: variant.symbol,
+          age_hours: Number(ageHours.toFixed(3)),
+          max_hours: maxHours,
           error: candleFetchFailures.get(variant.symbol),
         });
       } else {
         audit("expiry_blocked_no_relevant_candle", {
-          variant_id: variant.id, symbol: variant.symbol,
-          age_hours: Number(ageHours.toFixed(3)), max_hours: maxHours,
+          variant_id: variant.id,
+          symbol: variant.symbol,
+          age_hours: Number(ageHours.toFixed(3)),
+          max_hours: maxHours,
         });
       }
     }
 
     if (!outcome) continue;
 
-    const pnlPct = outcome === "ambiguous" || exitPrice == null
-      ? null
-      : variant.recommendation === "buy"
+    const pnlPct =
+      outcome === "ambiguous" || exitPrice == null
+        ? null
+        : variant.recommendation === "buy"
         ? ((exitPrice - variant.entry_price) / variant.entry_price) * 100
         : ((variant.entry_price - exitPrice) / variant.entry_price) * 100;
 
@@ -423,24 +652,42 @@ Deno.serve(async () => {
       .eq("outcome", "open");
 
     if (update.error) {
-      audit("db_update_failed",{variant_id:variant.id,symbol:variant.symbol,outcome,exit_price:exitPrice,pnl_pct:pnlPct,error:update.error.message});
+      audit("db_update_failed", {
+        variant_id: variant.id,
+        symbol: variant.symbol,
+        outcome,
+        exit_price: exitPrice,
+        pnl_pct: pnlPct,
+        error: update.error.message,
+      });
       console.error("[VARIANT_RESOLVER] update failed", variant.id, update.error);
       continue;
     }
 
-    audit("resolved",{variant_id:variant.id,symbol:variant.symbol,side:variant.recommendation,outcome,exit_price:exitPrice,pnl_pct:pnlPct,age_hours:Number(ageHours.toFixed(3))});
+    audit("resolved", {
+      variant_id: variant.id,
+      symbol: variant.symbol,
+      side: variant.recommendation,
+      outcome,
+      exit_price: exitPrice,
+      pnl_pct: pnlPct,
+      age_hours: Number(ageHours.toFixed(3)),
+    });
     resolved += 1;
     outcomes[outcome] = (outcomes[outcome] ?? 0) + 1;
   }
 
-  return new Response(JSON.stringify({
-    ok: true,
-    resolved,
-    outcomes,
-    candidates: variants.length,
-    expiry_trigger_hours: EXPIRY_TRIGGER_HOURS,
-    expiry_triggered: expiryTriggerCount,
-    expiry_trigger_symbols: [...new Set(expiryTriggerSymbols)],
-    historical_cutoff: RESOLVER_START_AT,
-  }), { headers: { "Content-Type": "application/json" } });
+  return new Response(
+    JSON.stringify({
+      ok: true,
+      resolved,
+      outcomes,
+      candidates: variants.length,
+      expiry_trigger_hours: EXPIRY_TRIGGER_HOURS,
+      expiry_triggered: expiryTriggerCount,
+      expiry_trigger_symbols: [...new Set(expiryTriggerSymbols)],
+      historical_cutoff: RESOLVER_START_AT,
+    }),
+    { headers: { "Content-Type": "application/json" } },
+  );
 });
