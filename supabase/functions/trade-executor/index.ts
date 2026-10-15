@@ -72,7 +72,8 @@ type LiveMarketRegime = {
   reason: string;
 };
 
-const MICRO_SNAPSHOT_MAX_AGE_MS = 20 * 60 * 1000;
+// Allow modest cron/runtime drift while still requiring recent micro-timeframe data.
+const MICRO_SNAPSHOT_MAX_AGE_MS = 25 * 60 * 1000;
 
 async function assessMicroTimeframes(
   supabase: ReturnType<typeof getServiceClient>,
