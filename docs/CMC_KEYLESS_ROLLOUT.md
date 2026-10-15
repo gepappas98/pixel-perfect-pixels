@@ -34,7 +34,7 @@ Endpoint: `/v3/cryptocurrency/listings/latest?start={1,201,401,601,801}&limit=20
 
 - Each successful refresh requests up to 1,000 ranked assets in five sequential pages (or stops early if the provider returns a short page).
 - This is broader than Top 200, but is **not a claim that every CMC asset is exposed by the keyless endpoint**. Actual returned coverage is recorded in function diagnostics.
-- Successful snapshots are throttled to one every 6 hours.
+- Successful snapshots are throttled to one every 6 hours. A `batch_version` marker forces one refresh when the deployed pagination version first encounters an older v1 batch, then the normal throttle resumes.
 - Stores bounded structured fields only; does not persist the complete raw response.
 - A snapshot must contain at least 50 valid assets or it is rejected.
 - Listings history is retained for seven days. Only after a complete valid batch is inserted, the function deletes rows in `cmc_listing_snapshots` older than the seven-day cutoff and reports `pruned_rows`; cleanup errors are logged/reported separately and do not turn the successful sync into a failure. This retention does not touch macro snapshots, watchlist snapshots, signals, trades, pipeline runs, or paper-trading history.
@@ -43,9 +43,9 @@ Endpoint: `/v3/cryptocurrency/listings/latest?start={1,201,401,601,801}&limit=20
 - The orchestrator awaits the optional listings sync before starting `whale-watch`, so a newly completed CMC batch is available to the same cycle's watchlist resolution. The call has a 50-second ceiling to cover up to five 8-second page requests; fail-open errors do not block the existing pipeline.
 - `dynamic_watchlist_snapshots.cmc_snapshot_at` records the CMC batch consumed. A new batch (or first rollout with a historical batch) bypasses the cache once, then the existing 6-hour stability cache resumes.
 - The active watchlist remains capped at 150 dynamic/core symbols plus existing open positions and pinned entries. CMC does not create BUY signals or change execution rules.
-- Storage growth must be monitored before considering any explicit retention policy.
+- Monitor listing row counts, cleanup results, pipeline runtime, and provider rate limits after rollout; the seven-day listing retention is already active.
 
-Table: `public.cmc_listing_snapshots`.
+Table: `public.cmc_listing_snapshots` (including `batch_version`, where legacy rows default to v1 and new paginated batches are marked v2).
 
 ## Dashboard
 
