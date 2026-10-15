@@ -220,9 +220,16 @@ async function loadLatestCmcCandidates(supabase: ReturnType<typeof getServiceCli
 async function resolveWatchlist(supabase: ReturnType<typeof getServiceClient>) {
   const previous = await loadPreviousSnapshot(supabase);
   const openPositions = await loadOpenPositions(supabase);
+  const cmcSnapshot = await loadLatestCmcCandidates(supabase);
   const now = Date.now();
+  const previousComputedAt = previous?.computed_at ? new Date(previous.computed_at).getTime() : 0;
+  const cmcArrivedAfterPreviousWatchlist = !!cmcSnapshot.capturedAt
+    && new Date(cmcSnapshot.capturedAt).getTime() > previousComputedAt;
 
-  if (previous?.expires_at && new Date(previous.expires_at).getTime() > now) {
+  // CMC sync and whale-watch may run concurrently in the orchestrator. If a new
+  // CMC batch arrived after this watchlist was computed, bypass the cache once
+  // so that the new candidates are not delayed for another full 6h cache window.
+  if (previous?.expires_at && new Date(previous.expires_at).getTime() > now && !cmcArrivedAfterPreviousWatchlist) {
     const symbols = [...(previous.symbols ?? [])];
     const seen = new Set(symbols);
     for (const symbol of openPositions) if (!seen.has(symbol)) { symbols.push(symbol); seen.add(symbol); }
@@ -230,6 +237,7 @@ async function resolveWatchlist(supabase: ReturnType<typeof getServiceClient>) {
       symbols: symbols.slice(0, MAX_COINS + openPositions.size),
       source: "cache", hlCandidates: previous.hl_candidates ?? 0,
       hlAboveThreshold: previous.hl_above_threshold ?? 0, binanceFiltered: previous.binance_filtered ?? 0,
+      cmcCandidates: cmcSnapshot.candidates.size, cmcEligible: 0,
       pinned: [...new Set([...CORE_ALWAYS_INCLUDE, ...openPositions])], dynamic: previous.dynamic_symbols ?? [],
     };
   }
@@ -257,9 +265,8 @@ async function resolveWatchlist(supabase: ReturnType<typeof getServiceClient>) {
   }).sort((a, b) => b[1] - a[1]);
 
   // CMC is a third dynamic discovery source, not a static coin list.
-  // Only use a fresh stored CMC batch and require an explicit Binance USDT Spot listing.
+  // Only use a stored CMC batch and require an explicit Binance USDT Spot listing.
   // If Binance metadata is unavailable, do not infer tradability from CMC alone.
-  const cmcSnapshot = await loadLatestCmcCandidates(supabase);
   const cmcEligible = binance.size > 0
     ? [...cmcSnapshot.candidates.entries()].filter(([symbol, v]) => {
         const threshold = previousSymbols.has(symbol) ? REMOVE_THRESHOLD_USD : ADD_THRESHOLD_USD;
