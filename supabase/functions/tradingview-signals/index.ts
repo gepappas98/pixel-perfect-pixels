@@ -6,6 +6,7 @@ const TIMEFRAMES=["5m","15m","1h","4h","1d"] as const;
 const KLINE_LIMIT=100, FETCH_TIMEOUT_MS=12000;
 const BINANCE_HOSTS=["https://api.binance.com","https://data-api.binance.vision"] as const;
 const BYBIT_HOST="https://api.bybit.com";
+type Row = Record<string, unknown>;
 const SYMBOL_MAP:Record<string,string>={MATIC:"POL",RNDR:"RENDER"};
 
 function exSymbol(c:string){return (SYMBOL_MAP[c]??c)+"USDT";}
@@ -48,6 +49,8 @@ async function activeCoinContext(db:any){
   db.from("trades").select("symbol").eq("status","open").limit(50),
  ]);
  const prioritySymbols=new Set<string>();
+ // BTC is a permanent market-leader priority so 5m/15m snapshots are refreshed every cycle.
+ prioritySymbols.add("BTC");
  for(const r of alerts??[])if(r.symbol)prioritySymbols.add(String(r.symbol).toUpperCase().replace(/USDT$/,""));
  for(const r of hot??[])if(r.symbol)prioritySymbols.add(String(r.symbol).toUpperCase().replace(/USDT$/,""));
  for(const r of openTrades??[])if(r.symbol)prioritySymbols.add(String(r.symbol).toUpperCase().replace(/USDT$/,""));
