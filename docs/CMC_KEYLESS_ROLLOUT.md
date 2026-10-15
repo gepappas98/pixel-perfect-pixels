@@ -54,11 +54,12 @@ Both new functions have explicit `verify_jwt = true` in `supabase/config.toml`. 
 3. Invoke each function via the authenticated orchestrator.
 4. Confirm each endpoint's JSON shape and `status.error_code` handling in logs.
 5. Confirm macro rows have plausible value ranges and per-source statuses.
-6. Confirm listings snapshot has 50–200 rows and the top 5 shown in UI are from the same captured batch.
-7. Simulate/observe HTTP 429, timeout, and one-endpoint partial failure; ensure the orchestrator still completes the existing critical stages.
-8. Confirm no new CMC-derived values enter composite scoring, strategy auto-switch or trade-executor.
-9. Confirm RLS: anon/authenticated SELECT works; writes are denied; service role can write.
-10. Monitor pipeline runtime, database growth, and 429 frequency before any watchlist merge.
+6. Confirm V3 listings `quote` parsing handles the documented USD quote array (and the keyed-object fallback); verify price, volume, market cap and 24h change are populated rather than silently null.
+7. Confirm listings snapshot has 50–200 rows and the top 5 shown in UI are from the same captured batch.
+8. Simulate/observe HTTP 429, timeout, and one-endpoint partial failure; ensure the orchestrator still completes the existing critical stages.
+9. Confirm no new CMC-derived values enter composite scoring, strategy auto-switch or trade-executor.
+10. Confirm RLS: anon/authenticated SELECT works; writes are denied; service role can write.
+11. Monitor pipeline runtime, database growth, and 429 frequency before any watchlist merge.
 
 ## Later phases — intentionally not included
 
