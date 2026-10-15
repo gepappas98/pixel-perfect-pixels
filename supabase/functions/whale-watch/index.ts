@@ -180,7 +180,7 @@ function normalizeCoinLobster(raw: CoinLobsterTrade) {
 
 async function loadPreviousSnapshot(supabase: ReturnType<typeof getServiceClient>) {
   const { data, error } = await supabase.from("dynamic_watchlist_snapshots")
-    .select("symbols,hl_candidates,hl_above_threshold,binance_filtered,pinned_symbols,dynamic_symbols,computed_at,expires_at")
+    .select("symbols,hl_candidates,hl_above_threshold,binance_filtered,pinned_symbols,dynamic_symbols,computed_at,expires_at,cmc_snapshot_at")
     .order("computed_at", { ascending: false }).limit(1).maybeSingle();
   if (error) { console.error("[WATCHLIST] snapshot read failed:", error); return null; }
   return data;
@@ -222,14 +222,15 @@ async function resolveWatchlist(supabase: ReturnType<typeof getServiceClient>) {
   const openPositions = await loadOpenPositions(supabase);
   const cmcSnapshot = await loadLatestCmcCandidates(supabase);
   const now = Date.now();
-  const previousComputedAt = previous?.computed_at ? new Date(previous.computed_at).getTime() : 0;
-  const cmcArrivedAfterPreviousWatchlist = !!cmcSnapshot.capturedAt
-    && new Date(cmcSnapshot.capturedAt).getTime() > previousComputedAt;
+  const previousCmcSnapshotAt = previous?.cmc_snapshot_at
+    ? new Date(previous.cmc_snapshot_at).getTime()
+    : 0;
+  const cmcSnapshotIsNew = !!cmcSnapshot.capturedAt
+    && new Date(cmcSnapshot.capturedAt).getTime() > previousCmcSnapshotAt;
 
-  // CMC sync and whale-watch may run concurrently in the orchestrator. If a new
-  // CMC batch arrived after this watchlist was computed, bypass the cache once
-  // so that the new candidates are not delayed for another full 6h cache window.
-  if (previous?.expires_at && new Date(previous.expires_at).getTime() > now && !cmcArrivedAfterPreviousWatchlist) {
+  // Refresh once when CMC data is first introduced or a newer batch arrives.
+  // Persisting the consumed batch timestamp prevents repeated full refreshes.
+  if (previous?.expires_at && new Date(previous.expires_at).getTime() > now && !cmcSnapshotIsNew) {
     const symbols = [...(previous.symbols ?? [])];
     const seen = new Set(symbols);
     for (const symbol of openPositions) if (!seen.has(symbol)) { symbols.push(symbol); seen.add(symbol); }
@@ -293,6 +294,7 @@ async function resolveWatchlist(supabase: ReturnType<typeof getServiceClient>) {
     symbols, source: "refreshed", hl_candidates: volume.size,
     hl_above_threshold: hlEligible.length, binance_filtered: eligible.length,
     pinned_symbols: [...pinned], dynamic_symbols: dynamic, expires_at: expiresAt,
+    cmc_snapshot_at: cmcSnapshot.capturedAt,
   });
   if (insertError) console.error("[WATCHLIST] snapshot insert failed:", insertError);
 
