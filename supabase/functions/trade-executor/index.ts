@@ -3,7 +3,7 @@ import { binancePair, decideExit, getBreakevenStopLossUpdate, normalizeExitSetti
 import { aggregateWhaleShocks, DEFAULT_WHALE_SHOCK_CONFIG, evaluate1hTechnicalConfirmation, evaluateRegimeShockTransition } from "./_shared/whale-shock.ts";
 import { evaluateMicroTimeframeGate, type MicroTimeframeState } from "./_shared/micro-trend-gate.ts";
 import { computeMarketRegimeAssessment, evaluateSidewaysEntryGate, type MarketRegimeAssessment } from "./_shared/market-regime-gate.ts";
-import { computeDivergenceAssessment, evaluateBtcTrend, type BtcTrendMetrics } from "./_shared/regime-divergence.ts";
+import { computeDivergenceAssessment, evaluateBtcDowntrendEntryGate, evaluateBtcTrend, type BtcTrendMetrics } from "./_shared/regime-divergence.ts";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -221,9 +221,9 @@ async function fetchBtcTrendForShadow(): Promise<{ metrics: BtcTrendMetrics; sou
 async function recordRegimeShadowTelemetry(
   supabase: ReturnType<typeof getServiceClient>,
   assessment: MarketRegimeAssessment,
+  btcResult: { metrics: BtcTrendMetrics; source: string } | null,
 ): Promise<void> {
   try {
-    const btcResult = await fetchBtcTrendForShadow();
     const divergence = computeDivergenceAssessment(
       btcResult?.metrics ?? null,
       assessment.whaleNet,
@@ -590,7 +590,7 @@ async function enrichEntryContextSnapshot(
  * Separate paper-only entry path for clustered whale accumulation.
  * Failure is isolated: it must never prevent the standard signal pipeline from running.
  */
-async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServiceClient>, marketRegime: LiveMarketRegime) {
+async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServiceClient>, marketRegime: LiveMarketRegime, btcTrend: BtcTrendMetrics | null) {
   const config = DEFAULT_WHALE_SHOCK_CONFIG;
   const now = Date.now();
   const sinceIso = new Date(now - config.windowMinutes * 60_000).toISOString();
@@ -711,6 +711,22 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
           symbol: candidate.symbol,
           reason: micro.ready ? micro.decision?.reason : micro.reason,
           state: micro.state,
+        });
+        continue;
+      }
+
+      const btcGate = evaluateBtcDowntrendEntryGate(
+        btcTrend,
+        marketRegime.assessment!.whaleNet,
+        marketRegime.assessment!.techBreadth,
+        marketRegime.assessment!.councilConsensus,
+        micro.state!,
+      );
+      if (!btcGate.allowBuy) {
+        result.skipped = Number(result.skipped) + 1;
+        console.log("[BTC_DOWNTREND_ENTRY_GATE] blocked whale_shock BUY", {
+          symbol: candidate.symbol, reason: btcGate.reason, btc: btcTrend,
+          whale_net: marketRegime.assessment!.whaleNet, micro_state: micro.state,
         });
         continue;
       }
@@ -902,19 +918,25 @@ Deno.serve(async (req) => {
       assessment: liveMarketRegime.assessment,
     }));
 
-    // Independent shadow task. The baseline assessment and all entry gates remain unchanged.
+    // Fetch BTC trend once and use the same evidence for active BUY gating and telemetry.
+    // Telemetry failure is isolated inside the recorder and cannot fail the execution cycle.
+    const btcTrendResult = await fetchBtcTrendForShadow();
+    const btcTrend = btcTrendResult?.metrics ?? null;
+    console.log("[BTC_DOWNTREND_ENTRY_GATE] market context", JSON.stringify({
+      btc_available: Boolean(btcTrend),
+      btc_is_downtrend: btcTrend?.isDowntrend ?? null,
+      btc_return_4h_pct: btcTrend?.return4hPct ?? null,
+      btc_return_24h_pct: btcTrend?.return24hPct ?? null,
+      whale_net: liveMarketRegime.assessment?.whaleNet ?? null,
+    }));
+
     if (liveMarketRegime.ready && liveMarketRegime.assessment) {
-      const telemetryPromise = recordRegimeShadowTelemetry(supabase, liveMarketRegime.assessment);
-      const edgeRuntime = (globalThis as unknown as {
-        EdgeRuntime?: { waitUntil: (promise: Promise<unknown>) => void };
-      }).EdgeRuntime;
-      if (edgeRuntime?.waitUntil) edgeRuntime.waitUntil(telemetryPromise);
-      else void telemetryPromise;
+      await recordRegimeShadowTelemetry(supabase, liveMarketRegime.assessment, btcTrendResult);
     } else {
       console.warn("[SHADOW_TELEMETRY] skipped: baseline market regime unavailable", liveMarketRegime.reason);
     }
 
-    const whaleShockStage = await executeWhaleShockTradesStage(supabase, liveMarketRegime);
+    const whaleShockStage = await executeWhaleShockTradesStage(supabase, liveMarketRegime, btcTrend);
 
     const { data: signals, error: signalError } = await getEligibleSignals(supabase);
     if (signalError) throw signalError;
@@ -1051,6 +1073,38 @@ Deno.serve(async (req) => {
           .eq("composite_signal_id", signalId)
           .eq("research_decision", "pending_execution_audit");
         console.log("[MICRO_GATE_REJECT]", symbol, reason);
+        continue;
+      }
+
+      const btcGate = evaluateBtcDowntrendEntryGate(
+        btcTrend,
+        liveMarketRegime.assessment!.whaleNet,
+        liveMarketRegime.assessment!.techBreadth,
+        liveMarketRegime.assessment!.councilConsensus,
+        micro.state!,
+      );
+      if (!btcGate.allowBuy) {
+        auditEvents.push({
+          ts: new Date().toISOString(), symbol, signal_id: signalId,
+          stage: "BTC_DOWNTREND_ENTRY_GATE", decision: "REJECT",
+          reason: btcGate.reason,
+          details: {
+            btc: btcTrend,
+            whale_net: liveMarketRegime.assessment!.whaleNet,
+            micro_state: micro.state,
+            adjusted_market_score: computeDivergenceAssessment(
+              btcTrend,
+              liveMarketRegime.assessment!.whaleNet,
+              liveMarketRegime.assessment!.techBreadth,
+              liveMarketRegime.assessment!.councilConsensus,
+            ).shadowScore,
+          },
+        });
+        await supabase.from("repeated_buy_research_ledger")
+          .update({ research_decision: "rejected", research_reason: "btc_downtrend_entry_gate: " + btcGate.reason })
+          .eq("composite_signal_id", signalId)
+          .eq("research_decision", "pending_execution_audit");
+        console.log("[BTC_DOWNTREND_ENTRY_GATE] blocked composite BUY", { symbol, reason: btcGate.reason, btc: btcTrend, micro_state: micro.state });
         continue;
       }
 
