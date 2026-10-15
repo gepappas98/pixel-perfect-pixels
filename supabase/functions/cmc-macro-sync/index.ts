@@ -124,9 +124,9 @@ Deno.serve(async (req) => {
     const dominanceRegime = btcDominance == null ? "unknown"
       : btcDominance >= 55 ? "btc_heavy"
       : btcDominance <= 45 ? "alt_rotation" : "neutral";
-    const marketStructureTag = seasonValue == null ? "unknown"
-      : btcDominance != null && btcDominance >= 55 && seasonValue < 25 ? "btc_season"
-      : btcDominance != null && btcDominance <= 50 && seasonValue > 75 ? "alt_season"
+    const marketStructureTag = seasonValue == null || btcDominance == null ? "unknown"
+      : btcDominance >= 55 && seasonValue < 25 ? "btc_season"
+      : btcDominance <= 50 && seasonValue > 75 ? "alt_season"
       : "transition";
 
     const sourceStatus = {
@@ -155,6 +155,7 @@ Deno.serve(async (req) => {
       altcoin_season_value: seasonValue,
       altcoin_season_label: seasonValue == null ? null : seasonValue > 75 ? "alt_season" : seasonValue < 25 ? "btc_season" : "transition",
       mcap_change_pct: mcapChangePct,
+      mcap_change_window_minutes: mcapChangePct == null ? null : previousAgeMs / 60_000,
       dominance_regime: dominanceRegime,
       market_structure_tag: marketStructureTag,
       source_status: sourceStatus,
