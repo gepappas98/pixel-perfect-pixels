@@ -85,7 +85,11 @@ export function AIRiskSummary() {
         </div>
       </div>
 
-      <p className="mb-3 text-[10px] leading-relaxed text-muted-foreground">\n        This is a general AI assessment, not a live portfolio-risk check: it does not automatically read open positions, current signals, or risk-gate tables.\n      </p>\n\n      <div className="space-y-2">
+      <p className="mb-3 text-[10px] leading-relaxed text-muted-foreground">
+        This is a general AI assessment, not a live portfolio-risk check: it does not automatically read open positions, current signals, or risk-gate tables.
+      </p>
+
+      <div className="space-y-2">
         <div className="flex gap-2">
           <select
             value={symbol}
