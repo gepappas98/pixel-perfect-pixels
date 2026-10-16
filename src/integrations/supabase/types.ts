@@ -184,7 +184,6 @@ export type Database = {
       dynamic_watchlist_snapshots: {
         Row: {
           binance_filtered: number
-          cmc_snapshot_at: string | null
           computed_at: string
           dynamic_symbols: string[]
           expires_at: string
@@ -197,7 +196,6 @@ export type Database = {
         }
         Insert: {
           binance_filtered?: number
-          cmc_snapshot_at?: string | null
           computed_at?: string
           dynamic_symbols?: string[]
           expires_at: string
@@ -210,7 +208,6 @@ export type Database = {
         }
         Update: {
           binance_filtered?: number
-          cmc_snapshot_at?: string | null
           computed_at?: string
           dynamic_symbols?: string[]
           expires_at?: string
