@@ -117,9 +117,31 @@ Deno.serve(async (req) => {
       )
       .sort((a, b) => (b.avg_pnl_pct || 0) - (a.avg_pnl_pct || 0));
 
-    const targetPreset =
-      safeAlternatives[0]?.strategy_name ||
-      (cur !== "conservative" ? "conservative" : "balanced");
+    // If conservative itself is failing and no qualified positive alternative exists,
+    // do not "demote" into balanced; hold the safety preset and report the condition.
+    if (!safeAlternatives.length && cur === "conservative") {
+      const reason = `DEMOTE_ONLY: conservative failed safety check but no qualified positive alternative exists (resolved=${resolved}, avg_pnl=${avgPnl.toFixed(2)}%, win_rate=${winRate.toFixed(1)}%); preset unchanged`;
+      const { error: ue } = await db
+        .from("strategy_config")
+        .update({
+          last_auto_switch_at: new Date().toISOString(),
+          last_auto_reasoning: reason,
+        })
+        .eq("id", 1);
+      if (ue) throw ue;
+      return Response.json(
+        {
+          ok: true,
+          switched: false,
+          reason: "conservative_failed_no_safe_alternative",
+          preset: cur,
+          performance: ps,
+        },
+        { headers: corsHeaders }
+      );
+    }
+
+    const targetPreset = safeAlternatives[0]?.strategy_name || "conservative";
 
     const demoteReason = `AUTO_DEMOTE: '${cur}' failed safety check (resolved=${resolved}, avg_pnl=${avgPnl.toFixed(2)}%, win_rate=${winRate.toFixed(1)}%) -> demoted to '${targetPreset}'`;
 
