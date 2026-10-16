@@ -139,8 +139,7 @@ export function StrategyPanel() {
             Strategy Weights
           </h2>
           <p className="mt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-            {PRESET_LABELS[draft.preset_name ?? "custom"] ?? "Custom"} · affects
-            next cycle
+            {PRESET_LABELS[draft.preset_name ?? "custom"] ?? "Custom"} · applies to live scorer on next cycle
           </p>
         </div>
         {dirty && (
@@ -166,8 +165,8 @@ export function StrategyPanel() {
               )}
             </div>
             <p className="mt-0.5 text-[10px] text-muted-foreground">
-              AI re-evaluates the strategy every{" "}
-              {draft.auto_switch_interval_hours ?? 4}h
+              Periodic selector every{" "}
+              {draft.auto_switch_interval_hours ?? 4}h; deterministic first, optional AI, and switches only when sample/performance gates pass. Confirmed Bear uses Demote-Only.
             </p>
           </div>
           <input
@@ -258,7 +257,7 @@ export function StrategyPanel() {
           disabled={save.isPending}
         />
         <WeightSlider
-          label="Technicals (MTF)"
+          label="Technicals (4h primary)"
           description="Weight scales the primary 4h technical score; the multi-timeframe confirmation gate is separate."
           value={draft.technicals_weight}
           onChange={(v) =>
