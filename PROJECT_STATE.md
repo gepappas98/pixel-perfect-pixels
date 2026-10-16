@@ -3,6 +3,31 @@ Trading Command Center — PROJECT STATE
 Master document: complete history, current state, next steps.
 Update at end of every session.
 
+Last updated: 2026-10-16 10:05 UTC — Session 5: Audit hardening, security and storage compaction
+
+---
+
+CURRENT CANONICAL STATE (2026-10-16)
+
+- Canonical Supabase project: `yckewtpfttvwiptmmrfq`. Lovable remains the frontend deploy surface; do not use the old Vercel project.
+- No live orders. Preserve historical paper trades, signals, snapshots and pipeline runs; never reset the research database as routine maintenance.
+- Polymarket is retired from active scoring. Historical prediction tables remain for provenance/history. Current `strategy_config.id=1` has `prediction_weight=0`; active scorer axes are Whale, 4h Technicals and Council.
+- PR #114 merged: auto-switch is aligned to three scorer weights and selectable preset names; UI copy/settings accuracy fixes included. Bear-only Demote-Only guard remains restricted to confirmed Bear.
+- Internal write lockdown applied to canonical Supabase and recorded in PR #116 / migration `20261016084609_lock_down_internal_table_writes`. Browser roles `anon` and `authenticated` retain existing SELECT access but no mutation privileges on `pipeline_settings`, `pipeline_runs`, `council_lessons`, `equity_snapshots`, `global_risk_events`. Server-side `service_role` writers remain enabled.
+- PR #117 merged and orchestrator deployed as v21. `pipeline_runs.result` stores compact summaries for `whale-watch` and `signal-combiner`, with `storage_compaction_version=2`; the HTTP response remains full for compatibility. First post-deploy scheduled runs returned HTTP 200 at 09:00, 09:10, 09:20, 09:30, 09:40, 09:50 and 10:00 UTC. A post-deploy DB row-level size check is still pending; do not manually trigger the pipeline.
+- PR #119 merged: idempotent migration `20261016085520_zero_legacy_prediction_weight` records the already-applied production change that neutralized the retired weight.
+- Legacy `trading-pipeline-every-15-min` cron job exists but is inactive; do not delete it unless a separate audit requires it. Canonical orchestrator schedule is active at 10-minute intervals.
+- Historical prediction-link anomaly remains unresolved: current `prediction_snapshots` exists, but no current `composite_signals.prediction_snapshot_id` links were found. Do not invent or restore links without recoverable source evidence.
+- Test inventory warning: `PROJECT_STATE.md` mentions `src/lib/__tests__/hot-whale.test.ts`, but GitHub search on 2026-10-16 did not find the actual path. Verify repository tree and test discovery before relying on the old “30 tests” statement. This is not proof the test suite itself is broken.
+- Event → Flow, social collection, accumulation shadow and CMC listings remain research/discovery paths, not canonical BUY voters. Do not connect them to the canonical scorer as a cleanup shortcut.
+
+NEXT READ-ONLY CHECKS
+1. Verify newest `pipeline_runs` row after orchestrator v21: compact version, missing raw `signals`/whale `alerts` arrays in stored stage results, and result byte size. Compare with the pre-deploy ~274 KB average / ~410 KB max; leave old rows untouched.
+2. Continue forensic analysis of historical prediction-link discrepancy using migration diffs, FK definitions, upsert paths and available audit/log history.
+3. Reconcile the test inventory and update the rest of this document only where it conflicts with verified current behavior.
+
+---
+
 Last updated: 2026-10-02 (night)
 Session 4: Hot Whale Queue (intra-cycle discovery) + Aggregated Directional Signal
 
