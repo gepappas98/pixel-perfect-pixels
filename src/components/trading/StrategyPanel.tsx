@@ -123,7 +123,7 @@ export function StrategyPanel() {
 
   const dirty =
     serverConfig &&
-    (draft.whale_weight !== serverConfig.whale_weight ||
+    (draft.preset_name !== serverConfig.preset_name ||\n      draft.whale_weight !== serverConfig.whale_weight ||
       draft.technicals_weight !== serverConfig.technicals_weight ||
       draft.council_weight !== serverConfig.council_weight ||
       draft.auto_switch_enabled !== serverConfig.auto_switch_enabled ||
@@ -258,7 +258,7 @@ export function StrategyPanel() {
         />
         <WeightSlider
           label="Technicals (MTF)"
-          description="4h + 1h + 1d confluence score"
+          description="Weight scales the primary 4h technical score; the multi-timeframe confirmation gate is separate."
           value={draft.technicals_weight}
           onChange={(v) =>
             setDraft({ ...draft, technicals_weight: v, preset_name: "custom" })
