@@ -202,14 +202,13 @@ Deno.serve(async (req) => {
         })
         .slice(0, 5); // Limit each transition to five paper entries; taker-buy only prioritizes candidates.
       const { data: alreadyOpened, error: duplicateError } = await db.from("trades")
-        .select("id")
+        .select("symbol")
         .eq("entry_source", "early_entry_regime")
         .eq("mode", "paper")
-        .eq("entry_metadata->>activation_key", activationKey)
-        .limit(1)
-        .maybeSingle();
+        .eq("entry_metadata->>activation_key", activationKey);
       if (duplicateError) throw duplicateError;
-      if (!alreadyOpened && candidates.length > 0) {
+      const openedSymbols = new Set((alreadyOpened ?? []).map((row) => String(row.symbol ?? "").toUpperCase()));
+      if (candidates.length > 0) {
         const hosts = ["https://api.binance.com", "https://data-api.binance.vision", "https://api1.binance.com"];
         let prices = new Map<string, number>();
         for (const host of hosts) {
@@ -225,6 +224,7 @@ Deno.serve(async (req) => {
           const rawSymbol = String(candidate.symbol).replace(/[^A-Z0-9]/gi, "").toUpperCase();
           const base = rawSymbol.endsWith("USDT") ? rawSymbol.slice(0, -4) : rawSymbol;
           const mappedBase = base === "MATIC" ? "POL" : base === "RNDR" ? "RENDER" : base;
+          if (openedSymbols.has(base)) continue;
           const price = prices.get(`${mappedBase}USDT`);
           if (!price || !Number.isFinite(price) || price <= 0) {
             entryErrors.push({ symbol: candidate.symbol, error: "No valid Binance Spot USDT price" });
@@ -280,7 +280,10 @@ Deno.serve(async (req) => {
             },
           }).select("id,symbol,entry_price").single();
           if (tradeError) entryErrors.push({ symbol: candidate.symbol, error: tradeError.message });
-          else opened.push(trade);
+          else {
+            opened.push(trade);
+            openedSymbols.add(String(trade.symbol ?? "").toUpperCase());
+          }
         }
       }
     }
