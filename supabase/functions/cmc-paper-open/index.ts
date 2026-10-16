@@ -1,0 +1,165 @@
+import { getServiceClient } from "../_shared/supabase.ts";
+
+const POSITION_USD = 1000;
+const STOP_LOSS_PCT = 0.03;
+const TAKE_PROFIT_PCT = 0.04;
+const MAX_PRICE_AGE_MIN = 20;
+const COOLDOWN_HOURS = 24;
+const MAX_OPENS_PER_RUN = 5;
+const MIN_24H_CHANGE = 1;
+const MIN_1H_CHANGE = 0;
+const MIN_7D_CHANGE = 0;
+const MIN_TURNOVER_PCT = 1;
+const MAX_CMC_RANK = 1000;
+
+const num = (v: unknown): number | null => {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+Deno.serve(async (req: Request) => {
+  if (req.method === "OPTIONS") return new Response("ok");
+  if (req.method !== "POST" && req.method !== "GET") {
+    return Response.json({ ok: false, error: "method_not_allowed" }, { status: 405 });
+  }
+  const db = getServiceClient();
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
+  try {
+    // Require the current dynamically eligible asset universe. This avoids assuming that
+    // every CMC listing has a Binance Spot USDT market and RevolutX EEA availability.
+    const [{ data: assets, error: assetError }, { data: listings, error: listingError },
+      { data: prices, error: priceError }, { data: existing, error: tradeError }] = await Promise.all([
+      db.from("tracked_assets").select("asset,binance_symbol,revolut_symbol,enabled").eq("enabled", true),
+      db.from("cmc_listing_snapshots").select("id,cmc_id,name,symbol,cmc_rank,price_usd,volume_24h_usd,market_cap_usd,percent_change_1h,percent_change_24h,percent_change_7d,captured_at,tags").order("captured_at", { ascending: false }).limit(1000),
+      db.from("asset_price_snapshots").select("asset,observed_at,price,source").eq("source", "binance-spot").gte("observed_at", new Date(now - MAX_PRICE_AGE_MIN * 60000).toISOString()).order("observed_at", { ascending: false }).limit(500),
+      db.from("trades").select("symbol,created_at,status,entry_source,mode").eq("mode", "paper").eq("entry_source", "cmc_paper").order("created_at", { ascending: false }).limit(1000),
+    ]);
+    const errors = [assetError, listingError, priceError, tradeError].filter(Boolean);
+    if (errors.length) throw new Error(errors.map((e: any) => e.message).join("; "));
+
+    const latestBy = <T extends Record<string, any>>(rows: T[] | null, key: string) => {
+      const map = new Map<string, T>();
+      for (const row of rows ?? []) {
+        const k = String(row[key] ?? "").toUpperCase();
+        if (k && !map.has(k)) map.set(k, row);
+      }
+      return map;
+    };
+    const listingBy = latestBy(listings, "symbol");
+    const priceBy = latestBy(prices, "asset");
+    const tradeRows = existing ?? [];
+    const active = new Set(tradeRows.filter((t: any) => t.status === "open").map((t: any) => String(t.symbol).toUpperCase()));
+    const latestTradeAt = new Map<string, number>();
+    for (const t of tradeRows) {
+      const symbol = String(t.symbol).toUpperCase();
+      const ts = Date.parse(t.created_at);
+      if (symbol && Number.isFinite(ts)) latestTradeAt.set(symbol, Math.max(latestTradeAt.get(symbol) ?? 0, ts));
+    }
+
+    const decisions: any[] = [];
+    let opened = 0;
+    const candidates = (assets ?? []).flatMap((a: any) => {
+      const asset = String(a.asset ?? "").toUpperCase();
+      const binanceSymbol = String(a.binance_symbol ?? "").toUpperCase();
+      const listing = listingBy.get(asset);
+      const priceRow = priceBy.get(asset);
+      if (!asset || !binanceSymbol.endsWith("USDT") || !listing || !priceRow) return [];
+      const rank = num(listing.cmc_rank);
+      const ch1 = num(listing.percent_change_1h);
+      const ch24 = num(listing.percent_change_24h);
+      const ch7 = num(listing.percent_change_7d);
+      const volume = num(listing.volume_24h_usd);
+      const marketCap = num(listing.market_cap_usd);
+      const turnover = volume != null && marketCap != null && marketCap > 0 ? volume / marketCap * 100 : null;
+      const price = num(priceRow.price);
+      const observedAt = Date.parse(String(priceRow.observed_at ?? ""));
+      if (rank == null || rank > MAX_CMC_RANK || ch1 == null || ch24 == null || ch7 == null ||
+          ch24 < MIN_24H_CHANGE || ch1 <= MIN_1H_CHANGE || ch7 <= MIN_7D_CHANGE ||
+          turnover == null || turnover < MIN_TURNOVER_PCT || !(price && price > 0) ||
+          !Number.isFinite(observedAt) || now - observedAt < 0 || now - observedAt > MAX_PRICE_AGE_MIN * 60000) return [];
+      return [{ asset, binanceSymbol, listing, price, priceRow, rank, ch1, ch24, ch7, volume, marketCap, turnover }];
+    }).sort((a: any, b: any) => (b.ch24 + b.ch1 + b.ch7 * 0.15) - (a.ch24 + a.ch1 + a.ch7 * 0.15));
+
+    for (const c of candidates) {
+      if (opened >= MAX_OPENS_PER_RUN) break;
+      const symbol = c.asset;
+      let status = "ELIGIBLE";
+      let reason = "CMC positive 1h/24h/7d momentum and sufficient turnover; fresh Binance Spot price";
+      if (active.has(symbol)) { status = "ALREADY_OPEN"; reason = "CMC paper position already open"; }
+      else if ((latestTradeAt.get(symbol) ?? 0) > now - COOLDOWN_HOURS * 3600000) {
+        status = "COOLDOWN"; reason = "CMC paper-entry cooldown (24h)";
+      } else {
+        const quantity = POSITION_USD / c.price;
+        const entryFee = POSITION_USD * 0.001;
+        const { data: trade, error } = await db.from("trades").insert({
+          composite_signal_id: null,
+          symbol,
+          side: "buy",
+          quantity,
+          entry_price: c.price,
+          stop_loss: c.price * (1 - STOP_LOSS_PCT),
+          take_profit: c.price * (1 + TAKE_PROFIT_PCT),
+          mode: "paper",
+          status: "open",
+          entry_fee: entryFee,
+          exit_fee: 0,
+          total_fees: entryFee,
+          regime_label: null,
+          market_session: null,
+          exchange_order_id: null,
+          entry_source: "cmc_paper",
+          source_tags: ["paper", "cmc", "cmc-paper-entry", "spot-long-only", "research-only", "purple-label"],
+          entry_metadata: {
+            strategy: "cmc-paper-entry-v1",
+            source: "cmc-keyless-listings",
+            cmc_snapshot_id: c.listing.id,
+            cmc_id: c.listing.cmc_id,
+            cmc_rank: c.rank,
+            momentum_1h_pct: c.ch1,
+            momentum_24h_pct: c.ch24,
+            momentum_7d_pct: c.ch7,
+            volume_24h_usd: c.volume,
+            market_cap_usd: c.marketCap,
+            volume_to_market_cap_pct: c.turnover,
+            listing_observed_at: c.listing.captured_at,
+            price_source: "asset_price_snapshots:binance-spot",
+            price_observed_at: c.priceRow.observed_at,
+            binance_symbol: c.binanceSymbol,
+            position_usd: POSITION_USD,
+            stop_loss_pct: STOP_LOSS_PCT * 100,
+            take_profit_pct: TAKE_PROFIT_PCT * 100,
+            rule_version: "cmc-paper-entry-v1",
+            forward_returns_used_for_entry: false,
+            live_orders_enabled: false
+          }
+        }).select("id,created_at,entry_price").single();
+        if (error) {
+          status = "OPEN_FAILED";
+          reason = error.message;
+        } else {
+          status = "OPENED";
+          reason = "CMC momentum criteria passed; paper LONG opened";
+          opened++;
+          active.add(symbol);
+          latestTradeAt.set(symbol, now);
+        }
+      }
+      decisions.push({ symbol, status, reason, cmc_rank: c.rank, change_1h_pct: c.ch1, change_24h_pct: c.ch24, change_7d_pct: c.ch7, turnover_pct: c.turnover });
+    }
+
+    return Response.json({
+      ok: true, strategy: "cmc-paper-entry-v1", source: "cmc-keyless-listings",
+      research_only: true, mode: "paper", live_orders_enabled: false,
+      eligible_assets: (assets ?? []).length, qualifying_candidates: candidates.length,
+      opened, max_opens_per_run: MAX_OPENS_PER_RUN, position_usd: POSITION_USD,
+      stop_loss_pct: STOP_LOSS_PCT * 100, take_profit_pct: TAKE_PROFIT_PCT * 100,
+      rules: { max_cmc_rank: MAX_CMC_RANK, min_1h_change_pct_exclusive: MIN_1H_CHANGE, min_24h_change_pct: MIN_24H_CHANGE, min_7d_change_pct_exclusive: MIN_7D_CHANGE, min_volume_to_market_cap_pct: MIN_TURNOVER_PCT, price_max_age_minutes: MAX_PRICE_AGE_MIN, cooldown_hours: COOLDOWN_HOURS },
+      decisions: decisions.slice(0, 50), evaluated_at: nowIso,
+      note: "Forward returns are evaluation labels only. Strategy auto-switch is not modified by this function."
+    });
+  } catch (e) {
+    return Response.json({ ok: false, error: e instanceof Error ? e.message : String(e), strategy: "cmc-paper-entry-v1", research_only: true, live_orders_enabled: false }, { status: 500 });
+  }
+});
