@@ -10,6 +10,7 @@ const MIN_24H_CHANGE = 1;
 const MIN_1H_CHANGE = 0;
 const MIN_7D_CHANGE = 0;
 const MIN_TURNOVER_PCT = 1;
+const MIN_CMC_VOLUME_USD = 5_000_000;
 const MAX_CMC_RANK = 1000;
 
 
@@ -109,7 +110,7 @@ Deno.serve(async (req: Request) => {
       const price = num(priceRow.price);
       const observedAt = Date.parse(String(priceRow.observed_at ?? ""));
       if (rank == null || rank > MAX_CMC_RANK || ch1 == null || ch24 == null || ch7 == null ||
-          ch24 < MIN_24H_CHANGE || ch1 <= MIN_1H_CHANGE || ch7 <= MIN_7D_CHANGE ||
+          volume == null || volume < MIN_CMC_VOLUME_USD || ch24 < MIN_24H_CHANGE || ch1 <= MIN_1H_CHANGE || ch7 <= MIN_7D_CHANGE ||
           turnover == null || turnover < MIN_TURNOVER_PCT || !(price && price > 0) ||
           !Number.isFinite(observedAt) || now - observedAt < 0 || now - observedAt > MAX_PRICE_AGE_MIN * 60000) return [];
       return [{ asset, binanceSymbol, listing, price, priceRow, rank, ch1, ch24, ch7, volume, marketCap, turnover }];
@@ -188,7 +189,7 @@ Deno.serve(async (req: Request) => {
       eligible_assets: eligibleSymbols.size, qualifying_candidates: candidates.length,
       opened, max_opens_per_run: MAX_OPENS_PER_RUN, position_usd: POSITION_USD,
       stop_loss_pct: STOP_LOSS_PCT * 100, take_profit_pct: TAKE_PROFIT_PCT * 100,
-      rules: { max_cmc_rank: MAX_CMC_RANK, min_1h_change_pct_exclusive: MIN_1H_CHANGE, min_24h_change_pct: MIN_24H_CHANGE, min_7d_change_pct_exclusive: MIN_7D_CHANGE, min_volume_to_market_cap_pct: MIN_TURNOVER_PCT, price_max_age_minutes: MAX_PRICE_AGE_MIN, cooldown_hours: COOLDOWN_HOURS },
+      rules: { max_cmc_rank: MAX_CMC_RANK, min_1h_change_pct_exclusive: MIN_1H_CHANGE, min_24h_change_pct: MIN_24H_CHANGE, min_7d_change_pct_exclusive: MIN_7D_CHANGE, min_volume_to_market_cap_pct: MIN_TURNOVER_PCT, min_cmc_volume_24h_usd: MIN_CMC_VOLUME_USD, price_max_age_minutes: MAX_PRICE_AGE_MIN, cooldown_hours: COOLDOWN_HOURS },
       decisions: decisions.slice(0, 50), evaluated_at: nowIso,
       note: "Forward returns are evaluation labels only. Strategy auto-switch is not modified by this function."
     });
