@@ -19,8 +19,6 @@ const SOURCES = [
   { name: "google-news-crypto", url: "https://news.google.com/rss/search?q=cryptocurrency&hl=en-US&gl=US&ceid=US:en" },
   { name: "google-news-bitcoin", url: "https://news.google.com/rss/search?q=Bitcoin%20BTC&hl=en-US&gl=US&ceid=US:en" },
   { name: "ethereum-foundation", url: "https://blog.ethereum.org/feed.xml" },
-  // Temporary public community RSS; Reddit announced RSS support ends 2026-11-13.
-  { name: "reddit-crypto-search", url: "https://www.reddit.com/search.rss?q=crypto&sort=new" },
 ];
 const POSITIVE = ["surge","rally","bullish","approval","approved","adoption","inflow","inflows","launch","launched","partnership","upgrade","growth","record","breakout","buy","accumulate","accumulation","etf","institutional","wins","positive","recovery","integrate","integration","funding","raises","raised","legal clarity"];
 const NEGATIVE = ["crash","drop","plunge","bearish","rejection","rejected","outflow","outflows","hack","hacked","exploit","lawsuit","ban","banned","sell","selling","liquidation","liquidations","fraud","scam","breach","bankruptcy","loss","losses","fear","warning","downgrade","delist","delisted","attack","stolen","negative","collapse","risk"];
