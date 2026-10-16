@@ -12,6 +12,34 @@ const MIN_7D_CHANGE = 0;
 const MIN_TURNOVER_PCT = 1;
 const MAX_CMC_RANK = 1000;
 
+
+async function fetchBinanceUSDTBases(): Promise<Set<string>> {
+  const response = await fetch("https://api.binance.com/api/v3/exchangeInfo", { signal: AbortSignal.timeout(10000) });
+  if (!response.ok) throw new Error("Binance exchangeInfo unavailable: " + response.status);
+  const body = await response.json();
+  const bases = new Set<string>((body?.symbols ?? [])
+    .filter((s: any) => s.quoteAsset === "USDT" && s.status === "TRADING")
+    .map((s: any) => String(s.baseAsset ?? "").toUpperCase()).filter(Boolean));
+  if (!bases.size) throw new Error("Binance Spot eligible base set is empty");
+  return bases;
+}
+async function fetchRevolutXActiveBases(): Promise<Set<string>> {
+  const response = await fetch("https://revx.revolut.com/api/1.0/public/configuration/pairs?region=EEA", {
+    headers: { Accept: "application/json" }, signal: AbortSignal.timeout(10000)
+  });
+  if (!response.ok) throw new Error("RevolutX EEA pair configuration unavailable: " + response.status);
+  const payload = await response.json();
+  const pairMap = payload?.data && typeof payload.data === "object" ? payload.data : payload;
+  if (!pairMap || typeof pairMap !== "object" || Array.isArray(pairMap)) throw new Error("Unexpected RevolutX pair configuration");
+  const bases = new Set<string>();
+  for (const [pairName, pair] of Object.entries(pairMap as Record<string, any>)) {
+    const base = String((pair as any)?.base ?? String(pairName).split("/")[0] ?? "").trim().toUpperCase();
+    if (base && String((pair as any)?.status ?? "").toLowerCase() === "active") bases.add(base);
+  }
+  if (!bases.size) throw new Error("RevolutX active EEA base set is empty");
+  return bases;
+}
+
 const num = (v: unknown): number | null => {
   if (v == null || v === "") return null;
   const n = Number(v);
@@ -48,8 +76,11 @@ Deno.serve(async (req: Request) => {
       return map;
     };
     const latestWatchlist = watchlists?.[0];
-    const eligibleSymbols = new Set((Array.isArray(latestWatchlist?.symbols) ? latestWatchlist.symbols : []).map((s: unknown) => String(s).toUpperCase()));
-    if (!latestWatchlist || !eligibleSymbols.size) throw new Error("No current dynamic watchlist snapshot; refusing CMC paper entries until Binance Spot + RevolutX eligibility is confirmed.");
+    const watchlistSymbols = new Set((Array.isArray(latestWatchlist?.symbols) ? latestWatchlist.symbols : []).map((s: unknown) => String(s).toUpperCase()));
+    if (!latestWatchlist || !watchlistSymbols.size) throw new Error("No current dynamic watchlist snapshot; refusing CMC paper entries.");
+    // Independently verify both venues; the merged dynamic watchlist also contains Hyperliquid/pinned symbols.
+    const [binanceBases, revolutBases] = await Promise.all([fetchBinanceUSDTBases(), fetchRevolutXActiveBases()]);
+    const eligibleSymbols = new Set([...watchlistSymbols].filter((s) => binanceBases.has(s) && revolutBases.has(s)));
     const listingBy = latestBy(listings, "symbol");
     const priceBy = latestBy(prices, "asset");
     const tradeRows = existing ?? [];
