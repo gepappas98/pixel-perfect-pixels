@@ -164,6 +164,15 @@ async function call(name: string, timeout: number) {
 
 Deno.serve(async (req) => {
   const db = getServiceClient();
+  // The pg_cron request uses a private token stored in Supabase Vault.
+  // The endpoint gateway does not verify JWT for this function; enforce auth here before any work.
+  const suppliedCronToken = req.headers.get("x-pipeline-cron-token");
+  const { data: cronAuthorized, error: cronAuthError } = await db.rpc("validate_pipeline_cron_token", {
+    p_token: suppliedCronToken,
+  });
+  if (cronAuthError || cronAuthorized !== true) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const started = new Date();
   let body: any = {};
   try {
