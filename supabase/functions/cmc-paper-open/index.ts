@@ -4,7 +4,7 @@ const POSITION_USD = 1000;
 const STOP_LOSS_PCT = 0.03;
 const TAKE_PROFIT_PCT = 0.04;
 const MAX_PRICE_AGE_MIN = 20;
-const COOLDOWN_HOURS = 24;
+const COOLDOWN_HOURS = 1;
 const MAX_OPENS_PER_RUN = 2;
 const MAX_DAILY_OPENS = 5;
 const MIN_24H_CHANGE = 1;
@@ -125,7 +125,7 @@ Deno.serve(async (req: Request) => {
       let reason = "CMC positive 1h/24h/7d momentum and sufficient turnover; fresh Binance Spot price";
       if (active.has(symbol)) { status = "ALREADY_OPEN"; reason = "CMC paper position already open"; }
       else if ((latestTradeAt.get(symbol) ?? 0) > now - COOLDOWN_HOURS * 3600000) {
-        status = "COOLDOWN"; reason = "CMC paper-entry cooldown (24h)";
+        status = "COOLDOWN"; reason = "CMC paper-entry cooldown (1h)";
       } else {
         const quantity = POSITION_USD / c.price;
         const entryFee = POSITION_USD * 0.001;
