@@ -169,6 +169,7 @@ export function TradesPanel() {
               const variant = String((t as Trade & { entry_metadata?: { variant?: string; variant_label?: string } }).entry_metadata?.variant ?? "");
               const isEarlyEntryVariant = ["early_entry_regime", "early_entry_b_reversal", "early_entry_c_adaptive"].includes(String(t.entry_source));
               const isCmcEntry = String(t.entry_source) === "cmc_paper" || (t.source_tags ?? []).includes("cmc");
+              const isPurpleResearchEntry = (t.source_tags ?? []).includes("purple-label");
               const earlyEntryLabel = variant === "B_EARLY_REVERSAL"
                 ? "B — EARLY REVERSAL"
                 : variant === "C_ADAPTIVE_REVERSAL"
@@ -176,7 +177,7 @@ export function TradesPanel() {
                   : "A — CURRENT EARLY ENTRY";
 
               return (
-                <tr key={t.id} className={`border-t border-border font-mono text-xs ${isCmcEntry ? "bg-purple-500/10 ring-1 ring-inset ring-purple-500/40" : t.entry_source === "whale_shock" ? "bg-cyan-500/10 ring-1 ring-inset ring-cyan-500/30" : isEarlyEntryVariant ? "bg-violet-500/10 ring-1 ring-inset ring-violet-500/30" : ""}`}>
+                <tr key={t.id} className={`border-t border-border font-mono text-xs ${isCmcEntry || isPurpleResearchEntry ? "bg-purple-500/10 ring-1 ring-inset ring-purple-500/40" : t.entry_source === "whale_shock" ? "bg-cyan-500/10 ring-1 ring-inset ring-cyan-500/30" : isEarlyEntryVariant ? "bg-violet-500/10 ring-1 ring-inset ring-violet-500/30" : ""}`}>
                   <td className="py-1.5 font-semibold">
                     <span>{t.symbol}</span>
                     {isCmcEntry && (
@@ -190,6 +191,11 @@ export function TradesPanel() {
                     {isEarlyEntryVariant && (
                       <span className="ml-2 inline-flex rounded border border-violet-400/50 bg-violet-500/15 px-1.5 py-0.5 align-middle text-[9px] font-bold tracking-wide text-violet-300">
                         {earlyEntryLabel}
+                      </span>
+                    )}
+                    {!isCmcEntry && !isEarlyEntryVariant && isPurpleResearchEntry && (
+                      <span className="ml-2 inline-flex rounded border border-purple-400/60 bg-purple-500/20 px-1.5 py-0.5 align-middle text-[9px] font-bold tracking-wide text-purple-300">
+                        PURPLE RESEARCH
                       </span>
                     )}
                   </td>
