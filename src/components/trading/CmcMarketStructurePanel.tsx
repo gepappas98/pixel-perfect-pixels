@@ -204,6 +204,7 @@ export function CmcMarketStructurePanel() {
         ) : !listings.data?.length ? (
           <p className="text-xs text-muted-foreground">Waiting for the first successful listings snapshot.</p>
         ) : (
+          <>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[900px] text-left text-xs">
               <thead className="text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -240,6 +241,7 @@ export function CmcMarketStructurePanel() {
             </table>
           </div>
           <p className="mt-2 text-[10px] text-muted-foreground">Sorted by absolute 24h move, not by expected return. CMC price/volume are context only; tradability still requires independent Binance Spot and RevolutX checks.</p>
+          </>
         )}
       </div>
       <CmcResearchOutcomePanel />
