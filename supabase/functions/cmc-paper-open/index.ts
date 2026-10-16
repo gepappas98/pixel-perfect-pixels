@@ -5,7 +5,8 @@ const STOP_LOSS_PCT = 0.03;
 const TAKE_PROFIT_PCT = 0.04;
 const MAX_PRICE_AGE_MIN = 20;
 const COOLDOWN_HOURS = 24;
-const MAX_OPENS_PER_RUN = 5;
+const MAX_OPENS_PER_RUN = 2;
+const MAX_DAILY_OPENS = 5;
 const MIN_24H_CHANGE = 1;
 const MIN_1H_CHANGE = 0;
 const MIN_7D_CHANGE = 0;
@@ -94,6 +95,7 @@ Deno.serve(async (req: Request) => {
     }
 
     const decisions: any[] = [];
+    const openedLast24h = tradeRows.filter((t: any) => { const ts = Date.parse(t.created_at); return Number.isFinite(ts) && ts >= now - 24 * 3600000; }).length;
     let opened = 0;
     const candidates = [...eligibleSymbols].flatMap((asset: string) => {
       const binanceSymbol = asset === "MATIC" ? "POLUSDT" : asset === "RNDR" ? "RENDERUSDT" : asset + "USDT";
@@ -117,7 +119,7 @@ Deno.serve(async (req: Request) => {
     }).sort((a: any, b: any) => (b.ch24 + b.ch1 + b.ch7 * 0.15) - (a.ch24 + a.ch1 + a.ch7 * 0.15));
 
     for (const c of candidates) {
-      if (opened >= MAX_OPENS_PER_RUN) break;
+      if (opened >= MAX_OPENS_PER_RUN || openedLast24h + opened >= MAX_DAILY_OPENS) break;
       const symbol = c.asset;
       let status = "ELIGIBLE";
       let reason = "CMC positive 1h/24h/7d momentum and sufficient turnover; fresh Binance Spot price";
@@ -187,7 +189,7 @@ Deno.serve(async (req: Request) => {
       ok: true, strategy: "cmc-paper-entry-v1", source: "cmc-keyless-listings",
       research_only: true, mode: "paper", live_orders_enabled: false,
       eligible_assets: eligibleSymbols.size, qualifying_candidates: candidates.length,
-      opened, max_opens_per_run: MAX_OPENS_PER_RUN, position_usd: POSITION_USD,
+      opened, opened_last_24h_before_run: openedLast24h, max_opens_per_run: MAX_OPENS_PER_RUN, max_daily_opens: MAX_DAILY_OPENS, position_usd: POSITION_USD,
       stop_loss_pct: STOP_LOSS_PCT * 100, take_profit_pct: TAKE_PROFIT_PCT * 100,
       rules: { max_cmc_rank: MAX_CMC_RANK, min_1h_change_pct_exclusive: MIN_1H_CHANGE, min_24h_change_pct: MIN_24H_CHANGE, min_7d_change_pct_exclusive: MIN_7D_CHANGE, min_volume_to_market_cap_pct: MIN_TURNOVER_PCT, min_cmc_volume_24h_usd: MIN_CMC_VOLUME_USD, price_max_age_minutes: MAX_PRICE_AGE_MIN, cooldown_hours: COOLDOWN_HOURS },
       decisions: decisions.slice(0, 50), evaluated_at: nowIso,
