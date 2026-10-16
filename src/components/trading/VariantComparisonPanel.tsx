@@ -130,7 +130,7 @@ export function VariantComparisonPanel() {
   }
 
   const rows = cohort === "v2" ? data?.v2 ?? [] : data?.legacy ?? [];
-  const s = settings ?? FALLBACK_SETTINGS;
+  const s = settings;
 
   // ── Build aggregation ──
   const agg = new Map<string, StrategyStats>();
