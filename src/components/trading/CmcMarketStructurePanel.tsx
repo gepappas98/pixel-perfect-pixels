@@ -204,23 +204,33 @@ export function CmcMarketStructurePanel() {
           <p className="text-xs text-muted-foreground">Waiting for the first successful listings snapshot.</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] text-left text-xs">
+            <table className="w-full min-w-[900px] text-left text-xs">
               <thead className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                <tr><th className="pb-2 pr-3">Rank / Asset</th><th className="pb-2 pr-3 text-right">Price</th><th className="pb-2 pr-3 text-right">24h volume</th><th className="pb-2 pr-3 text-right">Market cap</th><th className="pb-2 pr-3 text-right">1h</th><th className="pb-2 pr-3 text-right">24h</th><th className="pb-2 pr-3 text-right">7d</th><th className="pb-2">CMC tags</th></tr>
+                <tr><th className="pb-2 pr-3">Rank / Asset</th><th className="pb-2 pr-3 text-right">Price</th><th className="pb-2 pr-3 text-right">24h volume</th><th className="pb-2 pr-3 text-right">Vol / cap</th><th className="pb-2 pr-3 text-right">1h</th><th className="pb-2 pr-3 text-right">24h</th><th className="pb-2 pr-3 text-right">7d</th><th className="pb-2 pr-3">Momentum</th><th className="pb-2">CMC tags</th></tr>
               </thead>
               <tbody>
                 {largestMoves.map((coin, index) => {
                   const changeClass = (change: number | null) => change == null ? "text-muted-foreground" : change > 0 ? "text-bull" : change < 0 ? "text-bear" : "text-muted-foreground";
                   const tags = (coin.tags ?? []).slice(0, 2);
+                  const changes = [coin.percent_change_1h, coin.percent_change_24h, coin.percent_change_7d];
+                  const momentum = changes.every((value) => value != null && value > 0) ? "aligned ↑"
+                    : changes.every((value) => value != null && value < 0) ? "aligned ↓"
+                    : coin.percent_change_24h != null && coin.percent_change_24h > 0 && coin.percent_change_1h != null && coin.percent_change_1h < 0 ? "cooling"
+                    : coin.percent_change_24h != null && coin.percent_change_24h < 0 && coin.percent_change_1h != null && coin.percent_change_1h > 0 ? "bounce"
+                    : "mixed";
+                  const volumeCap = coin.volume_24h_usd != null && coin.market_cap_usd != null && coin.market_cap_usd > 0
+                    ? coin.volume_24h_usd / coin.market_cap_usd * 100 : null;
                   return (
                     <tr key={`${coin.symbol}-${coin.cmc_rank ?? index}`} className="border-t border-border/50">
                       <td className="py-2 pr-3"><span className="mr-2 text-muted-foreground">#{coin.cmc_rank ?? "—"}</span><span className="font-medium">{coin.symbol}</span><span className="ml-2 text-muted-foreground">{coin.name}</span></td>
                       <td className="py-2 pr-3 text-right font-mono">{coin.price_usd == null ? "—" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumSignificantDigits: 6 }).format(coin.price_usd)}</td>
                       <td className="py-2 pr-3 text-right font-mono">{compactUsd(coin.volume_24h_usd)}</td>
                       <td className="py-2 pr-3 text-right font-mono">{compactUsd(coin.market_cap_usd)}</td>
+                      <td className="py-2 pr-3 text-right font-mono">{volumeCap == null ? "—" : `${volumeCap.toFixed(2)}%`}</td>
                       <td className={`py-2 pr-3 text-right font-mono ${changeClass(coin.percent_change_1h)}`}>{pct(coin.percent_change_1h)}</td>
                       <td className={`py-2 pr-3 text-right font-mono ${changeClass(coin.percent_change_24h)}`}><span className="inline-flex items-center justify-end gap-1">{coin.percent_change_24h != null && (coin.percent_change_24h > 0 ? <TrendingUp className="h-3 w-3" /> : coin.percent_change_24h < 0 ? <TrendingDown className="h-3 w-3" /> : null)}{pct(coin.percent_change_24h)}</span></td>
                       <td className={`py-2 pr-3 text-right font-mono ${changeClass(coin.percent_change_7d)}`}>{pct(coin.percent_change_7d)}</td>
+                      <td className={`py-2 pr-3 text-[10px] font-medium ${momentum === "aligned ↑" ? "text-bull" : momentum === "aligned ↓" ? "text-bear" : "text-muted-foreground"}`}>{momentum}</td>
                       <td className="py-2 text-[10px] text-muted-foreground">{tags.length ? tags.join(", ") : "—"}</td>
                     </tr>
                   );
