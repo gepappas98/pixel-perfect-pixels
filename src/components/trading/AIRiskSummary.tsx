@@ -80,12 +80,12 @@ export function AIRiskSummary() {
             AI Risk Summary
           </h2>
           <p className="mt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-            Pollinations.ai · free
+            AI-generated · selected asset + optional context
           </p>
         </div>
       </div>
 
-      <div className="space-y-2">
+      <p className="mb-3 text-[10px] leading-relaxed text-muted-foreground">\n        This is a general AI assessment, not a live portfolio-risk check: it does not automatically read open positions, current signals, or risk-gate tables.\n      </p>\n\n      <div className="space-y-2">
         <div className="flex gap-2">
           <select
             value={symbol}
