@@ -130,7 +130,7 @@ export function CmcMarketStructurePanel() {
             CMC Market Structure
           </h2>
           <p className="mt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-            Keyless · research-only · context and discovery, never a BUY trigger
+            Keyless · CMC research signals · paper-only · no live orders
           </p>
         </div>
         <a href="https://coinmarketcap.com/api/documentation/pro-api-reference/keyless-public-api/" target="_blank" rel="noreferrer"
