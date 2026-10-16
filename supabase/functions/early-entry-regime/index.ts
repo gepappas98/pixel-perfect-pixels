@@ -52,17 +52,20 @@ Deno.serve(async (req) => {
     // Require the actual transition: previous market regime was bearish/sideways,
     // while the current canonical regime has turned bullish. No price confirmation gate.
     const body = await req.json().catch(() => ({}));
-    // Prefer the canonical regime already stamped on recent composite signals.
-    // Request-body values are only a fallback for explicitly supplied diagnostics.
-    const { data: regimeRows, error: regimeError } = await db.from("composite_signals")
-      .select("regime_label,created_at")
-      .not("regime_label", "is", null)
-      .gte("created_at", since1h)
+    // Use the same canonical baseline regime as the Market Regime dashboard.
+    // Fail closed when telemetry is missing/stale; composite signals may carry a different regime.
+    const regimeFreshSince = new Date(now.getTime() - 20 * 60 * 1000).toISOString();
+    const { data: regimeRows, error: regimeError } = await db.from("market_regime_telemetry")
+      .select("baseline_regime,baseline_score,created_at,data_status")
+      .eq("data_status", "ok")
+      .gte("created_at", regimeFreshSince)
       .order("created_at", { ascending: false })
-      .limit(100);
+      .limit(1);
     if (regimeError) throw regimeError;
-    const canonicalRegime = (regimeRows ?? []).find((row) => row.regime_label)?.regime_label;
-    const regime = String(canonicalRegime ?? body.market_regime ?? "unknown").toLowerCase();
+    const canonicalTelemetry = regimeRows?.[0] ?? null;
+    const regime = String(canonicalTelemetry?.baseline_regime ?? "unknown").toLowerCase();
+    const regimeTelemetryAt = canonicalTelemetry?.created_at ?? null;
+    const regimeTelemetryScore = canonicalTelemetry?.baseline_score ?? null;
 
     // Canonical Market Regime Score fallback. Missing components are neutral (0),
     // and their sample counts are recorded so a neutral fallback is observable.
@@ -126,7 +129,7 @@ Deno.serve(async (req) => {
     // Council 10%, short-term taker-buy imbalance 20%.
     const computedScore = Number((whaleNet * 0.30 + techBreadth4h * 0.40
       + councilConsensus * 0.10 + (takerBuyImbalance5m ?? 0) * 0.20).toFixed(4));
-    const score = computedScore;
+    const score = canonicalTelemetry ? Number(canonicalTelemetry.baseline_score) : computedScore;
 
 
     const bearishOrSideways = (value: unknown) =>
@@ -171,6 +174,10 @@ Deno.serve(async (req) => {
     const finalTransition = transitionWindowActive && currentIsBullish
       && breadthImproving && whaleTurningPositive ? "EARLY_ENTRY_ACTIVE" : "STRICT";
     const gateDiagnostics = {
+      regime_source: "market_regime_telemetry.baseline_regime",
+      regime_telemetry_at: regimeTelemetryAt,
+      regime_telemetry_score: regimeTelemetryScore,
+      regime_telemetry_fresh: !!canonicalTelemetry,
       transition_window_active: transitionWindowActive,
       transition_observed_at: transitionObservation?.observed_at ?? null,
       transition_age_minutes: transitionAgeMinutes,
