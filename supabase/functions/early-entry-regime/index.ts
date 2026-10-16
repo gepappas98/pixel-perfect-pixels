@@ -157,9 +157,11 @@ Deno.serve(async (req) => {
     const breadthImproving = !!transitionBaseline
       && breadth.bullish > Number(transitionBaseline.technicals_1h_bullish ?? 0)
       && breadth.bearish < Number(transitionBaseline.technicals_1h_bearish ?? 0);
-    const transitionTime = transitionObservation ? new Date(transitionObservation.observed_at).getTime() : 0;
+    const transitionWindowStart = transitionBaseline
+      ? new Date(transitionBaseline.observed_at).getTime()
+      : transitionObservation ? new Date(transitionObservation.observed_at).getTime() : 0;
     const whaleWasNeutralOrDistributionDuringWindow = observationsChronological.some((row) =>
-      new Date(row.observed_at).getTime() >= transitionTime
+      new Date(row.observed_at).getTime() >= transitionWindowStart
       && (String(row.whale_flow_state).toLowerCase() === "distribution"
         || String(row.whale_flow_state).toLowerCase() === "neutral"));
     const whaleTurningPositive = whaleState === "accumulation" && whaleWasNeutralOrDistributionDuringWindow;
