@@ -55,6 +55,31 @@ function compactStageForStorage(stage: any): any {
     };
   }
 
+  // signal-combiner returns the full created-signal rows for the HTTP caller.
+  // Store only a summary in pipeline_runs because the canonical rows already
+  // live in composite_signals; duplicating them inflated each run by ~400 KB.
+  if (stage.name === "signal-combiner" && Array.isArray(result.signals)) {
+    const signals = result.signals;
+    const { signals: _rawSignals, ...rest } = result;
+    const topSymbols = Object.entries(countBy(signals, "symbol"))
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 12)
+      .map(([symbol, count]) => ({ symbol, count }));
+
+    return {
+      ...stage,
+      result: {
+        ...rest,
+        signals_count: signals.length,
+        signals_summary: {
+          by_recommendation: countBy(signals, "recommendation"),
+          top_symbols: topSymbols,
+        },
+        raw_payload_storage: "composite_signals",
+      },
+    };
+  }
+
   return stage;
 }
 
@@ -174,7 +199,7 @@ Deno.serve(async (req) => {
       trigger,
       source,
       stages: [],
-      storage_compaction_version: 1,
+      storage_compaction_version: 2,
     },
   }).select("id").single();
 
@@ -197,7 +222,7 @@ Deno.serve(async (req) => {
         source,
         stages: compactStagesForStorage(results),
         current_stage: phaseName,
-        storage_compaction_version: 1,
+        storage_compaction_version: 2,
       },
     }).eq("id", id);
   };
@@ -261,7 +286,7 @@ Deno.serve(async (req) => {
         trigger,
         source,
         stages: compactStagesForStorage(results),
-        storage_compaction_version: 1,
+        storage_compaction_version: 2,
       },
     }).eq("id", id);
     return Response.json({ok:false,run_id:id,error:errMessage,stages:results},{status:502});
@@ -296,7 +321,7 @@ Deno.serve(async (req) => {
       source,
       stages: compactStagesForStorage(results),
       execution_audit: executionAudit,
-      storage_compaction_version: 1,
+      storage_compaction_version: 2,
     },
   }).eq("id", id);
 
