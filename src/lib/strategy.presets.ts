@@ -80,7 +80,7 @@ export const PRESET_LABELS: Record<string, string> = {
   balanced: "Balanced",
   "whale-focused": "Whale-Focused",
   "chart-trader": "Chart Trader",
-  "sentiment-first": "Sentiment-First",
+  "sentiment-first": "Low-Weight (Sentiment Shadow)",
   "ai-driven": "AI-Driven",
   conservative: "Conservative",
   "volatility-timing": "BB + Aroon Timing",

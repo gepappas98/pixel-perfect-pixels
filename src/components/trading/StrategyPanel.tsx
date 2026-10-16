@@ -123,7 +123,8 @@ export function StrategyPanel() {
 
   const dirty =
     serverConfig &&
-    (draft.whale_weight !== serverConfig.whale_weight ||
+    (draft.preset_name !== serverConfig.preset_name ||
+      draft.whale_weight !== serverConfig.whale_weight ||
       draft.technicals_weight !== serverConfig.technicals_weight ||
       draft.council_weight !== serverConfig.council_weight ||
       draft.auto_switch_enabled !== serverConfig.auto_switch_enabled ||
@@ -138,8 +139,7 @@ export function StrategyPanel() {
             Strategy Weights
           </h2>
           <p className="mt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-            {PRESET_LABELS[draft.preset_name ?? "custom"] ?? "Custom"} · affects
-            next cycle
+            {PRESET_LABELS[draft.preset_name ?? "custom"] ?? "Custom"} · applies to live scorer on next cycle
           </p>
         </div>
         {dirty && (
@@ -165,8 +165,8 @@ export function StrategyPanel() {
               )}
             </div>
             <p className="mt-0.5 text-[10px] text-muted-foreground">
-              AI re-evaluates the strategy every{" "}
-              {draft.auto_switch_interval_hours ?? 4}h
+              Periodic selector every{" "}
+              {draft.auto_switch_interval_hours ?? 4}h; deterministic first, optional AI, and switches only when sample/performance gates pass. Confirmed Bear uses Demote-Only.
             </p>
           </div>
           <input
@@ -257,8 +257,8 @@ export function StrategyPanel() {
           disabled={save.isPending}
         />
         <WeightSlider
-          label="Technicals (MTF)"
-          description="4h + 1h + 1d confluence score"
+          label="Technicals (4h primary)"
+          description="Weight scales the primary 4h technical score; the multi-timeframe confirmation gate is separate."
           value={draft.technicals_weight}
           onChange={(v) =>
             setDraft({ ...draft, technicals_weight: v, preset_name: "custom" })
