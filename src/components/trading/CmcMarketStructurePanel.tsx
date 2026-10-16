@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Activity, Globe2, TrendingDown, TrendingUp } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
+import { CmcResearchOutcomePanel } from "@/components/trading/CmcResearchOutcomePanel";
 
 type CmcMacro = {
   captured_at: string;
@@ -241,6 +242,7 @@ export function CmcMarketStructurePanel() {
           <p className="mt-2 text-[10px] text-muted-foreground">Sorted by absolute 24h move, not by expected return. CMC price/volume are context only; tradability still requires independent Binance Spot and RevolutX checks.</p>
         )}
       </div>
+      <CmcResearchOutcomePanel />
       <p className="mt-3 text-[10px] text-muted-foreground">
         Last CMC update times can differ from capture times. CMC market data is contextual only; Binance remains the execution-price source and existing whale/MTF/Council rules remain unchanged.
       </p>
