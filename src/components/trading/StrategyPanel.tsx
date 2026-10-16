@@ -123,7 +123,8 @@ export function StrategyPanel() {
 
   const dirty =
     serverConfig &&
-    (draft.preset_name !== serverConfig.preset_name ||\n      draft.whale_weight !== serverConfig.whale_weight ||
+    (draft.preset_name !== serverConfig.preset_name ||
+      draft.whale_weight !== serverConfig.whale_weight ||
       draft.technicals_weight !== serverConfig.technicals_weight ||
       draft.council_weight !== serverConfig.council_weight ||
       draft.auto_switch_enabled !== serverConfig.auto_switch_enabled ||
