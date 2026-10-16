@@ -27,8 +27,8 @@ interface TradingSettings {
 }
 
 /**
- * Πλήρης λίστα preset keys σε order εμφάνισης.
- * ΠΡΕΠΕΙ να είναι σε sync με το STRATEGY_PRESETS στο strategy.presets.ts.
+ * Selectable presets plus the accumulation research variant.
+ * Accumulation is intentionally research-only and is not an auto-switch preset.
  */
 const PRESET_ORDER = [
   "balanced",
@@ -104,8 +104,35 @@ export function VariantComparisonPanel() {
     staleTime: 30_000,
   });
 
-  // ── Settings (stable defaults avoid the pipeline_settings schema query) ──
-  const settings = FALLBACK_SETTINGS;
+  // Read benchmark assumptions from the same runtime settings used by variant-resolver.
+  const settingsQuery = useQuery<TradingSettings>({
+    queryKey: ["variant-trading-settings"],
+    queryFn: async () => {
+      const { data, error } = await (supabase as any)
+        .from("pipeline_settings")
+        .select("variant_max_hours, variant_tp_pct, variant_sl_pct")
+        .eq("id", 1)
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) throw new Error("pipeline_settings row id=1 not found");
+      const parsed = {
+        variant_max_hours: Number(data.variant_max_hours),
+        variant_tp_pct: Number(data.variant_tp_pct),
+        variant_sl_pct: Number(data.variant_sl_pct),
+      };
+      if (
+        !Number.isFinite(parsed.variant_max_hours) || parsed.variant_max_hours <= 0 ||
+        !Number.isFinite(parsed.variant_tp_pct) || parsed.variant_tp_pct <= 0 ||
+        !Number.isFinite(parsed.variant_sl_pct) || parsed.variant_sl_pct <= 0
+      ) {
+        throw new Error("Invalid variant benchmark settings");
+      }
+      return parsed;
+    },
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
+  const settings = settingsQuery.data ?? FALLBACK_SETTINGS;
 
   if (isLoading) {
     return (
@@ -206,6 +233,12 @@ export function VariantComparisonPanel() {
           <span className="text-[10px] text-muted-foreground">{totalResolved} resolved · {totalOpen} open</span>
         </div>
       </div>
+
+      {settingsQuery.isError && (
+        <p className="mb-2 text-[10px] text-muted-foreground">
+          Runtime benchmark settings unavailable; displaying fallback assumptions.
+        </p>
+      )}
 
       {/* Explanation */}
       <div className="mb-3 flex items-start gap-2 rounded-md border border-accent/20 bg-accent/5 p-2.5">
