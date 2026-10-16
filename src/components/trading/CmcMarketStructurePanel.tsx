@@ -25,11 +25,19 @@ type CmcMacro = {
 type CmcListing = {
   name: string;
   symbol: string;
+  slug?: string | null;
   cmc_rank: number | null;
   price_usd: number | null;
   volume_24h_usd: number | null;
   market_cap_usd: number | null;
+  percent_change_1h: number | null;
   percent_change_24h: number | null;
+  percent_change_7d: number | null;
+  circulating_supply?: number | null;
+  total_supply?: number | null;
+  max_supply?: number | null;
+  tags?: string[] | null;
+  captured_at?: string;
 };
 
 function compactUsd(value: number | null | undefined): string {
@@ -89,9 +97,9 @@ export function CmcMarketStructurePanel() {
     queryKey: ["cmc-listings-latest"],
     queryFn: async () => {
       const { data, error } = await (supabase.from as any)("cmc_listing_snapshots")
-        .select("name,symbol,cmc_rank,price_usd,volume_24h_usd,market_cap_usd,percent_change_24h,captured_at")
+        .select("name,symbol,slug,cmc_rank,price_usd,volume_24h_usd,market_cap_usd,percent_change_1h,percent_change_24h,percent_change_7d,circulating_supply,total_supply,max_supply,tags,captured_at")
         .order("captured_at", { ascending: false }).order("cmc_rank", { ascending: true })
-        .limit(5);
+        .limit(1000);
       if (error) throw error;
       return (data ?? []) as CmcListing[];
     },
@@ -101,6 +109,11 @@ export function CmcMarketStructurePanel() {
   });
 
   const row = macro.data;
+  const listingUniverse = listings.data ?? [];
+  const largestMoves = [...listingUniverse]
+    .filter((coin) => coin.percent_change_24h != null && Number.isFinite(coin.percent_change_24h))
+    .sort((a, b) => Math.abs(b.percent_change_24h ?? 0) - Math.abs(a.percent_change_24h ?? 0))
+    .slice(0, 20);
   const sources = row?.source_status ?? {};
   const sourceCount = ["global_metrics", "fear_and_greed", "altcoin_season"]
     .filter((key) => sources[key]?.ok === true).length;
@@ -182,8 +195,8 @@ export function CmcMarketStructurePanel() {
 
       <div className="mt-4 border-t border-border/70 pt-3">
         <div className="mb-2 flex items-center justify-between gap-2">
-          <h3 className="text-xs font-semibold text-foreground">CMC top-ranked spot universe · top 5</h3>
-          <span className="text-[10px] text-muted-foreground">Discovery only · no automatic watchlist merge</span>
+          <h3 className="text-xs font-semibold text-foreground">CMC available universe · largest 24h moves</h3>
+          <span className="text-[10px] text-muted-foreground">{listingUniverse.length.toLocaleString()} listings loaded · research only</span>
         </div>
         {listingsPending ? (
           <p className="text-xs text-muted-foreground">Listings snapshot is not available yet; deploy the listings migration and sync first.</p>
@@ -191,27 +204,31 @@ export function CmcMarketStructurePanel() {
           <p className="text-xs text-muted-foreground">Waiting for the first successful listings snapshot.</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[480px] text-left text-xs">
+            <table className="w-full min-w-[760px] text-left text-xs">
               <thead className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                <tr><th className="pb-2 pr-3">Rank / Asset</th><th className="pb-2 pr-3 text-right">Price</th><th className="pb-2 pr-3 text-right">24h volume</th><th className="pb-2 text-right">24h</th></tr>
+                <tr><th className="pb-2 pr-3">Rank / Asset</th><th className="pb-2 pr-3 text-right">Price</th><th className="pb-2 pr-3 text-right">24h volume</th><th className="pb-2 pr-3 text-right">Market cap</th><th className="pb-2 pr-3 text-right">1h</th><th className="pb-2 pr-3 text-right">24h</th><th className="pb-2 pr-3 text-right">7d</th><th className="pb-2">CMC tags</th></tr>
               </thead>
               <tbody>
-                {listings.data.map((coin, index) => {
-                  const change = coin.percent_change_24h;
+                {largestMoves.map((coin, index) => {
+                  const changeClass = (change: number | null) => change == null ? "text-muted-foreground" : change > 0 ? "text-bull" : change < 0 ? "text-bear" : "text-muted-foreground";
+                  const tags = (coin.tags ?? []).slice(0, 2);
                   return (
                     <tr key={`${coin.symbol}-${coin.cmc_rank ?? index}`} className="border-t border-border/50">
                       <td className="py-2 pr-3"><span className="mr-2 text-muted-foreground">#{coin.cmc_rank ?? "—"}</span><span className="font-medium">{coin.symbol}</span><span className="ml-2 text-muted-foreground">{coin.name}</span></td>
                       <td className="py-2 pr-3 text-right font-mono">{coin.price_usd == null ? "—" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumSignificantDigits: 6 }).format(coin.price_usd)}</td>
                       <td className="py-2 pr-3 text-right font-mono">{compactUsd(coin.volume_24h_usd)}</td>
-                      <td className={`py-2 text-right font-mono ${change == null ? "text-muted-foreground" : change > 0 ? "text-bull" : change < 0 ? "text-bear" : "text-muted-foreground"}`}>
-                        <span className="inline-flex items-center justify-end gap-1">{change != null && (change > 0 ? <TrendingUp className="h-3 w-3" /> : change < 0 ? <TrendingDown className="h-3 w-3" /> : null)}{pct(change)}</span>
-                      </td>
+                      <td className="py-2 pr-3 text-right font-mono">{compactUsd(coin.market_cap_usd)}</td>
+                      <td className={`py-2 pr-3 text-right font-mono ${changeClass(coin.percent_change_1h)}`}>{pct(coin.percent_change_1h)}</td>
+                      <td className={`py-2 pr-3 text-right font-mono ${changeClass(coin.percent_change_24h)}`}><span className="inline-flex items-center justify-end gap-1">{coin.percent_change_24h != null && (coin.percent_change_24h > 0 ? <TrendingUp className="h-3 w-3" /> : coin.percent_change_24h < 0 ? <TrendingDown className="h-3 w-3" /> : null)}{pct(coin.percent_change_24h)}</span></td>
+                      <td className={`py-2 pr-3 text-right font-mono ${changeClass(coin.percent_change_7d)}`}>{pct(coin.percent_change_7d)}</td>
+                      <td className="py-2 text-[10px] text-muted-foreground">{tags.length ? tags.join(", ") : "—"}</td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
           </div>
+          <p className="mt-2 text-[10px] text-muted-foreground">Sorted by absolute 24h move, not by expected return. CMC price/volume are context only; tradability still requires independent Binance Spot and RevolutX checks.</p>
         )}
       </div>
       <p className="mt-3 text-[10px] text-muted-foreground">
