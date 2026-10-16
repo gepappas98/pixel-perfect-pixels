@@ -29,14 +29,14 @@ Deno.serve(async (req: Request) => {
   try {
     // Require the current dynamically eligible asset universe. This avoids assuming that
     // every CMC listing has a Binance Spot USDT market and RevolutX EEA availability.
-    const [{ data: assets, error: assetError }, { data: listings, error: listingError },
+    const [{ data: watchlists, error: watchlistError }, { data: listings, error: listingError },
       { data: prices, error: priceError }, { data: existing, error: tradeError }] = await Promise.all([
-      db.from("tracked_assets").select("asset,binance_symbol,revolut_symbol,enabled").eq("enabled", true),
+      db.from("dynamic_watchlist_snapshots").select("symbols,computed_at").order("computed_at", { ascending: false }).limit(1),
       db.from("cmc_listing_snapshots").select("id,cmc_id,name,symbol,cmc_rank,price_usd,volume_24h_usd,market_cap_usd,percent_change_1h,percent_change_24h,percent_change_7d,captured_at,tags").order("captured_at", { ascending: false }).limit(1000),
       db.from("asset_price_snapshots").select("asset,observed_at,price,source").eq("source", "binance-spot").gte("observed_at", new Date(now - MAX_PRICE_AGE_MIN * 60000).toISOString()).order("observed_at", { ascending: false }).limit(500),
       db.from("trades").select("symbol,created_at,status,entry_source,mode").eq("mode", "paper").eq("entry_source", "cmc_paper").order("created_at", { ascending: false }).limit(1000),
     ]);
-    const errors = [assetError, listingError, priceError, tradeError].filter(Boolean);
+    const errors = [watchlistError, listingError, priceError, tradeError].filter(Boolean);
     if (errors.length) throw new Error(errors.map((e: any) => e.message).join("; "));
 
     const latestBy = <T extends Record<string, any>>(rows: T[] | null, key: string) => {
@@ -47,6 +47,9 @@ Deno.serve(async (req: Request) => {
       }
       return map;
     };
+    const latestWatchlist = watchlists?.[0];
+    const eligibleSymbols = new Set((Array.isArray(latestWatchlist?.symbols) ? latestWatchlist.symbols : []).map((s: unknown) => String(s).toUpperCase()));
+    if (!latestWatchlist || !eligibleSymbols.size) throw new Error("No current dynamic watchlist snapshot; refusing CMC paper entries until Binance Spot + RevolutX eligibility is confirmed.");
     const listingBy = latestBy(listings, "symbol");
     const priceBy = latestBy(prices, "asset");
     const tradeRows = existing ?? [];
@@ -60,9 +63,8 @@ Deno.serve(async (req: Request) => {
 
     const decisions: any[] = [];
     let opened = 0;
-    const candidates = (assets ?? []).flatMap((a: any) => {
-      const asset = String(a.asset ?? "").toUpperCase();
-      const binanceSymbol = String(a.binance_symbol ?? "").toUpperCase();
+    const candidates = [...eligibleSymbols].flatMap((asset: string) => {
+      const binanceSymbol = asset === "MATIC" ? "POLUSDT" : asset === "RNDR" ? "RENDERUSDT" : asset + "USDT";
       const listing = listingBy.get(asset);
       const priceRow = priceBy.get(asset);
       if (!asset || !binanceSymbol.endsWith("USDT") || !listing || !priceRow) return [];
@@ -152,7 +154,7 @@ Deno.serve(async (req: Request) => {
     return Response.json({
       ok: true, strategy: "cmc-paper-entry-v1", source: "cmc-keyless-listings",
       research_only: true, mode: "paper", live_orders_enabled: false,
-      eligible_assets: (assets ?? []).length, qualifying_candidates: candidates.length,
+      eligible_assets: eligibleSymbols.size, qualifying_candidates: candidates.length,
       opened, max_opens_per_run: MAX_OPENS_PER_RUN, position_usd: POSITION_USD,
       stop_loss_pct: STOP_LOSS_PCT * 100, take_profit_pct: TAKE_PROFIT_PCT * 100,
       rules: { max_cmc_rank: MAX_CMC_RANK, min_1h_change_pct_exclusive: MIN_1H_CHANGE, min_24h_change_pct: MIN_24H_CHANGE, min_7d_change_pct_exclusive: MIN_7D_CHANGE, min_volume_to_market_cap_pct: MIN_TURNOVER_PCT, price_max_age_minutes: MAX_PRICE_AGE_MIN, cooldown_hours: COOLDOWN_HOURS },
