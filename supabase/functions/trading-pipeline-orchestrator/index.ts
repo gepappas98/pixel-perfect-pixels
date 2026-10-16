@@ -121,7 +121,7 @@ async function call(name: string, timeout: number) {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     // Keep trade-executor JWT verification enabled; authenticate this internal
     // service-to-service call with the server-side service-role token.
-    if (name === "trade-executor" || name === "cmc-macro-sync" || name === "cmc-listings-sync") {
+    if (name === "trade-executor" || name === "cmc-paper-open" || name === "cmc-macro-sync" || name === "cmc-listings-sync") {
       const internalToken = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
       if (!internalToken) {
         throw new Error("Missing server-side service token for trade-executor call");
@@ -259,6 +259,12 @@ Deno.serve(async (req) => {
     ]);
     results.push(earlyEntryStage, researchStage);
     await updateRunProgress("phase_2_synthesis_complete");
+
+    // Independent CMC research strategy: paper-only, source-tagged, no live orders.
+    // Uses the dynamic watchlist whose CMC candidates already passed Binance Spot + RevolutX EEA eligibility.
+    const cmcPaperStage = await call("cmc-paper-open", 30000);
+    results.push(cmcPaperStage);
+    await updateRunProgress("cmc_paper_entry_complete");
 
     // Phase 3: paper/live-mode executor behavior remains owned by trade-executor;
     // variant resolution runs in parallel and does not submit exchange orders.
