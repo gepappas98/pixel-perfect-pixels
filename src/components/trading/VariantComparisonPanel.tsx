@@ -50,7 +50,7 @@ const PRESET_LABEL: Record<string, string> = {
   "smc-reversal": "SMC Pro",
   "volatility-timing": "BB + Aroon",
   "vwap-momentum": "VWAP+RSI",
-  "sentiment-first": "Sentiment",
+  "sentiment-first": "Low-Weight Research",
   "ai-driven": "AI",
   conservative: "Conservative",
   accumulation: "Accumulation",
