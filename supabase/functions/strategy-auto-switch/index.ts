@@ -1,182 +1,54 @@
 import { corsHeaders, handleOptions } from "../_shared/cors.ts";
 import { getServiceClient } from "../_shared/supabase.ts";
-
-// Weights: [whale, technicals, council] — prediction markets remain disabled.
-const P: Record<string, [number, number, number]> = {
-  balanced: [1, 1, 1],
-  "whale-focused": [2, 0.5, 0.5],
-  "chart-trader": [0.5, 2, 0.5],
-  "ai-driven": [0.5, 0.5, 2],
-  conservative: [1.2, 1.2, 1.2],
-  "volatility-timing": [0.3, 2.2, 1],
-  "vwap-momentum": [0.5, 2.2, 0.8],
-  "smc-reversal": [0.4, 2.5, 0.8],
-};
-
-const norm = (rs: any[]) =>
-  rs
-    .map((r) => {
-      const w = +r.wins || 0,
-        l = +r.losses || 0,
-        n = +r.resolved || 0,
-        t = +r.total_pnl_pct || 0;
-      return {
-        strategy_name: String(r.strategy_name),
-        wins: w,
-        losses: l,
-        resolved: n,
-        total_pnl_pct: t,
-        avg_pnl_pct: n ? t / n : null,
-        win_rate_pct: w + l ? (100 * w) / (w + l) : null,
-      };
-    })
-    .filter((x) => P[x.strategy_name]);
-
-Deno.serve(async (req) => {
-  const h = handleOptions(req);
-  if (h) return h;
-
-  const db = getServiceClient();
-
-  try {
-    // 1. Read config and enforce the existing cooldown.
-    const { data: c, error } = await db
-      .from("strategy_config")
-      .select("*")
-      .eq("id", 1)
-      .maybeSingle();
-
-    if (error) throw error;
-    if (!c || !c.auto_switch_enabled) {
-      return Response.json(
-        { ok: true, switched: false, reason: c ? "disabled" : "no_config" },
-        { headers: corsHeaders }
-      );
-    }
-
-    const iv = Math.max(1, +c.auto_switch_interval_hours || 4);
-    const last = c.last_auto_switch_at
-      ? new Date(c.last_auto_switch_at).getTime()
-      : 0;
-    if (last && Date.now() - last < iv * 36e5) {
-      return Response.json(
-        { ok: true, switched: false, reason: "cooldown" },
-        { headers: corsHeaders }
-      );
-    }
-
-    // 2. Read the seven-day variant performance cohort.
-    const { data: rows, error: pe } = await (db.rpc as any)(
-      "get_variant_performance_v2",
-      { days: 7 }
-    );
-    if (pe) throw pe;
-
-    const ps = norm(rows || []);
-    const cur = String(c.preset_name || "chart-trader");
-    const curPerf = ps.find((x) => x.strategy_name === cur);
-
-    const resolved = curPerf?.resolved || 0;
-    const avgPnl = curPerf?.avg_pnl_pct ?? 0;
-    const winRate = curPerf?.win_rate_pct ?? 50;
-
-    // 3. Demote-only safety rule: >=8 resolved trades and (negative PnL OR win rate <30%).
-    const isFailing = resolved >= 8 && (avgPnl < 0 || winRate < 30);
-
-    // Healthy or undersampled current presets never trigger an upgrade.
-    if (!isFailing) {
-      const reason = `DEMOTE_ONLY: current preset '${cur}' healthy (resolved=${resolved}, avg_pnl=${avgPnl.toFixed(2)}%, win_rate=${winRate.toFixed(1)}%) - no demotion needed`;
-      await db
-        .from("strategy_config")
-        .update({
-          last_auto_switch_at: new Date().toISOString(),
-          last_auto_reasoning: reason,
-        })
-        .eq("id", 1);
-
-      return Response.json(
-        {
-          ok: true,
-          switched: false,
-          reason: "demote_only_healthy",
-          preset: cur,
-          performance: ps,
-        },
-        { headers: corsHeaders }
-      );
-    }
-
-    // 4. If failing, prefer a sufficiently sampled positive alternative.
-    const safeAlternatives = ps
-      .filter(
-        (x) =>
-          x.strategy_name !== cur &&
-          x.resolved >= 8 &&
-          (x.avg_pnl_pct || 0) > 0 &&
-          (x.win_rate_pct || 0) >= 40
-      )
-      .sort((a, b) => (b.avg_pnl_pct || 0) - (a.avg_pnl_pct || 0));
-
-    // If conservative itself is failing and no qualified positive alternative exists,
-    // do not "demote" into balanced; hold the safety preset and report the condition.
-    if (!safeAlternatives.length && cur === "conservative") {
-      const reason = `DEMOTE_ONLY: conservative failed safety check but no qualified positive alternative exists (resolved=${resolved}, avg_pnl=${avgPnl.toFixed(2)}%, win_rate=${winRate.toFixed(1)}%); preset unchanged`;
-      const { error: ue } = await db
-        .from("strategy_config")
-        .update({
-          last_auto_switch_at: new Date().toISOString(),
-          last_auto_reasoning: reason,
-        })
-        .eq("id", 1);
-      if (ue) throw ue;
-      return Response.json(
-        {
-          ok: true,
-          switched: false,
-          reason: "conservative_failed_no_safe_alternative",
-          preset: cur,
-          performance: ps,
-        },
-        { headers: corsHeaders }
-      );
-    }
-
-    const targetPreset = safeAlternatives[0]?.strategy_name || "conservative";
-
-    const demoteReason = `AUTO_DEMOTE: '${cur}' failed safety check (resolved=${resolved}, avg_pnl=${avgPnl.toFixed(2)}%, win_rate=${winRate.toFixed(1)}%) -> demoted to '${targetPreset}'`;
-
-    const w = P[targetPreset];
-    const { error: ue } = await db
-      .from("strategy_config")
-      .update({
-        whale_weight: w[0],
-        technicals_weight: w[1],
-        council_weight: w[2],
-        prediction_weight: 0,
-        preset_name: targetPreset,
-        last_auto_switch_at: new Date().toISOString(),
-        last_auto_reasoning: demoteReason,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", 1);
-
-    if (ue) throw ue;
-
-    return Response.json(
-      {
-        ok: true,
-        switched: true,
-        preset: targetPreset,
-        source: "auto_demote",
-        reason: demoteReason,
-        performance: ps,
-      },
-      { headers: corsHeaders }
-    );
-  } catch (e) {
-    return Response.json(
-      { ok: false, error: e instanceof Error ? e.message : String(e) },
-      { status: 500, headers: corsHeaders }
-    );
+const P:any={balanced:[1,1,1,1],"whale-focused":[2,.5,.5,.5],"chart-trader":[.5,2,.5,.5],"sentiment-first":[.5,.5,2,.5],"ai-driven":[.5,.5,.5,2],conservative:[1.2,1.2,1.2,1.2],"volatility-timing":[.3,2.2,.5,1],"vwap-momentum":[.5,2.2,.5,.8],"smc-reversal":[.4,2.5,.4,.8]};
+const norm=(rs:any[])=>rs.map(r=>{const w=+r.wins||0,l=+r.losses||0,n=+r.resolved||0,t=+r.total_pnl_pct||0;return{strategy_name:String(r.strategy_name),wins:w,losses:l,resolved:n,total_pnl_pct:t,avg_pnl_pct:n?t/n:null,win_rate_pct:w+l?100*w/(w+l):null}});
+function choose(ps:any[],cur:string|null){const e=ps.filter(x=>x.resolved>=8&&x.win_rate_pct!=null);if(!e.length)return null;const a=e.map(x=>{const q=(x.win_rate_pct||0)/100,f=Math.min(1,x.resolved/25);return{x,score:(x.avg_pnl_pct||0)*(.85+.15*q)*(.75+.25*f)}}).sort((a,b)=>b.score-a.score),b=a[0],c=e.find(x=>x.strategy_name===cur);if(c){const q=(c.win_rate_pct||0)/100,v=c.avg_pnl_pct||0;if((v<0||q<.3)&&c.resolved>=8)return{preset:b.x.strategy_name,reason:"AUTO_DEMOTE current="+cur,forced:true};const s=v*(.85+.15*q)*(.75+.25*Math.min(1,c.resolved/25));if(b.score<=s*1.12)return null}return{preset:b.x.strategy_name,reason:"DETERMINISTIC best="+b.x.strategy_name,forced:false}}
+async function ask(cur:string,ps:any[],market:any){const k=Deno.env.get("GROQ_API_KEY");if(!k)return null;try{const r=await fetch("https://api.groq.com/openai/v1/chat/completions",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+k},body:JSON.stringify({model:Deno.env.get("GROQ_MODEL")||"openai/gpt-oss-20b",messages:[{role:"system",content:"Choose one allowed crypto strategy using performance. Return only JSON with preset and reasoning."},{role:"user",content:JSON.stringify({current:cur,market,performance:ps,allowed:Object.keys(P)})}],temperature:.15,max_completion_tokens:2048}),signal:AbortSignal.timeout(15000)});if(!r.ok)return null;const j=await r.json(),s=j.choices?.[0]?.message?.content||"",x=JSON.parse(s.trim());return P[x.preset]?{preset:x.preset,reason:String(x.reasoning||"Groq selection")}:null}catch{return null}}
+Deno.serve(async req=>{const h=handleOptions(req);if(h)return h;const db=getServiceClient();try{const {data:c,error}=await db.from("strategy_config").select("*").eq("id",1).maybeSingle();if(error)throw error;if(!c||!c.auto_switch_enabled)return Response.json({ok:true,switched:false,reason:c?"disabled":"no_config"},{headers:corsHeaders});const iv=Math.max(1,+c.auto_switch_interval_hours||4),last=c.last_auto_switch_at?new Date(c.last_auto_switch_at).getTime():0;if(last&&Date.now()-last<iv*36e5)return Response.json({ok:true,switched:false,reason:"cooldown"},{headers:corsHeaders});
+// Confirmed-Bear-only Demote-Only guard. Outside confirmed Bear, the existing
+// AI/deterministic selection below is preserved without changing its behavior.
+const {data: regimeRows, error: regimeError} = await db.from("market_regime_telemetry")
+  .select("created_at,data_status,baseline_regime,btc_source")
+  .order("created_at",{ascending:false}).limit(2);
+if (regimeError) throw regimeError;
+const regimeFresh = Array.isArray(regimeRows) && regimeRows.length === 2 &&
+  regimeRows.every((r:any)=>r.data_status === "ok" &&
+    ["binance","bybit"].includes(String(r.btc_source||"").toLowerCase()) &&
+    ["bear","strong_bear"].includes(String(r.baseline_regime||"").toLowerCase()) &&
+    Number.isFinite(Date.parse(r.created_at)) &&
+    Date.now()-Date.parse(r.created_at) >= 0 &&
+    Date.now()-Date.parse(r.created_at) <= 25*60*1000);
+if (regimeFresh) {
+  const {data: bearRows,error: bearPerfError}=await (db.rpc as any)("get_variant_performance_v2",{days:7});
+  if (bearPerfError) throw bearPerfError;
+  const bearPs=norm(bearRows||[]);
+  const bearCur=String(c.preset_name||"balanced");
+  const bearCurrent=bearPs.find((x:any)=>x.strategy_name===bearCur);
+  const bearResolved=bearCurrent?.resolved||0;
+  const bearAvg=bearCurrent?.avg_pnl_pct??0;
+  const bearWin=bearCurrent?.win_rate_pct??50;
+  const bearFailing=bearResolved>=8&&(bearAvg<0||bearWin<30);
+  if (!bearFailing) {
+    const reason="BEAR_DEMOTE_ONLY: confirmed Bear; current preset healthy or undersampled; no change";
+    await db.from("strategy_config").update({last_auto_switch_at:new Date().toISOString(),last_auto_reasoning:reason}).eq("id",1);
+    return Response.json({ok:true,switched:false,reason:"bear_demote_only_no_failure",regime:"confirmed_bear",preset:bearCur,performance:bearPs},{headers:corsHeaders});
   }
-});
+  const bearSafe=bearPs.filter((x:any)=>x.strategy_name!==bearCur&&x.resolved>=8&&(x.avg_pnl_pct||0)>0&&(x.win_rate_pct||0)>=40)
+    .sort((a:any,b:any)=>(b.avg_pnl_pct||0)-(a.avg_pnl_pct||0));
+  if (!bearSafe.length && bearCur==="conservative") {
+    const reason="BEAR_DEMOTE_ONLY: conservative failed but no qualified positive alternative; unchanged";
+    await db.from("strategy_config").update({last_auto_switch_at:new Date().toISOString(),last_auto_reasoning:reason}).eq("id",1);
+    return Response.json({ok:true,switched:false,reason:"bear_no_safe_alternative",regime:"confirmed_bear",preset:bearCur,performance:bearPs},{headers:corsHeaders});
+  }
+  const bearTarget=bearSafe[0]?.strategy_name||"conservative";
+  const bearWeights=P[bearTarget];
+  const bearReason="BEAR_DEMOTE_ONLY: confirmed Bear; "+bearCur+" failed safety (resolved="+bearResolved+", avg_pnl="+bearAvg.toFixed(2)+"%, win_rate="+bearWin.toFixed(1)+"%) -> "+bearTarget;
+  const {error:bearUpdateError}=await db.from("strategy_config").update({
+    whale_weight:bearWeights[0],technicals_weight:bearWeights[1],prediction_weight:0,council_weight:bearWeights[3],
+    preset_name:bearTarget,last_auto_switch_at:new Date().toISOString(),last_auto_reasoning:bearReason,updated_at:new Date().toISOString()
+  }).eq("id",1);
+  if (bearUpdateError) throw bearUpdateError;
+  return Response.json({ok:true,switched:true,preset:bearTarget,source:"bear_demote_only",regime:"confirmed_bear",reason:bearReason,performance:bearPs},{headers:corsHeaders});
+}
+
+let rows:any[]=[];try{const {data:rpcRows,error:rpcError}=await (db.rpc as any)("get_variant_performance_v2",{days:7});if(rpcError)throw rpcError;rows=rpcRows||[]}catch(rpcFailure){const detail=rpcFailure instanceof Error?rpcFailure.message:JSON.stringify(rpcFailure);const reason="RPC fallback: get_variant_performance_v2 unavailable/failed: "+String(detail||"unknown error");await db.from("strategy_config").update({last_auto_reasoning:reason}).eq("id",1);return Response.json({ok:true,switched:false,reason:"rpc_fallback",error:String(detail||"unknown error")},{headers:corsHeaders})}const ps=norm(rows),good=ps.filter(x=>x.resolved>=25&&(x.avg_pnl_pct||0)>0);if(!good.length){const r="BLOCKED: v2 cohort has no preset with resolved>=25 and positive avg_pnl_pct";await db.from("strategy_config").update({last_auto_reasoning:r}).eq("id",1);return Response.json({ok:true,switched:false,reason:"insufficient_positive_sample",performance:ps},{headers:corsHeaders})}const cur=String(c.preset_name||"balanced");const since=new Date(Date.now()-6*60*60*1000).toISOString();const [wr,tr,pr,cr]=await Promise.all([db.from("whale_alerts").select("direction,usd_value").gte("created_at",since),db.from("indicator_snapshots").select("signal,symbol").eq("timeframe","4h").gte("created_at",since).limit(5000),db.from("prediction_snapshots").select("market_slug,question,yes_price").gte("created_at",since).limit(2000),db.from("council_signals").select("symbol,final_verdict").gte("source_created_at",new Date(Date.now()-30*60*1000).toISOString())]);const market={whale_rows:wr.data?.length||0,technical_rows:tr.data?.length||0,prediction_rows:pr.data?.length||0,council_rows:cr.data?.length||0};let d=choose(ps,cur),src=d?.forced?"auto_demote":"deterministic";if(!d||!d.forced){const ai=await ask(cur,ps,market);if(ai){d={preset:ai.preset,reason:ai.reason,forced:false};src="groq";const z=ps.find(x=>x.strategy_name===ai.preset);if(z&&z.resolved>=8&&(z.avg_pnl_pct||0)<0){const safe=choose(ps,null);if(safe){d={preset:safe.preset,reason:"OVERRIDE: Groq negative expectancy "+ai.preset,forced:false};src="override"}}}}if(!d||d.preset===cur){const r=d?"No change: "+d.reason:"No eligible improvement";await db.from("strategy_config").update({last_auto_switch_at:new Date().toISOString(),last_auto_reasoning:r}).eq("id",1);return Response.json({ok:true,switched:false,reason:"no_change",preset:cur,source:src,performance:ps},{headers:corsHeaders})}const w=P[d.preset];const {error:ue}=await db.from("strategy_config").update({whale_weight:w[0],technicals_weight:w[1],prediction_weight:w[2],council_weight:w[3],preset_name:d.preset,last_auto_switch_at:new Date().toISOString(),last_auto_reasoning:d.reason,updated_at:new Date().toISOString()}).eq("id",1);if(ue)throw ue;return Response.json({ok:true,switched:true,preset:d.preset,source:src,reason:d.reason,performance:ps},{headers:corsHeaders})}catch(e){return Response.json({ok:false,error:e instanceof Error?e.message:String(e)},{status:500,headers:corsHeaders})}});
