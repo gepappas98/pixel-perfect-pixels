@@ -33,7 +33,7 @@ async function getVariantPerformance(db: any, days = 7): Promise<any[]> {
     if (error) {
       const rpcDetail = rpcError instanceof Error ? rpcError.message : JSON.stringify(rpcError);
       throw new Error(
-        "get_variant_performance_v2 RPC failed (" + String(rpcDetail || "unknown error") +
+        "get_variant_performance_v3 RPC failed (" + String(rpcDetail || "unknown error") +
         ") and direct strategy_variant_signals fallback failed: " + error.message,
       );
     }
