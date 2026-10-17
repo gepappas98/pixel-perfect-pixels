@@ -1183,6 +1183,14 @@ Deno.serve(async (req) => {
               "spot-long-only",
               "research-unbounded",
             ],
+            entry_source: "standard",
+            entry_metadata: {
+              strategy: "standard-paper-v1",
+              strategy_version: 1,
+              composite_signal_id: signal.id,
+              entry_path: "trade-executor-composite",
+              research_only: true,
+            },
           })
           .select()
           .single();
