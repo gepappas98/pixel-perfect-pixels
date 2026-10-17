@@ -60,7 +60,7 @@ let rows:any[]=[];try{const {data:rpcRows,error:rpcError}=await (db.rpc as any)(
  const win=current?.win_rate_pct??50;
  const failing=resolved>=8&&(avg<0||win<30);
  if(!failing){
-   const reason=`DEMOTE_ONLY_HEALTHY (resolved < 8 or win_rate >= 30%); current=${cur}, resolved=${resolved}, avg_pnl=${avg.toFixed(2)}%, win_rate=${win.toFixed(1)}%`;
+   const reason=`DEMOTE_ONLY_HEALTHY (resolved < 8 or avg_pnl >= 0 and win_rate >= 30%); current=${cur}, resolved=${resolved}, avg_pnl=${avg.toFixed(2)}%, win_rate=${win.toFixed(1)}%`;
    await db.from("strategy_config").update({last_auto_reasoning:reason}).eq("id",1);
    return Response.json({ok:true,switched:false,reason:"demote_only_healthy_or_undersampled",preset:cur,performance:ps},{headers:corsHeaders});
  }
