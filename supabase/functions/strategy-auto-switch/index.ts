@@ -23,10 +23,12 @@ async function getVariantPerformance(db: any, days = 7): Promise<any[]> {
   for (let from = 0; ; from += pageSize) {
     const { data, error } = await db
       .from("strategy_variant_signals")
-      .select("strategy_name,outcome,pnl_pct")
+      .select("id,created_at,strategy_name,outcome,pnl_pct")
       .gte("created_at", since)
       .eq("recommendation", "buy")
       .like("source_fingerprint", "v2|%")
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true })
       .range(from, from + pageSize - 1);
     if (error) {
       const rpcDetail = rpcError instanceof Error ? rpcError.message : JSON.stringify(rpcError);
