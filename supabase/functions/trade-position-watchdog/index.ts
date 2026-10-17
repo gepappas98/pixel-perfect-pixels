@@ -22,33 +22,83 @@ function getServiceClient() {
   return createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 }
 
-async function fetchAllSpotPrices(): Promise<{ prices: Map<string, number>; host: string | null; errors: string[] }> {
-  const hosts = ["https://api.binance.com", "https://data-api.binance.vision", "https://api1.binance.com"];
+async function fetchAllSpotPrices(
+  supabase: ReturnType<typeof getServiceClient>,
+  openTrades: OpenTradeRow[],
+): Promise<{ prices: Map<string, number>; host: string | null; errors: string[]; cachedPairs: Set<string> }> {
   const errors: string[] = [];
-  for (const host of hosts) {
+  const needed = new Set(openTrades.map((trade) => binancePair(trade.symbol)));
+  const prices = new Map<string, number>();
+  let liveHost: string | null = null;
+
+  for (const host of ["https://api.binance.com", "https://data-api.binance.vision", "https://api1.binance.com", "https://api3.binance.com"]) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
+    const timer = setTimeout(() => controller.abort(), 6500);
     try {
       const response = await fetch(`${host}/api/v3/ticker/price`, { signal: controller.signal });
-      if (!response.ok) {
-        errors.push(`${host}: HTTP ${response.status}`);
-        continue;
-      }
-      const rows = (await response.json()) as Array<{ symbol: string; price: string }>;
-      const prices = new Map<string, number>();
+      if (!response.ok) { errors.push(`${host}: HTTP ${response.status}`); continue; }
+      const rows = await response.json() as Array<{ symbol: string; price: string }>;
+      let added = 0;
       for (const row of rows) {
+        if (!needed.has(row.symbol) || prices.has(row.symbol)) continue;
         const price = Number(row.price);
-        if (Number.isFinite(price) && price > 0) prices.set(row.symbol, price);
+        if (Number.isFinite(price) && price > 0) { prices.set(row.symbol, price); added++; }
       }
-      if (prices.size) return { prices, host, errors };
-      errors.push(`${host}: empty ticker response`);
+      if (added > 0) liveHost = liveHost ? `${liveHost} + ${host}` : host;
+      if ([...needed].every((pair) => prices.has(pair))) break;
+      if (added === 0) errors.push(`${host}: no prices for remaining open pairs`);
     } catch (error) {
       errors.push(`${host}: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      clearTimeout(timer);
+    } finally { clearTimeout(timer); }
+  }
+
+  // Cross-exchange live fallback fills only pairs missing from all Binance hosts.
+  if ([...needed].some((pair) => !prices.has(pair))) {
+    try {
+      const response = await fetch("https://api.bybit.com/v5/market/tickers?category=spot", { signal: AbortSignal.timeout(8000) });
+      if (!response.ok) errors.push(`https://api.bybit.com: HTTP ${response.status}`);
+      else {
+        const payload = await response.json() as { retCode?: number; result?: { list?: Array<{ symbol?: string; lastPrice?: string }> } };
+        if (payload.retCode === 0) {
+          for (const row of payload.result?.list ?? []) {
+            if (!row.symbol || !needed.has(row.symbol) || prices.has(row.symbol)) continue;
+            const price = Number(row.lastPrice);
+            if (Number.isFinite(price) && price > 0) prices.set(row.symbol, price);
+          }
+          if ([...needed].some((pair) => prices.has(pair))) liveHost = liveHost ? `${liveHost} + Bybit Spot` : "Bybit Spot";
+        } else errors.push(`Bybit retCode ${payload.retCode}`);
+      }
+    } catch (error) { errors.push(`Bybit: ${error instanceof Error ? error.message : String(error)}`); }
+  }
+
+  // Cached values are strictly for visibility; they never trigger SL/TP or trailing-stop actions.
+  const cachedPairs = new Set<string>();
+  const missingPairs = [...needed].filter((pair) => !prices.has(pair));
+  if (missingPairs.length) {
+    const bases = [...new Set(missingPairs.flatMap((pair) => {
+      const base = pair.replace(/USDT$/, "");
+      return [base, base === "POL" ? "MATIC" : base, base === "RENDER" ? "RNDR" : base];
+    }))];
+    const cutoff = new Date(Date.now() - 30 * 60_000).toISOString();
+    const { data, error } = await supabase.from("indicator_snapshots").select("symbol,timeframe,price,created_at")
+      .in("symbol", bases).in("timeframe", ["5m", "1h"]).gte("created_at", cutoff)
+      .order("created_at", { ascending: false }).limit(500);
+    if (error) errors.push(`cached indicator snapshots: ${error.message}`);
+    else {
+      for (const row of data ?? []) {
+        const raw = String(row.symbol ?? "").toUpperCase();
+        const pair = `${raw === "MATIC" ? "POL" : raw === "RNDR" ? "RENDER" : raw}USDT`;
+        const price = Number(row.price);
+        if (!missingPairs.includes(pair) || prices.has(pair) || !Number.isFinite(price) || price <= 0) continue;
+        prices.set(pair, price);
+        cachedPairs.add(pair);
+      }
     }
   }
-  return { prices: new Map(), host: null, errors };
+  const host = cachedPairs.size
+    ? [liveHost, "indicator_snapshots (cached mark)"].filter(Boolean).join(" + ")
+    : liveHost;
+  return { prices, host, errors, cachedPairs };
 }
 
 type AlertInput = {
@@ -188,9 +238,10 @@ Deno.serve(async (req) => {
     const openIds = new Set(openTrades.map((trade) => trade.id));
 
     const { prices, host, errors: priceErrors } = openTrades.length
-      ? await fetchAllSpotPrices()
-      : { prices: new Map<string, number>(), host: null, errors: [] as string[] };
+      ? await fetchAllSpotPrices(supabase, openTrades)
+      : { prices: new Map<string, number>(), host: null, errors: [] as string[], cachedPairs: new Set<string>() };
     result.price_host = host;
+    if (cachedPairs.size) result.errors.push(`cached marks are display-only; exit checks skipped for ${cachedPairs.size} positions`);
     if (openTrades.length && !prices.size) {
       result.errors.push(`all market price sources unavailable: ${priceErrors.join("; ")}`);
       const severity = await raiseAlert(supabase, {
@@ -210,15 +261,17 @@ Deno.serve(async (req) => {
       const priceKey = `trade:${trade.id}:price_unavailable`;
       const exitKey = `trade:${trade.id}:exit_due_still_open`;
 
-      if (price == null) {
+      if (price == null || cachedPairs.has(binancePair(trade.symbol))) {
         result.price_unavailable++;
         const severity = await raiseAlert(supabase, {
           alert_key: priceKey,
           trade_id: trade.id,
           symbol: trade.symbol,
-          alert_code: "position_price_unavailable",
-          message: `${trade.symbol}: watchdog cannot verify this open position because no current Binance price is available.`,
-          evidence: { trade_id: trade.id, created_at: trade.created_at, price_host: host, price_errors: priceErrors },
+          alert_code: price == null ? "position_price_unavailable" : "position_price_cached",
+          message: price == null
+            ? `${trade.symbol}: watchdog cannot verify this open position because no live market price is available.`
+            : `${trade.symbol}: only a cached mark is available; watchdog skipped SL/TP evaluation until a live price returns.`,
+          evidence: { trade_id: trade.id, created_at: trade.created_at, price_host: host, cached_mark: price != null, price_errors: priceErrors },
         }, now);
         result.alerts_raised++;
         if (severity === "critical") result.alerts_escalated++;
