@@ -10,7 +10,7 @@ const MIN_SENTIMENT_SCORE = 0.15;
 const MIN_SENTIMENT_CONFIDENCE = 0.45;
 const MAX_FLOW_AGE_MIN = 20;
 const MAX_PRICE_AGE_MIN = 20;
-const COOLDOWN_HOURS = 6;
+const COOLDOWN_MINUTES = 15;
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -60,7 +60,7 @@ Deno.serve(async (req: Request) => {
         else if (confidence < MIN_SENTIMENT_CONFIDENCE) { status = "NOT_CONFIRMED"; reason = `RSS consensus confidence below ${MIN_SENTIMENT_CONFIDENCE.toFixed(2)}`; }
         else if (flowScore < 0.10 || f.dominant_state !== "accumulation") { status = "NOT_CONFIRMED"; reason = "Whale Flow does not confirm accumulation"; }
         else if (active.has(asset)) { status = "ALREADY_OPEN"; reason = "Event → Flow paper position already open"; }
-        else if ((cooldown.get(asset) ?? 0) > now - COOLDOWN_HOURS * 3600_000) { status = "COOLDOWN"; reason = "Event → Flow paper entry cooldown (6h)"; }
+        else if ((cooldown.get(asset) ?? 0) > now - COOLDOWN_MINUTES * 60_000) { status = "COOLDOWN"; reason = "Event → Flow paper entry cooldown (15m)"; }
         else {
           const price = Number(p.price);
           if (!Number.isFinite(price) || price <= 0) { status = "WAITING_DATA"; reason = "Invalid Spot price"; }
