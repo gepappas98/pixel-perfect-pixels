@@ -12,7 +12,7 @@ const norm=(rs:any[])=>rs.map(r=>{const w=+r.wins||0,l=+r.losses||0,n=+r.resolve
  */
 async function getVariantPerformance(db: any, days = 7): Promise<any[]> {
   const { data: rpcRows, error: rpcError } = await (db.rpc as any)(
-    "get_variant_performance_v2",
+    "get_variant_performance_v3",
     { days },
   );
   if (!rpcError) return rpcRows || [];
@@ -26,7 +26,7 @@ async function getVariantPerformance(db: any, days = 7): Promise<any[]> {
       .select("id,created_at,strategy_name,outcome,pnl_pct")
       .gte("created_at", since)
       .eq("recommendation", "buy")
-      .like("source_fingerprint", "v2|%")
+      .like("source_fingerprint", "v3|%")
       .order("created_at", { ascending: true })
       .order("id", { ascending: true })
       .range(from, from + pageSize - 1);
