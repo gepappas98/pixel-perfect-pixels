@@ -674,7 +674,7 @@ Deno.serve(async (req) => {
       // source_created_at can be considered.
       supabase.from("council_signals").select("*")
         .in("symbol", symbols)
-        .order("synced_at", { ascending: false }).limit(5000),
+        .order("synced_at", { ascending: false, nullsFirst: false }).limit(5000),
       supabase.from("trades").select("id,symbol,entry_price,created_at")
         .in("symbol", symbols).eq("mode", "paper").eq("status", "open")
         .order("created_at", { ascending: true }).limit(2000),
