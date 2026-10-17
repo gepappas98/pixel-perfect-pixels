@@ -105,68 +105,69 @@ function fmtMoney(
   return money.format(value);
 }
 
-function binanceSymbol(
-  coin: string,
-): string {
-  const normalized =
-    String(coin).toUpperCase();
+const BINANCE_SYMBOL_MAP: Record<string, string> = { MATIC: "POL", RNDR: "RENDER" };
 
-  if (normalized === "MATIC") {
-    return "POLUSDT";
+function cleanBaseSymbol(raw: string): string {
+  let value = String(raw ?? "").toUpperCase().trim(), previous = "";
+  while (value !== previous) {
+    previous = value;
+    value = value.replace(/_VARIANT.*$/i, "").replace(/_SHOCK$/i, "").replace(/_CMC$/i, "").replace(/CMC$/i, "").replace(/PERP$/i, "").replace(/USDT$/i, "");
   }
-
-  if (normalized === "RNDR") {
-    return "RENDERUSDT";
-  }
-
-  return `${normalized}USDT`;
+  return value.replace(/[^A-Z0-9]/g, "");
 }
 
-async function fetchSpotMarks(
-  symbols: string[],
-): Promise<{ prices: Record<string, number>; cachedSymbols: string[] }> {
+function binanceSymbol(raw: string): string {
+  const base = cleanBaseSymbol(raw), mapped = BINANCE_SYMBOL_MAP[base] ?? base;
+  return mapped ? `${mapped}USDT` : "";
+}
+
+type BinanceTicker = { symbol?: string; price?: string | number };
+
+async function fetchSpotMarks(symbols: string[]): Promise<{ prices: Record<string, number>; cachedSymbols: string[] }> {
   const unique = [...new Set(symbols.filter(Boolean).map((s) => String(s).toUpperCase()))];
-  const prices: Record<string, number> = {};
-  const cachedSymbols: string[] = [];
-  const hosts = ["https://api.binance.com", "https://data-api.binance.vision", "https://api1.binance.com", "https://api3.binance.com"];
-  await Promise.all(unique.map(async (symbol) => {
-    const pair = binanceSymbol(symbol);
-    for (const host of hosts) {
-      try {
-        const response = await fetch(`${host}/api/v3/ticker/price?symbol=${encodeURIComponent(pair)}`, { signal: AbortSignal.timeout(4500), cache: "no-store" });
-        if (!response.ok) continue;
-        const payload = await response.json() as { price?: string | number };
-        const price = Number(payload.price);
-        if (Number.isFinite(price) && price > 0) { prices[pair] = price; return; }
-      } catch { /* try next Binance host */ }
+  const prices: Record<string, number> = {}, cachedSymbols: string[] = [];
+  const pairs = [...new Set(unique.map(binanceSymbol).filter(Boolean))];
+  try {
+    const response = await fetch("https://api.binance.com/api/v3/ticker/price", { signal: AbortSignal.timeout(4000), cache: "no-store" });
+    if (response.ok) {
+      const payload = await response.json() as BinanceTicker[];
+      const pricesByPair = new Map<string, number>();
+      for (const row of payload) {
+        const price = Number(row.price);
+        if (row.symbol && Number.isFinite(price) && price > 0) pricesByPair.set(row.symbol, price);
+      }
+      for (const pair of pairs) {
+        const price = pricesByPair.get(pair);
+        if (price != null) prices[pair] = price;
+      }
     }
-  }));
-  const missingPairs = unique.map(binanceSymbol).filter((pair) => prices[pair] == null);
+  } catch { /* use alternate venue and recent snapshot fallback */ }
+
+  const missingPairs = pairs.filter((pair) => prices[pair] == null);
   await Promise.all(missingPairs.map(async (pair) => {
     try {
-      const response = await fetch(`https://api.bybit.com/v5/market/tickers?category=spot&symbol=${encodeURIComponent(pair)}`, { signal: AbortSignal.timeout(4500), cache: "no-store" });
+      const response = await fetch(`https://api.bybit.com/v5/market/tickers?category=spot&symbol=${encodeURIComponent(pair)}`, { signal: AbortSignal.timeout(3500), cache: "no-store" });
       if (!response.ok) return;
       const payload = await response.json() as { retCode?: number; result?: { list?: Array<{ symbol?: string; lastPrice?: string }> } };
       const price = Number(payload.result?.list?.find((row) => row.symbol === pair)?.lastPrice);
       if (payload.retCode === 0 && Number.isFinite(price) && price > 0) prices[pair] = price;
     } catch { /* cached mark fallback below */ }
   }));
-  const stillMissing = missingPairs.filter((pair) => prices[pair] == null);
+
+  const stillMissing = pairs.filter((pair) => prices[pair] == null);
   if (stillMissing.length) {
     const dbSymbols = [...new Set(stillMissing.flatMap((pair) => {
       const base = pair.replace(/USDT$/, "");
       return [base, base === "POL" ? "MATIC" : base, base === "RENDER" ? "RNDR" : base];
     }))];
-    const cutoff = new Date(Date.now() - 30 * 60_000).toISOString();
+    const cutoff = new Date(Date.now() - 90 * 60_000).toISOString();
     const { data, error } = await supabase.from("indicator_snapshots").select("symbol,timeframe,price,created_at")
-      .in("symbol", dbSymbols).in("timeframe", ["5m", "1h"]).gte("created_at", cutoff)
-      .order("created_at", { ascending: false }).limit(500);
+      .in("symbol", dbSymbols).in("timeframe", ["5m", "1h"]).gte("created_at", cutoff).order("created_at", { ascending: false }).limit(500);
     if (!error) {
       const seen = new Set<string>();
       for (const row of data ?? []) {
-        const raw = String(row.symbol ?? "").toUpperCase();
-        const pair = `${raw === "MATIC" ? "POL" : raw === "RNDR" ? "RENDER" : raw}USDT`;
-        const price = Number(row.price);
+        const raw = String(row.symbol ?? "").toUpperCase(), mapped = raw === "MATIC" ? "POL" : raw === "RNDR" ? "RENDER" : raw;
+        const pair = `${mapped}USDT`, price = Number(row.price);
         if (stillMissing.includes(pair) && !seen.has(pair) && Number.isFinite(price) && price > 0) {
           prices[pair] = price; cachedSymbols.push(pair); seen.add(pair);
         }
