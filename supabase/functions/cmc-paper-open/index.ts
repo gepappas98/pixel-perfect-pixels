@@ -159,6 +159,9 @@ Deno.serve(async (req: Request) => {
           source_tags: ["paper", "cmc", "cmc-paper-entry", "spot-long-only", "research-only", "purple-label"],
           entry_metadata: {
             strategy: "cmc-paper-entry-v1",
+            strategy_version: 1,
+            entry_path: "cmc-paper-open",
+            research_only: true,
             source: "cmc-keyless-listings",
             cmc_snapshot_id: c.listing.id,
             cmc_id: c.listing.cmc_id,
