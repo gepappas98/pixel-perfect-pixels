@@ -25,9 +25,9 @@ const SYMBOL_MAP: Record<string, string> = {
 
 const TIMEFRAMES = ["4h", "1h", "1d"] as const;
 const INDICATOR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
-const COUNCIL_MAX_AGE_MS = 40 * 60 * 1000;
-const COUNCIL_MAX_AGE_MS_TRENDING = 30 * 60 * 1000;
-const COUNCIL_MAX_AGE_MS_CALM = 55 * 60 * 1000;
+const COUNCIL_MAX_AGE_MS = 35 * 60 * 1000;
+const COUNCIL_MAX_AGE_MS_TRENDING = 25 * 60 * 1000;
+const COUNCIL_MAX_AGE_MS_CALM = 50 * 60 * 1000;
 const WHALE_LOOKBACK_MS = 6 * 60 * 60 * 1000;
 
 function isFreshTimestamp(value: unknown, maxAgeMs: number, now = Date.now()): boolean {
