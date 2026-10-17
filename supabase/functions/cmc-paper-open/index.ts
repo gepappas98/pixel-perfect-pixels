@@ -5,7 +5,7 @@ const POSITION_USD = 1000;
 const ENTRY_FEE_RATE = 0.0005; // keep aligned with src/lib/fees.ts and trade-exit.ts
 const STOP_LOSS_PCT = 0.03;
 const TAKE_PROFIT_PCT = 0.04;
-const COOLDOWN_HOURS = 1;
+const COOLDOWN_MINUTES = 15;
 const MIN_24H_CHANGE = 1;
 const MIN_1H_CHANGE = 0;
 const MIN_7D_CHANGE = 0;
@@ -134,8 +134,8 @@ Deno.serve(async (req: Request) => {
       let status = "ELIGIBLE";
       let reason = "CMC positive 1h/24h/7d momentum and sufficient turnover; fresh Binance Spot price";
       if (active.has(symbol)) { status = "ALREADY_OPEN"; reason = "CMC paper position already open"; }
-      else if ((latestTradeAt.get(symbol) ?? 0) > now - COOLDOWN_HOURS * 3600000) {
-        status = "COOLDOWN"; reason = "CMC paper-entry cooldown (1h)";
+      else if ((latestTradeAt.get(symbol) ?? 0) > now - COOLDOWN_MINUTES * 60000) {
+        status = "COOLDOWN"; reason = "CMC paper-entry cooldown (15m)";
       } else {
         const quantity = POSITION_USD / c.price;
         const entryFee = POSITION_USD * ENTRY_FEE_RATE;
@@ -204,7 +204,7 @@ Deno.serve(async (req: Request) => {
       eligible_assets: eligibleSymbols.size, qualifying_candidates: candidates.length,
       opened, position_usd: POSITION_USD,
       stop_loss_pct: STOP_LOSS_PCT * 100, take_profit_pct: TAKE_PROFIT_PCT * 100,
-      rules: { max_cmc_rank: MAX_CMC_RANK, min_1h_change_pct_exclusive: MIN_1H_CHANGE, min_24h_change_pct: MIN_24H_CHANGE, min_7d_change_pct_exclusive: MIN_7D_CHANGE, min_volume_to_market_cap_pct: MIN_TURNOVER_PCT, min_cmc_volume_24h_usd: MIN_CMC_VOLUME_USD, cooldown_hours: COOLDOWN_HOURS },
+      rules: { max_cmc_rank: MAX_CMC_RANK, min_1h_change_pct_exclusive: MIN_1H_CHANGE, min_24h_change_pct: MIN_24H_CHANGE, min_7d_change_pct_exclusive: MIN_7D_CHANGE, min_volume_to_market_cap_pct: MIN_TURNOVER_PCT, min_cmc_volume_24h_usd: MIN_CMC_VOLUME_USD, cooldown_minutes: COOLDOWN_MINUTES },
       decisions: decisions.slice(0, 50), evaluated_at: nowIso,
       note: "Forward returns are evaluation labels only. Strategy auto-switch is not modified by this function."
     });
