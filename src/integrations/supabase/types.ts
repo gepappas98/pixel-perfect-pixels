@@ -853,6 +853,45 @@ export type Database = {
         }
         Relationships: []
       }
+      system_audit_reports: {
+        Row: {
+          checked_at: string
+          created_at: string
+          findings: Json
+          id: string
+          severity: string
+          source: string
+          status: string
+          summary: string
+          title: string
+          window_label: string | null
+        }
+        Insert: {
+          checked_at?: string
+          created_at?: string
+          findings?: Json
+          id?: string
+          severity?: string
+          source?: string
+          status?: string
+          summary?: string
+          title: string
+          window_label?: string | null
+        }
+        Update: {
+          checked_at?: string
+          created_at?: string
+          findings?: Json
+          id?: string
+          severity?: string
+          source?: string
+          status?: string
+          summary?: string
+          title?: string
+          window_label?: string | null
+        }
+        Relationships: []
+      }
       trade_alerts: {
         Row: {
           created_at: string
