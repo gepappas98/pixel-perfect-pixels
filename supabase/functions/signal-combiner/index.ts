@@ -154,8 +154,9 @@ async function loadStrategySnapshot(supabase: ReturnType<typeof getServiceClient
  * - council conviction × 0.75 × council weight
  * - historical ±2.2 / 0.5 classification
  *
- * It is diagnostic-only for now. The live composite recommendation remains
- * unchanged until parity is verified.
+ * This remains a diagnostic comparator for the base whale/technicals/council
+ * score. The production score may separately receive the bounded accumulation
+ * booster, and this shadow deliberately does not include that booster.
  */
 function calculateConfiguredShadow(
   whale: any | null,
@@ -387,6 +388,51 @@ function calculateAccumulationVariant(indicator1d: any | null) {
   };
 }
 
+/**
+ * Apply accumulation as a bounded, positive-only BUY-score booster.
+ * It is available only for symbols in the fresh dynamic watchlist, uses
+ * already-computed 1d features, and never reads forward-return labels.
+ * The existing MTF gate and paper executor remain downstream authorities.
+ */
+function applyAccumulationBoost(
+  result: ReturnType<typeof ruleBasedRecommendation>,
+  mtf: ReturnType<typeof classifyMtf>,
+  inFreshDynamicWatchlist: boolean,
+  weights: StrategyWeights,
+) {
+  const a = mtf.trend?.raw?.accumulation;
+  const rawScore = Number(a?.score);
+  const eligible = inFreshDynamicWatchlist
+    && result.score > 0
+    && Number.isFinite(rawScore)
+    && rawScore >= 60
+    && ["ACCUMULATION_WATCH", "BREAKOUT_CONFIRMED"].includes(String(a?.status ?? ""));
+
+  if (!eligible) {
+    return { ...result, accumulation_boost: 0, accumulation_score: Number.isFinite(rawScore) ? rawScore : null };
+  }
+
+  // Existing accumulation-variant threshold (60/100); maximum contribution is +0.50.
+  const bonus = Math.min(0.5, Math.max(0, rawScore / 200));
+  const score = result.score + bonus;
+  const recommendation = score >= 1.5 ? "buy"
+    : score <= -1.5 ? "sell"
+    : Math.abs(score) < 0.5 ? "hold"
+    : "watch";
+  const max = weights.whale + weights.technicals + 1.5 * weights.council + 0.5;
+
+  return {
+    ...result,
+    score,
+    confidence: max > 0 ? Math.min(1, Math.abs(score) / max) : 0,
+    recommendation,
+    reasoning: `${result.reasoning}; dynamic-watchlist accumulation booster +${bonus.toFixed(2)} (score ${rawScore}/100)`,
+    components: { ...result.components, accumulation: bonus },
+    accumulation_boost: bonus,
+    accumulation_score: rawScore,
+  };
+}
+
 function applyMtfGate(
   recommendation: string,
   mtf: ReturnType<typeof classifyMtf>,
@@ -536,10 +582,24 @@ Deno.serve(async (req) => {
     // itself is derived from those inputs. Per-symbol signals use the resolved regime TTL.
     const regimeCouncilSince = new Date(freshnessNow - COUNCIL_MAX_AGE_MS).toISOString();
 
-    const [{ data: councilSymbolRows }, { data: whaleSymbolRows }] = await Promise.all([
+    const [{ data: councilSymbolRows }, { data: whaleSymbolRows }, { data: watchlistSnapshot, error: watchlistError }] = await Promise.all([
       supabase.from("council_signals").select("symbol").order("source_created_at", { ascending: false }),
       supabase.from("whale_alerts").select("symbol").gte("created_at", since),
+      supabase.from("dynamic_watchlist_snapshots").select("symbols,expires_at,computed_at")
+        .order("computed_at", { ascending: false }).limit(1).maybeSingle(),
     ]);
+    if (watchlistError) console.warn("[DYNAMIC_WATCHLIST] read failed; falling back to legacy base list and disabling accumulation boost:", watchlistError.message);
+    const watchlistExpiresAt = new Date(String(watchlistSnapshot?.expires_at ?? "")).getTime();
+    const dynamicWatchlistFresh = !watchlistError
+      && Array.isArray(watchlistSnapshot?.symbols)
+      && watchlistSnapshot.symbols.length > 0
+      && Number.isFinite(watchlistExpiresAt)
+      && watchlistExpiresAt > freshnessNow;
+    const normalizeSymbol = (value: unknown) => String(value ?? "").trim().toUpperCase().replace(/USDT$/, "");
+    const dynamicWatchlistSymbols = new Set<string>(
+      (dynamicWatchlistFresh ? watchlistSnapshot.symbols : [])
+        .map(normalizeSymbol).filter(Boolean),
+    );
 
     const [{ data: regimeWhales }, { data: regimeIndicators }, { data: regimeCouncils }] = await Promise.all([
       supabase.from("whale_alerts").select("symbol,direction,usd_value").gte("created_at", new Date(Date.now()-60*60*1000).toISOString()).limit(3000),
@@ -555,7 +615,11 @@ Deno.serve(async (req) => {
 
     const councilSymbols = [...new Set((councilSymbolRows ?? []).map((r: any) => r.symbol))];
     const whaleSymbols = [...new Set((whaleSymbolRows ?? []).map((r: any) => r.symbol))];
-    const symbols = [...new Set([...WATCHLIST, ...councilSymbols, ...whaleSymbols])];
+    // Use the current dynamic watchlist as the primary research universe.
+    // Keep fresh council/whale discoveries outside it in the signal universe,
+    // but never let those external discoveries receive the accumulation booster.
+    const primarySymbols = dynamicWatchlistFresh ? [...dynamicWatchlistSymbols] : WATCHLIST;
+    const symbols = [...new Set([...primarySymbols, ...councilSymbols, ...whaleSymbols].map(normalizeSymbol).filter(Boolean))];
     // Fetched once per run and consumed only by the isolated strategy-variant research path.
     const marketSentiment = await fetchCryptoMarketSentiment();
     // Validate once per invocation; composite signals and paper execution are untouched.
@@ -620,6 +684,7 @@ Deno.serve(async (req) => {
     const shadowRowsToInsert: any[] = [];
     const variantRowsToUpsert: any[] = [];
     const ledgerRowsToInsert: any[] = [];
+    let accumulationBoostedCount = 0;
 
     for (const symbol of symbols) {
       const dbSymbol = indicatorSymbol(symbol);
@@ -640,7 +705,10 @@ Deno.serve(async (req) => {
         preset_name: null,
         updated_at: null,
       };
-      const result = ruleBasedRecommendation(whale, indicator, council, productionWeights);
+      const baseResult = ruleBasedRecommendation(whale, indicator, council, productionWeights);
+      const inFreshDynamicWatchlist = dynamicWatchlistFresh && dynamicWatchlistSymbols.has(String(symbol).toUpperCase());
+      const result = applyAccumulationBoost(baseResult, mtf, inFreshDynamicWatchlist, productionWeights);
+      if (result.accumulation_boost > 0) accumulationBoostedCount++;
       const gate = applyMtfGate(result.recommendation, mtf, mtfGate);
 
       if (strategySnapshot) {
@@ -675,16 +743,15 @@ Deno.serve(async (req) => {
       if (mtf.primary || mtf.fast || mtf.trend) reasoningParts.push(`MTF: ${mtf.detail}`);
       if (gate.note) reasoningParts.push(gate.note);
 
-      // Persist provenance on every composite row without changing the current
-      // production recommendation semantics. This closes a data-lineage gap:
-      // the signal already consumed these inputs, but the row previously lost
-      // its regime, source tags, price and reproducible input fingerprint.
+      // Persist the complete decision provenance, including whether the
+      // dynamic-watchlist accumulation booster contributed to this score.
       const sourceTags = [
         whale ? "whale" : null,
         indicator ? "technicals" : null,
-
         council ? "council" : null,
         mtf.primary || mtf.fast || mtf.trend ? "mtf" : null,
+        result.accumulation_boost > 0 ? "accumulation" : null,
+        inFreshDynamicWatchlist ? "dynamic-watchlist" : null,
       ].filter((tag): tag is string => Boolean(tag));
       // Council rows are refreshed frequently (often every synthesis cycle).
       // Their row ID is provenance, not a new market event. Including council?.id
@@ -727,25 +794,27 @@ Deno.serve(async (req) => {
             };
           });
 
-        const accumulation = calculateAccumulationVariant(mtf.trend);
-        if (accumulation.recommendation === "buy") {
-          variantRows.push({
-            strategy_name: "accumulation",
-            symbol,
-            confidence: accumulation.confidence,
-            recommendation: accumulation.recommendation,
-            reasoning: accumulation.reasoning,
-            score: accumulation.score,
-            entry_price: variantEntryPrice,
-            outcome: "open",
-            production_regime_label: productionRegimeLabel,
-            regime_label: productionRegimeLabel,
-            market_session: productionMarketSession,
-            created_at: new Date().toISOString(),
-            source_fingerprint: [
-              "v2", "accumulation", symbol, variantSampleBucket,
-            ].join("|"),
-          });
+        if (inFreshDynamicWatchlist) {
+          const accumulation = calculateAccumulationVariant(mtf.trend);
+          if (accumulation.recommendation === "buy") {
+            variantRows.push({
+              strategy_name: "accumulation",
+              symbol,
+              confidence: accumulation.confidence,
+              recommendation: accumulation.recommendation,
+              reasoning: accumulation.reasoning,
+              score: accumulation.score,
+              entry_price: variantEntryPrice,
+              outcome: "open",
+              production_regime_label: productionRegimeLabel,
+              regime_label: productionRegimeLabel,
+              market_session: productionMarketSession,
+              created_at: new Date().toISOString(),
+              source_fingerprint: [
+                "v2", "accumulation", symbol, variantSampleBucket,
+              ].join("|"),
+            });
+          }
         }
 
         const buyVariantRows = variantRows.filter((v) => v.recommendation === "buy");
@@ -791,6 +860,18 @@ Deno.serve(async (req) => {
         market_regime: productionRegimeLabel,
         market_session: productionMarketSession,
         strategy: productionWeights,
+        dynamic_watchlist: {
+          member: inFreshDynamicWatchlist,
+          snapshot_at: dynamicWatchlistFresh ? watchlistSnapshot?.computed_at ?? null : null,
+          fresh: dynamicWatchlistFresh,
+        },
+        accumulation_factor: {
+          score: result.accumulation_score,
+          status: mtf.trend?.raw?.accumulation?.status ?? null,
+          applied: result.accumulation_boost > 0,
+          bonus: result.accumulation_boost,
+          forward_returns_used_for_entry: false,
+        },
         source_tags: sourceTags,
       };
 
@@ -885,6 +966,12 @@ Deno.serve(async (req) => {
       JSON.stringify({
         created: created.length,
         mtf_gate: mtfGate,
+        dynamic_watchlist: {
+          fresh: dynamicWatchlistFresh,
+          snapshot_at: dynamicWatchlistFresh ? watchlistSnapshot?.computed_at ?? null : null,
+          symbols_count: dynamicWatchlistSymbols.size,
+          accumulation_boosted_count: accumulationBoostedCount,
+        },
         signals: created,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
