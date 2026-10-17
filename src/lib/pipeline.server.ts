@@ -3953,6 +3953,14 @@ export async function executeTrades(opts?: {
       mode, status: "open", exchange_order_id: exchangeOrderId, entry_fee: entryFee,
       regime_label: currentRegimeLabel,
       market_session: tradeSession.session,
+      entry_source: mode === "paper" ? "standard" : "live_exchange",
+      entry_metadata: {
+        strategy: mode === "paper" ? "standard-paper-v1" : "live-exchange-v1",
+        strategy_version: 1,
+        composite_signal_id: signal.id,
+        entry_path: "pipeline-server-composite",
+        research_only: mode === "paper",
+      },
       source_tags: tagsFor(
         signal.symbol,
         execCtx,
