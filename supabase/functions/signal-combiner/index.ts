@@ -25,9 +25,9 @@ const SYMBOL_MAP: Record<string, string> = {
 
 const TIMEFRAMES = ["4h", "1h", "1d"] as const;
 const INDICATOR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
-const COUNCIL_MAX_AGE_MS = 30 * 60 * 1000;
-const COUNCIL_MAX_AGE_MS_TRENDING = 20 * 60 * 1000;
-const COUNCIL_MAX_AGE_MS_CALM = 45 * 60 * 1000;
+const COUNCIL_MAX_AGE_MS = 40 * 60 * 1000;
+const COUNCIL_MAX_AGE_MS_TRENDING = 30 * 60 * 1000;
+const COUNCIL_MAX_AGE_MS_CALM = 55 * 60 * 1000;
 const WHALE_LOOKBACK_MS = 6 * 60 * 60 * 1000;
 
 function isFreshTimestamp(value: unknown, maxAgeMs: number, now = Date.now()): boolean {
@@ -632,11 +632,11 @@ Deno.serve(async (req) => {
     const [{ data: regimeWhales }, { data: regimeIndicators }, { data: regimeCouncils }] = await Promise.all([
       supabase.from("whale_alerts").select("symbol,direction,usd_value").gte("created_at", new Date(Date.now()-60*60*1000).toISOString()).limit(3000),
       supabase.from("indicator_snapshots").select("symbol,timeframe,signal,created_at").eq("timeframe","4h").order("created_at",{ascending:false}).limit(1000),
-      supabase.from("council_signals").select("symbol,final_verdict,source_created_at").gte("source_created_at", regimeCouncilSince).lte("source_created_at", freshnessNowIso).order("source_created_at",{ascending:false}).limit(1000),
+      supabase.from("council_signals").select("symbol,final_verdict,source_created_at,synced_at").gte("synced_at", regimeCouncilSince).lte("synced_at", freshnessNowIso).order("synced_at",{ascending:false}).limit(1000),
     ]);
     const productionRegimeLabel = classifyProductionRegime({
       whales: regimeWhales ?? [], indicators: regimeIndicators ?? [],
-      councils: (regimeCouncils ?? []).filter((row: any) => isFreshTimestamp(row?.source_created_at, COUNCIL_MAX_AGE_MS, freshnessNow)),
+      councils: (regimeCouncils ?? []).filter((row: any) => isFreshTimestamp(row?.synced_at ?? row?.source_created_at, COUNCIL_MAX_AGE_MS, freshnessNow)),
     });
     const productionMarketSession = productionSession();
     const councilSince = new Date(freshnessNow - councilMaxAgeMsForRegime(productionRegimeLabel)).toISOString();
@@ -670,9 +670,9 @@ Deno.serve(async (req) => {
         .in("symbol", dbSymbols).in("timeframe", [...TIMEFRAMES])
         .order("created_at", { ascending: false }).limit(2000),
       supabase.from("council_signals").select("*")
-        .in("symbol", symbols).gte("source_created_at", councilSince)
-        .lte("source_created_at", freshnessNowIso)
-        .order("source_created_at", { ascending: false }).limit(1000),
+        .in("symbol", symbols).gte("synced_at", councilSince)
+        .lte("synced_at", freshnessNowIso)
+        .order("synced_at", { ascending: false }).limit(1000),
       supabase.from("trades").select("id,symbol,entry_price,created_at")
         .in("symbol", symbols).eq("mode", "paper").eq("status", "open")
         .order("created_at", { ascending: true }).limit(2000),
@@ -699,7 +699,7 @@ Deno.serve(async (req) => {
     const councilsBySymbol = new Map<string, any>();
     for (const row of batchCouncils ?? []) {
       const key = String(row.symbol ?? "").toUpperCase();
-      if (!councilsBySymbol.has(key)) councilsBySymbol.set(key, row);
+      if (!councilsBySymbol.has(key) && isFreshTimestamp(row?.synced_at ?? row?.source_created_at, councilMaxAgeMsForRegime(productionRegimeLabel), freshnessNow)) councilsBySymbol.set(key, row);
     }
     const openTradesBySymbol = new Map<string, any>();
     for (const trade of batchOpenTrades ?? []) {
