@@ -403,7 +403,7 @@ function applyAccumulationBoost(
   const a = mtf.trend?.raw?.accumulation;
   const rawScore = Number(a?.score);
   const eligible = inFreshDynamicWatchlist
-    && result.score > 0
+    && result.score >= 0
     && Number.isFinite(rawScore)
     && rawScore >= 60
     && ["ACCUMULATION_WATCH", "BREAKOUT_CONFIRMED"].includes(String(a?.status ?? ""));
@@ -426,7 +426,7 @@ function applyAccumulationBoost(
     score,
     confidence: max > 0 ? Math.min(1, Math.abs(score) / max) : 0,
     recommendation,
-    reasoning: `${result.reasoning}; dynamic-watchlist accumulation booster +${bonus.toFixed(2)} (score ${rawScore}/100)`,
+    reasoning: `${result.score === 0 ? "Base score is neutral; " : ""}${result.reasoning}; dynamic-watchlist accumulation booster +${bonus.toFixed(2)} (score ${rawScore}/100; applied even with a zero base score)`,
     components: { ...result.components, accumulation: bonus },
     accumulation_boost: bonus,
     accumulation_score: rawScore,
@@ -487,52 +487,76 @@ function calculateMtfCounterfactual(
 
 function ruleBasedRecommendation(
   whale: any | null,
-  indicator: any | null,
+  mtf: ReturnType<typeof classifyMtf>,
   council: any | null,
   weights: StrategyWeights,
-): { recommendation: string; confidence: number; reasoning: string; score: number; components: { whale: number; technicals: number; council: number } } {
+): { recommendation: string; confidence: number; reasoning: string; score: number; components: { whale: number; technicals: number; council: number; accumulation?: number } } {
   let score = 0;
   const reasons: string[] = [];
-  const components = { whale: 0, technicals: 0, council: 0 };
+  const components: { whale: number; technicals: number; council: number; accumulation?: number } = {
+    whale: 0, technicals: 0, council: 0,
+  };
+
+  const directionLabel = (direction: Direction) =>
+    direction === "bullish" ? "bull" : direction === "bearish" ? "bear" : "neutral";
+  const mtfDiagnosticDetail = `4h ${mtf.primary ? directionLabel(mtf.p) : "missing"} · 1h ${mtf.fast ? directionLabel(mtf.f) : "missing"} · 1d ${mtf.trend ? directionLabel(mtf.t) : "missing"}`;
+  const frames = [
+    { row: mtf.primary, direction: mtf.p, weight: 1 },
+    { row: mtf.fast, direction: mtf.f, weight: 0.65 },
+    { row: mtf.trend, direction: mtf.t, weight: 0.65 },
+  ].filter((frame) => frame.row !== null);
+  const availableWeight = frames.reduce((sum, frame) => sum + frame.weight, 0);
+  const directionalWeight = frames.reduce((sum, frame) =>
+    sum + (frame.direction === "bullish" ? frame.weight : frame.direction === "bearish" ? -frame.weight : 0), 0);
+  const mtfDirectionScore = availableWeight > 0 ? directionalWeight / availableWeight : 0;
+  components.technicals = mtfDirectionScore * weights.technicals;
+  score += components.technicals;
 
   if (whale?.direction === "accumulation") {
-    score += weights.whale;
     components.whale = weights.whale;
+    score += components.whale;
     reasons.push("whale accumulation");
-  }
-  if (whale?.direction === "distribution") {
-    score -= weights.whale;
+  } else if (whale?.direction === "distribution") {
     components.whale = -weights.whale;
+    score += components.whale;
     reasons.push("whale distribution");
   }
 
-  if (indicator?.signal === "bullish") {
-    score += weights.technicals;
-    components.technicals = weights.technicals;
-    reasons.push("bullish technicals (4h)");
-  }
-  if (indicator?.signal === "bearish") {
-    score -= weights.technicals;
-    components.technicals = -weights.technicals;
-    reasons.push("bearish technicals (4h)");
+  if (Math.abs(components.technicals) >= 0.025) {
+    reasons.push(`MTF technicals ${components.technicals > 0 ? "bullish" : "bearish"} (weighted score ${mtfDirectionScore.toFixed(2)}; ${mtf.detail})`);
+  } else if (frames.length > 0 && mtf.bullCount > 0 && mtf.bearCount > 0) {
+    reasons.push(`MTF technical conflict: bullish and bearish timeframes offset each other (${mtfDiagnosticDetail})`);
+  } else if (frames.length > 0 && frames.every((frame) => frame.direction === "neutral")) {
+    reasons.push(`MTF technicals genuinely neutral across available timeframes (${mtfDiagnosticDetail})`);
+  } else if (frames.length === 0) {
+    reasons.push("MTF technical data unavailable: no fresh 4h/1h/1d snapshots");
+  } else {
+    reasons.push(`MTF technicals net to neutral (${mtfDiagnosticDetail})`);
   }
 
   if (council?.final_verdict) {
-    const weight = (Number(council.conviction ?? 50) / 100) * 1.5 * weights.council;
+    const convictionRaw = Number(council.conviction ?? 50);
+    const conviction = Number.isFinite(convictionRaw) ? Math.max(0, Math.min(100, convictionRaw)) : 50;
+    const councilWeight = (conviction / 100) * 1.5 * weights.council;
     const verdict = String(council.final_verdict).toUpperCase();
     if (verdict === "BUY") {
-      score += weight;
-      components.council = weight;
-      reasons.push(`council: BUY (${council.conviction}% conviction)`);
-    } else if (verdict === "SELL") {
-      score -= weight;
-      components.council = -weight;
-      reasons.push(`council: SELL (${council.conviction}% conviction)`);
-    } else if (verdict === "AVOID") {
-      score -= weight;
-      components.council = -weight;
-      reasons.push(`council: AVOID (${council.conviction}% conviction)`);
+      components.council = councilWeight;
+      score += components.council;
+      reasons.push(`council BUY (${conviction}% conviction)`);
+    } else if (verdict === "SELL" || verdict === "AVOID") {
+      components.council = -councilWeight;
+      score += components.council;
+      reasons.push(`council: ${verdict} (${conviction}% conviction)`);
+    } else {
+      reasons.push(`council verdict ${verdict} (no directional score)`);
     }
+  }
+
+  if (Math.abs(score) < 0.5) {
+    if (!whale || !["accumulation", "distribution"].includes(String(whale.direction))) {
+      reasons.push("no active directional whale-flow input within the 6h lookback");
+    }
+    if (!council?.final_verdict) reasons.push("no fresh AI Council verdict");
   }
 
   const max = weights.whale + weights.technicals + 1.5 * weights.council;
@@ -542,15 +566,12 @@ function ruleBasedRecommendation(
   else if (score <= -1.5) recommendation = "sell";
   else if (Math.abs(score) < 0.5) recommendation = "hold";
 
-  return {
-    recommendation,
-    confidence,
-    reasoning: reasons.length ? reasons.join("; ") : "insufficient signal",
-    score,
-    components,
-  };
-}
+  const reasoning = Math.abs(score) < 0.5
+    ? `insufficient directional signal — ${reasons.join("; ")}`
+    : reasons.join("; ");
 
+  return { recommendation, confidence, reasoning, score, components };
+}
 Deno.serve(async (req) => {
   const preflight = handleOptions(req);
   if (preflight) return preflight;
@@ -703,7 +724,7 @@ Deno.serve(async (req) => {
       const mtf = classifyMtf(indicatorRows as Record<string, any>[]);
       const indicator = mtf.primary;
 
-      if (!whale && !indicator && !council) continue;
+      if (!whale && !mtf.primary && !mtf.fast && !mtf.trend && !council) continue;
 
       const productionWeights: StrategyWeights = strategySnapshot ?? {
         whale: 1,
@@ -712,7 +733,7 @@ Deno.serve(async (req) => {
         preset_name: null,
         updated_at: null,
       };
-      const baseResult = ruleBasedRecommendation(whale, indicator, council, productionWeights);
+      const baseResult = ruleBasedRecommendation(whale, mtf, council, productionWeights);
       const inFreshDynamicWatchlist = dynamicWatchlistFresh && dynamicWatchlistSymbols.has(String(symbol).toUpperCase());
       const result = applyAccumulationBoost(baseResult, mtf, inFreshDynamicWatchlist, productionWeights);
       if (result.accumulation_boost > 0) accumulationBoostedCount++;
