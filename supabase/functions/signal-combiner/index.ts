@@ -154,8 +154,9 @@ async function loadStrategySnapshot(supabase: ReturnType<typeof getServiceClient
  * - council conviction × 0.75 × council weight
  * - historical ±2.2 / 0.5 classification
  *
- * It is diagnostic-only for now. The live composite recommendation remains
- * unchanged until parity is verified.
+ * This remains a diagnostic comparator for the base whale/technicals/council
+ * score. The production score may separately receive the bounded accumulation
+ * booster, and this shadow deliberately does not include that booster.
  */
 function calculateConfiguredShadow(
   whale: any | null,
@@ -742,10 +743,8 @@ Deno.serve(async (req) => {
       if (mtf.primary || mtf.fast || mtf.trend) reasoningParts.push(`MTF: ${mtf.detail}`);
       if (gate.note) reasoningParts.push(gate.note);
 
-      // Persist provenance on every composite row without changing the current
-      // production recommendation semantics. This closes a data-lineage gap:
-      // the signal already consumed these inputs, but the row previously lost
-      // its regime, source tags, price and reproducible input fingerprint.
+      // Persist the complete decision provenance, including whether the
+      // dynamic-watchlist accumulation booster contributed to this score.
       const sourceTags = [
         whale ? "whale" : null,
         indicator ? "technicals" : null,
