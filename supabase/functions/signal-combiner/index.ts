@@ -610,7 +610,7 @@ Deno.serve(async (req) => {
     const freshnessNowIso = new Date(freshnessNow).toISOString();
     // Versioned research identity: one strategy/symbol sample per 10-minute observation window.
     // This is separate from council row IDs, which can churn without a new market observation.
-    // The v2 prefix deliberately preserves all existing historical fingerprints unchanged.
+    // The v3 prefix isolates observations using the corrected shared MTF scoring.
     const variantSampleBucket = Math.floor(freshnessNow / (10 * 60 * 1000));
     const since = new Date(freshnessNow - WHALE_LOOKBACK_MS).toISOString();
     // Regime inputs use the neutral 30-minute council window because the regime
