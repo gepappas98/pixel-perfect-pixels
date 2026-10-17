@@ -19,6 +19,7 @@ import { CronHealthPanel } from "@/components/trading/CronHealthPanel";
 import { SystemResourcesPanel } from "@/components/trading/SystemResourcesPanel";
 import { AIRiskSummary } from "@/components/trading/AIRiskSummary";
 import { PortfolioPanel } from "@/components/trading/PortfolioPanel";
+import { StrategyPortfolioSummary } from "@/components/trading/StrategyPortfolioSummary";
 import { RiskPanel } from "@/components/trading/RiskPanel";
 import { SupportDeveloper } from "@/components/trading/SupportDeveloper";
 import { GroqStatusIndicator } from "@/components/trading/GroqStatusIndicator";
@@ -339,6 +340,9 @@ function CommandCenter() {
   <CronHealthPanel />
         <SystemResourcesPanel />
         <PortfolioPanel />
+        <div className="lg:col-span-3">
+          <StrategyPortfolioSummary />
+        </div>
         <div className="lg:col-span-3">
           <TradesPanel />
         </div>
