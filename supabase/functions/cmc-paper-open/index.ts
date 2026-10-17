@@ -1,4 +1,5 @@
-import { getServiceClient } from "../_shared/supabase.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+const getServiceClient = () => createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
 const POSITION_USD = 1000;
 const ENTRY_FEE_RATE = 0.0005; // keep aligned with src/lib/fees.ts and trade-exit.ts
