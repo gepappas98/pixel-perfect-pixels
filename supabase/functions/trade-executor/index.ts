@@ -1273,9 +1273,9 @@ Deno.serve(async (req) => {
     for (const row of dueRows ?? []) {
       const age = Date.now() - new Date(row.observed_at).getTime();
       const horizons = [
-        { ms: 15 * 60 * 1000, col: "15m", done: row.markout_15m_at, prefix: "markout_15m", limitedPrefix: "limited_position_markout_15m" },
-        { ms: 60 * 60 * 1000, col: "1h", done: row.markout_1h_at, prefix: "markout_1h", limitedPrefix: "limited_position_markout_1h" },
-        { ms: 4 * 60 * 60 * 1000, col: "4h", done: row.markout_4h_at, prefix: "markout_4h", limitedPrefix: "limited_position_markout_4h" },
+        { ms: 15 * 60 * 1000, done: row.markout_15m_at, prefix: "markout_15m", limitedPrefix: "limited_position_markout_15m" },
+        { ms: 60 * 60 * 1000, done: row.markout_1h_at, prefix: "markout_1h", limitedPrefix: "limited_position_markout_1h" },
+        { ms: 4 * 60 * 60 * 1000, done: row.markout_4h_at, prefix: "markout_4h", limitedPrefix: "limited_position_markout_4h" },
       ];
       const due = horizons.filter((h) => age >= h.ms && !h.done);
       if (!due.length) continue;
