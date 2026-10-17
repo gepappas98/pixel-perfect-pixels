@@ -56,7 +56,14 @@ export const refreshAuditSnapshot = createServerFn({ method: "GET" }).handler(
             : {};
           const reportedFailures = Number(stageResult.failures ?? stage.failures ?? 0);
           const httpStatus = Number(stage.status ?? 0);
-          if (stage.ok !== false && httpStatus < 400 && reportedFailures <= 0) continue;
+          const hasReportedError = Boolean(stageResult.error || stage.error);
+          if (
+            stage.ok !== false &&
+            stageResult.ok !== false &&
+            httpStatus < 400 &&
+            reportedFailures <= 0 &&
+            !hasReportedError
+          ) continue;
 
           runHasFailure = true;
           const name = String(stage.name ?? "unknown-stage");
