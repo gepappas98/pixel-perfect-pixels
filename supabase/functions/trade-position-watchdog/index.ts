@@ -237,7 +237,7 @@ Deno.serve(async (req) => {
     const now = new Date(nowMs).toISOString();
     const openIds = new Set(openTrades.map((trade) => trade.id));
 
-    const { prices, host, errors: priceErrors } = openTrades.length
+    const { prices, host, errors: priceErrors, cachedPairs } = openTrades.length
       ? await fetchAllSpotPrices(supabase, openTrades)
       : { prices: new Map<string, number>(), host: null, errors: [] as string[], cachedPairs: new Set<string>() };
     result.price_host = host;
