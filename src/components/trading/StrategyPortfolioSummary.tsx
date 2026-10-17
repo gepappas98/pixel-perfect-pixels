@@ -103,6 +103,14 @@ export function StrategyPortfolioSummary() {
       <p className="mt-3 border-t border-border/70 pt-2 text-[10px] text-muted-foreground">
         Refreshes every 30 seconds. Open-position unrealized PnL is excluded. Results are grouped by recorded entry strategy.
       </p>
+      <div className="mt-3 rounded-md border border-dashed border-border px-3 py-2.5">
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Next: statistical evaluation
+        </p>
+        <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+          Pending metrics: win rate · average profit/loss per trade · maximum drawdown (max. peak-to-trough decline). These will be added after validating strategy attribution and historical data consistency.
+        </p>
+      </div>
     </section>
   );
 }
