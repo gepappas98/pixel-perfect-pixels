@@ -1,6 +1,25 @@
 import { useLiveTable } from "@/hooks/useLiveTable";
 import type { CompositeSignal } from "@/lib/trading-types";
 
+type PillarCoverage = { count: number; label: string; detail: string };
+
+function getPillarCoverage(reasoning: string | null): PillarCoverage {
+  // New rows carry explicit input telemetry; do not infer coverage from score/confidence.
+  const match = reasoning?.match(/inputs:\s*W:(0|1)\s*\|\s*T:(0|1)\s*\|\s*C:(0|1)/i);
+  if (!match) return { count: 0, label: "n/a", detail: "legacy signal without input telemetry" };
+  const hasWhale = match[1] === "1";
+  const hasTech = match[2] === "1";
+  const hasCouncil = match[3] === "1";
+  const count = Number(hasWhale) + Number(hasTech) + Number(hasCouncil);
+  const names = [
+    ...(hasWhale ? ["Whale"] : []),
+    ...(hasTech ? ["Tech"] : []),
+    ...(hasCouncil ? ["Council"] : []),
+  ];
+  const label = count === 3 ? "Full confluence" : count === 0 ? "No active pillars" : names.join(" + ");
+  return { count, label, detail: `Coverage: ${count}/3 · ${label}` };
+}
+
 const badge: Record<CompositeSignal["recommendation"], string> = {
   buy: "border-bull/40 bg-bull/10 text-bull",
   sell: "border-bear/40 bg-bear/10 text-bear",
@@ -53,6 +72,7 @@ export function SignalFeed() {
       <div className="space-y-2">
         {signals.map((s) => {
           const extras = extraCounts[s.symbol] ?? 0;
+          const coverage = getPillarCoverage(s.reasoning);
           return (
             <div
               key={s.id}
@@ -68,6 +88,12 @@ export function SignalFeed() {
                   </span>
                   <span className="text-xs text-muted-foreground">
                     {Math.round(Number(s.confidence) * 100)}% confidence
+                  </span>
+                  <span
+                    className="rounded-full border border-border bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                    title={coverage.detail}
+                  >
+                    {coverage.count}/3 {coverage.label}
                   </span>
                   {extras > 0 && (
                     <span
