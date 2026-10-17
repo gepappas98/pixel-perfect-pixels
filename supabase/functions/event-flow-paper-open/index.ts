@@ -72,7 +72,9 @@ Deno.serve(async (req: Request) => {
               regime_label: null, entry_source: "event_flow_paper",
               source_tags: ["paper", "event-flow-paper-open", "event-flow-lab", "rss-news-consensus", "whale-flow-confirmed", "spot-long-only", "research-only"],
               entry_metadata: {
-                strategy: "event-flow-paper-open-v1", sentiment_source: s.source,
+                strategy: "event-flow-paper-open-v1", strategy_version: 1,
+                entry_path: "event-flow-paper-open", research_only: true,
+                sentiment_source: s.source,
                 sentiment_score: sentimentScore, sentiment_confidence: confidence,
                 mention_count: s.mention_count, unique_items: s.unique_items,
                 bullish_count: s.bullish_count, bearish_count: s.bearish_count,
