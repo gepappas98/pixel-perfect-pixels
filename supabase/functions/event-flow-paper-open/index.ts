@@ -6,6 +6,8 @@ const FEE_RATE = 0.001;
 const TAKE_PROFIT_PCT = 0.04;
 const STOP_LOSS_PCT = 0.03;
 const MAX_SENTIMENT_AGE_MIN = 20;
+const MIN_SENTIMENT_SCORE = 0.15;
+const MIN_SENTIMENT_CONFIDENCE = 0.45;
 const MAX_FLOW_AGE_MIN = 20;
 const MAX_PRICE_AGE_MIN = 20;
 const COOLDOWN_HOURS = 6;
@@ -54,8 +56,8 @@ Deno.serve(async (req: Request) => {
       const confidence = s ? Number(s.raw?.confidence ?? 0) : null;
       const flowScore = f ? Number(f.flow_score) : null;
       if (s && f && p && sentimentScore !== null && confidence !== null && flowScore !== null) {
-        if (sentimentScore < 0.25) { status = "NOT_CONFIRMED"; reason = "Sentiment below +0.25"; }
-        else if (confidence < 0.55) { status = "NOT_CONFIRMED"; reason = "RSS consensus confidence below 0.55"; }
+        if (sentimentScore < MIN_SENTIMENT_SCORE) { status = "NOT_CONFIRMED"; reason = `Sentiment below +${MIN_SENTIMENT_SCORE.toFixed(2)}`; }
+        else if (confidence < MIN_SENTIMENT_CONFIDENCE) { status = "NOT_CONFIRMED"; reason = `RSS consensus confidence below ${MIN_SENTIMENT_CONFIDENCE.toFixed(2)}`; }
         else if (flowScore < 0.10 || f.dominant_state !== "accumulation") { status = "NOT_CONFIRMED"; reason = "Whale Flow does not confirm accumulation"; }
         else if (active.has(asset)) { status = "ALREADY_OPEN"; reason = "Event → Flow paper position already open"; }
         else if ((cooldown.get(asset) ?? 0) > now - COOLDOWN_HOURS * 3600_000) { status = "COOLDOWN"; reason = "Event → Flow paper entry cooldown (6h)"; }
@@ -72,7 +74,7 @@ Deno.serve(async (req: Request) => {
               regime_label: null, entry_source: "event_flow_paper",
               source_tags: ["paper", "event-flow-paper-open", "event-flow-lab", "rss-news-consensus", "whale-flow-confirmed", "spot-long-only", "research-only"],
               entry_metadata: {
-                strategy: "event-flow-paper-open-v1", strategy_version: 1,
+                strategy: "event-flow-paper-open-v2", strategy_version: 2,
                 entry_path: "event-flow-paper-open", research_only: true,
                 sentiment_source: s.source,
                 sentiment_score: sentimentScore, sentiment_confidence: confidence,
@@ -99,7 +101,7 @@ Deno.serve(async (req: Request) => {
       else if (!f) reason = "No fresh Whale Flow snapshot";
       else if (!p) reason = "No fresh Binance Spot price";
       decisions.push({
-        asset, observed_at: new Date(now).toISOString(), status, reason,
+        asset, observed_at: new Date(now).toISOString(), updated_at: new Date(now).toISOString(), status, reason,
         sentiment_score: sentimentScore, sentiment_confidence: confidence, flow_score: flowScore,
         flow_state: f?.dominant_state ?? null, price: p ? Number(p.price) : null,
       });
@@ -108,7 +110,7 @@ Deno.serve(async (req: Request) => {
       const { error } = await db.from("event_flow_paper_decisions").upsert(decisions, { onConflict: "asset" });
       if (error) throw new Error("decision persistence failed: " + error.message);
     }
-    return new Response(JSON.stringify({ ok: true, strategy: "event-flow-paper-open-v1", assets_checked: decisions.length, opened, confirmed: decisions.filter(d => d.status === "OPENED" || d.status === "ALREADY_OPEN").length, decisions }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ ok: true, strategy: "event-flow-paper-open-v2", assets_checked: decisions.length, opened, confirmed: decisions.filter(d => d.status === "OPENED" || d.status === "ALREADY_OPEN").length, decisions }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     console.error("[EVENT_FLOW_PAPER_OPEN]", message);
