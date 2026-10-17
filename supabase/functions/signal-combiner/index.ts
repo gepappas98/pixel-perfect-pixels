@@ -784,7 +784,13 @@ Deno.serve(async (req) => {
         });
       }
 
-      const reasoningParts = [result.reasoning];
+      const hasWhaleInput = Boolean(whale && ["accumulation", "distribution"].includes(String(whale.direction)));
+      const hasTechnicalInput = Boolean(mtf.primary || mtf.fast || mtf.trend);
+      const hasCouncilInput = Boolean(council?.final_verdict);
+      const reasoningParts = [
+        result.reasoning,
+        `inputs: W:${hasWhaleInput ? 1 : 0} | T:${hasTechnicalInput ? 1 : 0} | C:${hasCouncilInput ? 1 : 0}`,
+      ];
       if (!council) {
         const councilStatus = councilFreshnessBySymbol.get(String(symbol).toUpperCase())?.status
           ?? "COUNCIL_NEVER_SEEN";
