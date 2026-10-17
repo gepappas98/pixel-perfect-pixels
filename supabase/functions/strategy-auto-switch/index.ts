@@ -5,7 +5,7 @@ const P:any={balanced:[1,1,1],"whale-focused":[2,.5,.5],"chart-trader":[.5,2,.5]
 const norm=(rs:any[])=>rs.map(r=>{const w=+r.wins||0,l=+r.losses||0,n=+r.resolved||0,t=+r.total_pnl_pct||0;return{strategy_name:String(r.strategy_name),wins:w,losses:l,resolved:n,total_pnl_pct:t,avg_pnl_pct:n?t/n:null,win_rate_pct:w+l?100*w/(w+l):null}});
 
 /**
- * Read the V2 benchmark through its aggregate RPC. If the RPC is unavailable
+ * Read the V3 benchmark through its aggregate RPC. If the RPC is unavailable
  * (for example, a stale PostgREST schema cache), fall back to the source table.
  * The fallback pages every matching row so it never silently aggregates only
  * the first PostgREST result page.
