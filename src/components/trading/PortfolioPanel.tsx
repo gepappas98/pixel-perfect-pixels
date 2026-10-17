@@ -50,6 +50,7 @@ interface PortfolioSummary {
   open_symbols: string[] | null;
   marked_open_count: number;
   unmarked_open_count: number;
+  cached_mark_count: number;
 
   legacy_open_sell_count: number;
   legacy_closed_sell_count: number;
@@ -123,66 +124,56 @@ function binanceSymbol(
 
 async function fetchSpotMarks(
   symbols: string[],
-): Promise<Record<string, number>> {
-  const unique = [
-    ...new Set(
-      symbols.filter(Boolean),
-    ),
-  ];
-
-  if (unique.length === 0) {
-    return {};
-  }
-
-  const results = await Promise.all(
-    unique.map(async (symbol) => {
+): Promise<{ prices: Record<string, number>; cachedSymbols: string[] }> {
+  const unique = [...new Set(symbols.filter(Boolean).map((s) => String(s).toUpperCase()))];
+  const prices: Record<string, number> = {};
+  const cachedSymbols: string[] = [];
+  const hosts = ["https://api.binance.com", "https://data-api.binance.vision", "https://api1.binance.com", "https://api3.binance.com"];
+  await Promise.all(unique.map(async (symbol) => {
+    const pair = binanceSymbol(symbol);
+    for (const host of hosts) {
       try {
-        const response = await fetch(
-          `https://api.binance.com/api/v3/ticker/price?symbol=${encodeURIComponent(
-            binanceSymbol(symbol),
-          )}`,
-          {
-            cache: "no-store",
-          },
-        );
-
-        if (!response.ok) {
-          console.warn(
-            `[PORTFOLIO_MARK_UNAVAILABLE] ${symbol} HTTP ${response.status}`,
-          );
-          return null;
-        }
-
-        const payload = (await response.json()) as {
-          price?: string | number;
-        };
-
+        const response = await fetch(`${host}/api/v3/ticker/price?symbol=${encodeURIComponent(pair)}`, { signal: AbortSignal.timeout(4500), cache: "no-store" });
+        if (!response.ok) continue;
+        const payload = await response.json() as { price?: string | number };
         const price = Number(payload.price);
-
-        if (!Number.isFinite(price) || price <= 0) {
-          console.warn(
-            `[PORTFOLIO_MARK_UNAVAILABLE] ${symbol} invalid price`,
-          );
-          return null;
+        if (Number.isFinite(price) && price > 0) { prices[pair] = price; return; }
+      } catch { /* try next Binance host */ }
+    }
+  }));
+  const missingPairs = unique.map(binanceSymbol).filter((pair) => prices[pair] == null);
+  await Promise.all(missingPairs.map(async (pair) => {
+    try {
+      const response = await fetch(`https://api.bybit.com/v5/market/tickers?category=spot&symbol=${encodeURIComponent(pair)}`, { signal: AbortSignal.timeout(4500), cache: "no-store" });
+      if (!response.ok) return;
+      const payload = await response.json() as { retCode?: number; result?: { list?: Array<{ symbol?: string; lastPrice?: string }> } };
+      const price = Number(payload.result?.list?.find((row) => row.symbol === pair)?.lastPrice);
+      if (payload.retCode === 0 && Number.isFinite(price) && price > 0) prices[pair] = price;
+    } catch { /* cached mark fallback below */ }
+  }));
+  const stillMissing = missingPairs.filter((pair) => prices[pair] == null);
+  if (stillMissing.length) {
+    const dbSymbols = [...new Set(stillMissing.flatMap((pair) => {
+      const base = pair.replace(/USDT$/, "");
+      return [base, base === "POL" ? "MATIC" : base, base === "RENDER" ? "RNDR" : base];
+    }))];
+    const cutoff = new Date(Date.now() - 30 * 60_000).toISOString();
+    const { data, error } = await supabase.from("indicator_snapshots").select("symbol,timeframe,price,created_at")
+      .in("symbol", dbSymbols).in("timeframe", ["5m", "1h"]).gte("created_at", cutoff)
+      .order("created_at", { ascending: false }).limit(500);
+    if (!error) {
+      const seen = new Set<string>();
+      for (const row of data ?? []) {
+        const raw = String(row.symbol ?? "").toUpperCase();
+        const pair = `${raw === "MATIC" ? "POL" : raw === "RNDR" ? "RENDER" : raw}USDT`;
+        const price = Number(row.price);
+        if (stillMissing.includes(pair) && !seen.has(pair) && Number.isFinite(price) && price > 0) {
+          prices[pair] = price; cachedSymbols.push(pair); seen.add(pair);
         }
-
-        return [binanceSymbol(symbol), price] as const;
-      } catch (err) {
-        console.warn(
-          `[PORTFOLIO_MARK_FETCH_ERROR] ${symbol}:`,
-          err,
-        );
-        return null;
       }
-    }),
-  );
-
-  return Object.fromEntries(
-    results.filter(
-      (entry): entry is readonly [string, number] =>
-        entry !== null,
-    ),
-  );
+    }
+  }
+  return { prices, cachedSymbols };
 }
 
 const NUM_KEYS = [
@@ -215,6 +206,7 @@ function normalizeSummary(raw: unknown): PortfolioSummary {
   }
   for (const k of NULLABLE_KEYS) out[k] = toNum(r[k]);
   out["open_symbols"] = Array.isArray(r["open_symbols"]) ? (r["open_symbols"] as unknown[]).map(String) : [];
+  out["cached_mark_count"] = 0;
   return out as unknown as PortfolioSummary;
 }
 
@@ -249,14 +241,14 @@ async function loadPortfolioSummary(): Promise<PortfolioSummary> {
    * no market-price request required.
    */
   if (symbols.length === 0) {
-    return initialRow;
+    return { ...initialRow, cached_mark_count: 0 };
   }
 
   /*
    * Fetch only the symbols that are
    * actually open.
    */
-  const marks =
+  const { prices: marks, cachedSymbols } =
     await fetchSpotMarks(symbols);
 
   /*
@@ -280,7 +272,7 @@ async function loadPortfolioSummary(): Promise<PortfolioSummary> {
         : marked.data
     );
 
-  return normalizeSummary(markedRowRaw);
+  return { ...normalizeSummary(markedRowRaw), cached_mark_count: cachedSymbols.length };
 }
 
 export function PortfolioPanel() {
@@ -425,6 +417,11 @@ export function PortfolioPanel() {
             <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
               Spot · Long-only · Realized + Unrealized
             </span>
+            {data.cached_mark_count > 0 && (
+              <span role="status" className="rounded border border-warn/40 bg-warn/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-warn">
+                cached mark · {data.cached_mark_count}
+              </span>
+            )}
 
             <span
               className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider ${
