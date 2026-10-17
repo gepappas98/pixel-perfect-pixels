@@ -86,7 +86,7 @@ const FALLBACK_SETTINGS: TradingSettings = {
 export function VariantComparisonPanel() {
   const [cohort, setCohort] = useState<"v3" | "v2" | "legacy">("v3");
 
-  // Fetch cohorts separately; legacy observations never enter v2 aggregates.
+  // Fetch each scoring generation separately; no historical cohort is mixed into V3.
   const { data, isLoading, error } = useQuery<VariantPerfCohorts>({
     queryKey: ["strategy-variants-perf-cohorts"],
     queryFn: async () => {
