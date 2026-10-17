@@ -29,16 +29,17 @@ function createSupabaseFetch(supabaseKey: string): typeof fetch {
   };
 }
 
+const CANONICAL_SUPABASE_URL = 'https://yckewtpfttvwiptmmrfq.supabase.co';
+
 function createSupabaseAdminClient() {
-  const SUPABASE_URL = process.env['SUPABASE_URL'];
+  // Match the browser client: server-side writes must never silently target a
+  // Lovable Cloud or other build-time Supabase project. Only the canonical
+  // project's service-role key is accepted here, and it remains server-only.
+  const SUPABASE_URL = CANONICAL_SUPABASE_URL;
   const SUPABASE_SERVICE_ROLE_KEY = process.env['SUPABASE_SERVICE_ROLE_KEY'];
 
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    const missing = [
-      ...(!SUPABASE_URL ? ['SUPABASE_URL'] : []),
-      ...(!SUPABASE_SERVICE_ROLE_KEY ? ['SUPABASE_SERVICE_ROLE_KEY'] : []),
-    ];
-    const message = `Missing Supabase environment variable(s): ${missing.join(', ')}. Connect Supabase in Lovable Cloud.`;
+  if (!SUPABASE_SERVICE_ROLE_KEY) {
+    const message = 'Missing server-only SUPABASE_SERVICE_ROLE_KEY for the canonical Supabase project.';
     console.error(`[Supabase] ${message}`);
     throw new Error(message);
   }
