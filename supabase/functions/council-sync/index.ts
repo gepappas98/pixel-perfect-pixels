@@ -412,26 +412,38 @@ Deno.serve(async (req) => {
     const whaleSince = new Date(Date.now() - WHALE_LOOKBACK_MS).toISOString();
     const binSymbols = symbols.map(binanceSymbol);
 
-    const [whaleRes, indicatorRes] = await Promise.all([
-      db.from("whale_alerts")
-        .select("id,symbol,direction,usd_value,created_at")
-        .in("symbol", symbols)
-        .gte("created_at", whaleSince)
-        .order("usd_value", { ascending: false })
-        .limit(3000),
-      db.from("indicator_snapshots")
-        .select("id,symbol,timeframe,created_at,price,rsi,signal,raw")
+    const [whaleRes, indicatorRes, councilHistoryRes] = await Promise.all([
+      db.from("whale_alerts").select("id,symbol,direction,usd_value,created_at")
+        .in("symbol", symbols).gte("created_at", whaleSince)
+        .order("usd_value", { ascending: false }).limit(3000),
+      db.from("indicator_snapshots").select("id,symbol,timeframe,created_at,price,rsi,signal,raw")
         .in("symbol", binSymbols)
         .gte("created_at", new Date(Date.now() - INDICATOR_MAX_AGE_MS).toISOString())
-        .order("created_at", { ascending: false })
-        .limit(5000),
+        .order("created_at", { ascending: false }).limit(5000),
+      db.from("council_signals").select("symbol,depth,synced_at,source_created_at")
+        .in("symbol", symbols).eq("depth", "ai-batch")
+        .order("synced_at", { ascending: false }).limit(5000),
     ]);
-
     if (whaleRes.error) throw whaleRes.error;
     if (indicatorRes.error) throw indicatorRes.error;
+    if (councilHistoryRes.error) throw councilHistoryRes.error;
 
     const whales = (whaleRes.data ?? []) as Row[];
     const indicators = (indicatorRes.data ?? []) as Row[];
+    const latestAiBySymbol = new Map<string, Row>();
+    for (const row of (councilHistoryRes.data ?? []) as Row[]) {
+      const key = String(row.symbol ?? "").toUpperCase();
+      if (key && !latestAiBySymbol.has(key)) latestAiBySymbol.set(key, row);
+    }
+    const coveragePriority = (symbol: string): number => {
+      const row = latestAiBySymbol.get(symbol);
+      if (!row) return 0;
+      const timestamp = row.synced_at ?? row.source_created_at;
+      return fresh(timestamp, 40 * 60_000) ? 2 : 1;
+    };
+    const coverageThen = (a: Candidate, b: Candidate) =>
+      coveragePriority(a.symbol) - coveragePriority(b.symbol) || b.whaleUsd - a.whaleUsd;
+
     const effectiveRegime = regime ?? deriveRegime(indicators, whales);
 
     const bySymbol = new Map<string, Row[]>();
@@ -500,7 +512,7 @@ Deno.serve(async (req) => {
     // for oversold candidates, and finally keep gross-whale context.
     const accumulationRanked = candidates
       .filter((candidate) => candidate.whale.direction === "accumulation")
-      .sort((a, b) => b.whaleUsd - a.whaleUsd);
+      .sort(coverageThen);
 
     const oversoldRanked = candidates
       .filter((candidate) => {
@@ -512,6 +524,8 @@ Deno.serve(async (req) => {
         );
       })
       .sort((a, b) => {
+        const coverage = coveragePriority(a.symbol) - coveragePriority(b.symbol);
+        if (coverage !== 0) return coverage;
         const aRsi = Number(a.primary?.rsi);
         const bRsi = Number(b.primary?.rsi);
         const aScore = b.whaleUsd - a.whaleUsd + (30 - aRsi) * whaleFloor(a.symbol);
@@ -534,7 +548,7 @@ Deno.serve(async (req) => {
 
     const grossRanked = [...candidates]
       .filter((candidate) => !selectedSymbols.has(candidate.symbol))
-      .sort((a, b) => b.whaleUsd - a.whaleUsd);
+      .sort(coverageThen);
 
     const remainingSlots = Math.max(
       0,
@@ -618,6 +632,13 @@ Deno.serve(async (req) => {
       watchlist_size: symbols.length,
       candidates: candidates.length,
       batch_size: batch.length,
+      coverage_priority: {
+        never_assessed_candidates: candidates.filter((candidate) => coveragePriority(candidate.symbol) === 0).length,
+        stale_assessed_candidates: candidates.filter((candidate) => coveragePriority(candidate.symbol) === 1).length,
+        fresh_assessed_candidates: candidates.filter((candidate) => coveragePriority(candidate.symbol) === 2).length,
+        selected_never_assessed: batch.filter((candidate) => coveragePriority(candidate.symbol) === 0).length,
+        selected_stale_assessed: batch.filter((candidate) => coveragePriority(candidate.symbol) === 1).length,
+      },
       groq_rows: groqCount,
       fallback_rows: fallbackCount,
       groq_status: groqOutcome.status,
