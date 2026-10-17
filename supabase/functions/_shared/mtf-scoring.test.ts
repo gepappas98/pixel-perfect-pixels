@@ -1,4 +1,4 @@
-import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { assertEquals, assertAlmostEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import { calculateWeightedMtfScore } from "./mtf-scoring.ts";
 
 Deno.test("aligned bullish frames score +1", () => {
@@ -18,13 +18,14 @@ Deno.test("aligned bearish frames score -1", () => {
 });
 
 Deno.test("opposing 1h and 1d partially offset bullish 4h", () => {
-  assertEquals(
+  assertAlmostEquals(
     calculateWeightedMtfScore([
       { signal: "bullish", available: true, weight: 1 },
       { signal: "bearish", available: true, weight: 0.65 },
       { signal: "bearish", available: true, weight: 0.65 },
     ]),
     -0.3 / 2.3,
+    1e-12,
   );
 });
 
