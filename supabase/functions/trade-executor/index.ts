@@ -1262,22 +1262,20 @@ Deno.serve(async (req) => {
       }).eq("id", item.id);
     }
 
-    // Fixed-horizon markouts: first executor run at/after each horizon, priced from Binance.
+    // Short-horizon markouts only. Long-horizon 24h/72h returns are intentionally not collected or persisted.
     const { data: dueRows } = await supabase.from("repeated_buy_research_ledger")
-      .select("id,symbol,signal_price,observed_at,limited_position_decision,markout_15m_at,markout_1h_at,markout_4h_at,markout_24h_at,markout_72h_at")
+      .select("id,symbol,signal_price,observed_at,limited_position_decision,markout_15m_at,markout_1h_at,markout_4h_at")
       .eq("recommendation", "buy")
       .lt("observed_at", new Date(Date.now() - 15 * 60 * 1000).toISOString())
-      .or("markout_15m_at.is.null,markout_1h_at.is.null,markout_4h_at.is.null,markout_24h_at.is.null,markout_72h_at.is.null")
+      .or("markout_15m_at.is.null,markout_1h_at.is.null,markout_4h_at.is.null")
       .limit(500);
     const priceCache = new Map<string, number>();
     for (const row of dueRows ?? []) {
       const age = Date.now() - new Date(row.observed_at).getTime();
       const horizons = [
-        { ms: 15 * 60 * 1000, col: "15m", done: row.markout_15m_at },
-        { ms: 60 * 60 * 1000, col: "1h", done: row.markout_1h_at },
-        { ms: 4 * 60 * 60 * 1000, col: "4h", done: row.markout_4h_at },
-        { ms: 24 * 60 * 60 * 1000, col: "24h", done: row.markout_24h_at },
-        { ms: 72 * 60 * 60 * 1000, col: "72h", done: row.markout_72h_at },
+        { ms: 15 * 60 * 1000, col: "15m", done: row.markout_15m_at, prefix: "markout_15m", limitedPrefix: "limited_position_markout_15m" },
+        { ms: 60 * 60 * 1000, col: "1h", done: row.markout_1h_at, prefix: "markout_1h", limitedPrefix: "limited_position_markout_1h" },
+        { ms: 4 * 60 * 60 * 1000, col: "4h", done: row.markout_4h_at, prefix: "markout_4h", limitedPrefix: "limited_position_markout_4h" },
       ];
       const due = horizons.filter((h) => age >= h.ms && !h.done);
       if (!due.length) continue;
@@ -1291,19 +1289,17 @@ Deno.serve(async (req) => {
         if (!Number.isFinite(base) || base <= 0) continue;
         const patch: Record<string, unknown> = {};
         for (const h of due) {
-          const prefix = h.col === "15m" ? "markout_15m" : h.col === "1h" ? "markout_1h" : h.col === "4h" ? "markout_4h" : h.col === "24h" ? "markout_24h" : "markout_72h";
           const pct = ((price / base) - 1) * 100;
-          patch[prefix + "_price"] = price;
-          patch[prefix + "_at"] = new Date().toISOString();
-          patch[prefix + "_pct"] = pct;
+          patch[h.prefix + "_price"] = price;
+          patch[h.prefix + "_at"] = new Date().toISOString();
+          patch[h.prefix + "_pct"] = pct;
           if (row.limited_position_decision === "would_open") {
-            const lp = h.col === "15m" ? "limited_position_markout_15m" : h.col === "1h" ? "limited_position_markout_1h" : h.col === "4h" ? "limited_position_markout_4h" : h.col === "24h" ? "limited_position_markout_24h" : "limited_position_markout_72h";
-            patch[lp + "_pct"] = pct;
+            patch[h.limitedPrefix + "_pct"] = pct;
           }
         }
         await supabase.from("repeated_buy_research_ledger").update(patch).eq("id", row.id);
       } catch (err) {
-        console.error("[REPEATED_BUY_LEDGER] markout update failed:", row.symbol, String(err));
+        console.error("[REPEATED_BUY_LEDGER] short-horizon markout update failed:", row.symbol, String(err));
       }
     }
 
