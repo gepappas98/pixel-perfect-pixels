@@ -2,15 +2,12 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import type { Database } from "@/integrations/supabase/types";
 
-type TradeRow = {
-  status: string | null;
-  mode: string | null;
-  net_pnl: number | string | null;
-  pnl: number | string | null;
-  entry_source: string | null;
-  entry_metadata: Record<string, unknown> | null;
-};
+type TradeRow = Pick<
+  Database["public"]["Tables"]["trades"]["Row"],
+  "status" | "mode" | "net_pnl" | "pnl" | "entry_source" | "entry_metadata"
+>;
 
 const STRATEGIES = [
   { key: "cmc", label: "CMC Paper" },
@@ -19,12 +16,30 @@ const STRATEGIES = [
   { key: "standard", label: "Standard" },
 ] as const;
 
-function strategyOf(t: TradeRow) {
-  const metadata = t.entry_metadata ?? {};
-  const raw = String(metadata.strategy ?? t.entry_source ?? "").toLowerCase();
-  if (raw.includes("cmc-paper") || raw.includes("cmc_paper")) return "cmc";
-  if (raw.includes("early_entry") || raw.includes("early-entry")) return "early";
-  if (raw.includes("event_flow") || raw.includes("event-flow")) return "event";
+type StrategyKey = (typeof STRATEGIES)[number]["key"];
+
+function strategyOf(trade: TradeRow): StrategyKey {
+  const metadata = trade.entry_metadata;
+  const metadataStrategy =
+    metadata !== null &&
+    typeof metadata === "object" &&
+    !Array.isArray(metadata)
+      ? metadata["strategy"]
+      : undefined;
+
+  const raw = String(
+    metadataStrategy ?? trade.entry_source ?? "",
+  ).toLowerCase();
+
+  if (raw.includes("cmc-paper") || raw.includes("cmc_paper")) {
+    return "cmc";
+  }
+  if (raw.includes("early_entry") || raw.includes("early-entry")) {
+    return "early";
+  }
+  if (raw.includes("event_flow") || raw.includes("event-flow")) {
+    return "event";
+  }
   return "standard";
 }
 
@@ -39,19 +54,23 @@ export function StrategyPortfolioSummary() {
   const { data, isLoading, error, dataUpdatedAt } = useQuery({
     queryKey: ["strategy-portfolio-summary", "paper"],
     queryFn: async () => {
-      const { data, error } = await supabase
+      const { data: rows, error: queryError } = await supabase
         .from("trades")
         .select("status,mode,net_pnl,pnl,entry_source,entry_metadata")
         .eq("mode", "paper")
         .eq("status", "closed");
-      if (error) throw error;
-      const rows = (data ?? []) as TradeRow[];
+
+      if (queryError) throw queryError;
+
       return STRATEGIES.map((strategy) => {
-        const trades = rows.filter((trade) => strategyOf(trade) === strategy.key);
+        const trades = (rows ?? []).filter(
+          (trade) => strategyOf(trade) === strategy.key,
+        );
         const pnl = trades.reduce((sum, trade) => {
           const value = Number(trade.net_pnl ?? trade.pnl ?? 0);
           return sum + (Number.isFinite(value) ? value : 0);
         }, 0);
+
         return { ...strategy, count: trades.length, pnl };
       });
     },
@@ -74,11 +93,15 @@ export function StrategyPortfolioSummary() {
           </span>
         )}
       </div>
+
       {isLoading ? (
-        <p className="text-xs text-muted-foreground">Loading strategy results…</p>
+        <p className="text-xs text-muted-foreground">
+          Loading strategy results…
+        </p>
       ) : error ? (
         <p className="text-xs text-destructive">
-          Could not load strategy results: {(error as Error).message}
+          Could not load strategy results:{" "}
+          {error instanceof Error ? error.message : String(error)}
         </p>
       ) : (
         <div className="space-y-2">
@@ -92,17 +115,29 @@ export function StrategyPortfolioSummary() {
                 {strategy.count} closed
               </span>
               <span
-                className={`text-right font-mono text-xs font-semibold ${strategy.pnl > 0 ? "text-bull" : strategy.pnl < 0 ? "text-bear" : "text-muted-foreground"}`}
+                className={`text-right font-mono text-xs font-semibold ${
+                  strategy.pnl > 0
+                    ? "text-bull"
+                    : strategy.pnl < 0
+                      ? "text-bear"
+                      : "text-muted-foreground"
+                }`}
               >
-                {strategy.count ? `${strategy.pnl >= 0 ? "+" : "−"}${usd.format(Math.abs(strategy.pnl))}` : "—"}
+                {strategy.count > 0
+                  ? `${strategy.pnl >= 0 ? "+" : "−"}${usd.format(
+                      Math.abs(strategy.pnl),
+                    )}`
+                  : "—"}
               </span>
             </div>
           ))}
         </div>
       )}
+
       <p className="mt-3 border-t border-border/70 pt-2 text-[10px] text-muted-foreground">
         Refreshes every 30 seconds. Open-position unrealized PnL is excluded. Results are grouped by recorded entry strategy.
       </p>
+
       <div className="mt-3 rounded-md border border-dashed border-border px-3 py-2.5">
         <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           Next: statistical evaluation
