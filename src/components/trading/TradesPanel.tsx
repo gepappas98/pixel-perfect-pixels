@@ -13,29 +13,56 @@ const BINANCE_SYMBOL_MAP: Record<string, string> = {
   RNDR: "RENDER",
 };
 
-async function getPrices(symbols: string[]) {
-  // Price lookup is best-effort per symbol: one Binance/network failure must
-  // not erase valid prices for every other open position.
-  const prices = await Promise.all(
-    symbols.map(async (symbol) => {
+type PriceMark = { price: number; source: "live" | "cached" };
+async function getPrices(symbols: string[]): Promise<Record<string, PriceMark | null>> {
+  const results = await Promise.all(symbols.map(async (symbol) => {
+    const normalized = symbol.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+    const mapped = BINANCE_SYMBOL_MAP[normalized] ?? normalized;
+    const pair = mapped.endsWith("USDT") ? mapped : `${mapped}USDT`;
+    for (const host of ["https://api.binance.com", "https://data-api.binance.vision", "https://api1.binance.com", "https://api3.binance.com"]) {
       try {
-        const normalizedSymbol = symbol.replace(/[^A-Z0-9]/gi, "").toUpperCase();
-        const mappedSymbol = BINANCE_SYMBOL_MAP[normalizedSymbol] ?? normalizedSymbol;
-        const pair = mappedSymbol.endsWith("USDT") ? mappedSymbol : `${mappedSymbol}USDT`;
-        const response = await fetch(
-          `https://api.binance.com/api/v3/ticker/price?symbol=${encodeURIComponent(pair)}`,
-          { signal: AbortSignal.timeout(5_000), cache: "no-store" },
-        );
-        if (!response.ok) return [symbol, null] as const;
-        const data = (await response.json()) as { price?: string };
-        const price = Number(data.price);
-        return [symbol, Number.isFinite(price) && price > 0 ? price : null] as const;
-      } catch {
-        return [symbol, null] as const;
+        const response = await fetch(`${host}/api/v3/ticker/price?symbol=${encodeURIComponent(pair)}`, { signal: AbortSignal.timeout(3500), cache: "no-store" });
+        if (!response.ok) continue;
+        const payload = await response.json() as { price?: string | number };
+        const price = Number(payload.price);
+        if (Number.isFinite(price) && price > 0) return [symbol, { price, source: "live" as const }] as const;
+      } catch { /* try next Binance host */ }
+    }
+    try {
+      const response = await fetch(`https://api.bybit.com/v5/market/tickers?category=spot&symbol=${encodeURIComponent(pair)}`, { signal: AbortSignal.timeout(3500), cache: "no-store" });
+      if (response.ok) {
+        const payload = await response.json() as { retCode?: number; result?: { list?: Array<{ symbol?: string; lastPrice?: string }> } };
+        const price = Number(payload.result?.list?.find((row) => row.symbol === pair)?.lastPrice);
+        if (payload.retCode === 0 && Number.isFinite(price) && price > 0) return [symbol, { price, source: "live" as const }] as const;
       }
-    }),
-  );
-  return Object.fromEntries(prices) as Record<string, number | null>;
+    } catch { /* cached mark fallback below */ }
+    return [symbol, null] as const;
+  }));
+  const marks: Record<string, PriceMark | null> = Object.fromEntries(results);
+  const missing = symbols.filter((symbol) => marks[symbol] == null);
+  if (missing.length) {
+    const dbSymbols = [...new Set(missing.flatMap((symbol) => {
+      const normalized = symbol.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+      return [normalized, BINANCE_SYMBOL_MAP[normalized] ?? normalized];
+    }))];
+    const cutoff = new Date(Date.now() - 30 * 60_000).toISOString();
+    const { data, error } = await supabase.from("indicator_snapshots").select("symbol,timeframe,price,created_at")
+      .in("symbol", dbSymbols).in("timeframe", ["5m", "1h"]).gte("created_at", cutoff)
+      .order("created_at", { ascending: false }).limit(500);
+    if (!error) {
+      for (const row of data ?? []) {
+        const raw = String(row.symbol ?? "").toUpperCase();
+        const price = Number(row.price);
+        if (!Number.isFinite(price) || price <= 0) continue;
+        const matching = missing.find((symbol) => {
+          const normalized = symbol.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+          return raw === normalized || raw === (BINANCE_SYMBOL_MAP[normalized] ?? normalized);
+        });
+        if (matching && marks[matching] == null) marks[matching] = { price, source: "cached" };
+      }
+    }
+  }
+  return marks;
 }
 
 const money = new Intl.NumberFormat("en-US", {
@@ -146,7 +173,7 @@ export function TradesPanel() {
               <th className="pb-1 font-normal">Symbol</th>
               <th className="pb-1 font-normal">Side</th>
               <th className="pb-1 font-normal">Entry</th>
-              <th className="pb-1 font-normal">Current</th>
+              <th className="pb-1 font-normal">Current / Mark</th>
               <th className="pb-1 font-normal">Entry Notional</th>
               <th className="pb-1 font-normal">PnL</th>
               <th className="pb-1 font-normal">PnL %</th>
@@ -155,7 +182,8 @@ export function TradesPanel() {
           </thead>
           <tbody>
             {openTrades.map((t) => {
-              const current = prices.data?.[t.symbol] ?? null;
+              const mark = prices.data?.[t.symbol] ?? null;
+              const current = mark?.price ?? null;
               const entry = Number(t.entry_price);
               const quantity = Number(t.quantity);
               // Net unrealized PnL: entry fee + ESTIMATED exit fee at current price.
@@ -205,7 +233,7 @@ export function TradesPanel() {
                     {t.side}
                   </td>
                   <td className="py-1.5 text-muted-foreground">{formatPrice(entry)}</td>
-                  <td className="py-1.5">{current == null ? "—" : formatPrice(current)}</td>
+                  <td className="py-1.5">{current == null ? "—" : <span>{formatPrice(current)}{mark?.source === "cached" && <span className="ml-1 rounded border border-warn/40 px-1 text-[9px] text-warn">cached mark</span>}</span>}</td>
                   <td className="py-1.5 text-muted-foreground">
                     {money.format(quantity * entry)}
                   </td>
