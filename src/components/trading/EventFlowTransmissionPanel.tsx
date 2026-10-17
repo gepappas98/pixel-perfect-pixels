@@ -46,7 +46,7 @@ export function EventFlowTransmissionPanel(){
 
     <div className="mt-3 rounded border border-bull/40 bg-bull/5 p-2">
       <div className="flex items-center justify-between gap-2 text-[10px] font-mono"><span className="font-semibold">Paper OPEN status</span><span className="text-bull">ACTIVE · SPOT LONG-ONLY</span></div>
-      <div className="mt-1 text-[9px] font-mono text-muted-foreground">Requires fresh RSS sentiment ≥ +0.25, confidence ≥ 0.55, Whale Flow accumulation ≥ +0.10 and fresh Binance Spot price. $1,000 notional · TP +4% · SL −3% · 6h cooldown. Existing signal strategy and live execution are unchanged.</div>
+      <div className="mt-1 text-[9px] font-mono text-muted-foreground">Requires fresh RSS sentiment ≥ +0.15, confidence ≥ 0.45, Whale Flow accumulation ≥ +0.10 and fresh Binance Spot price. $1,000 notional · TP +4% · SL −3% · 15m cooldown. Existing signal strategy and live execution are unchanged.</div>
       <div className="mt-2 grid grid-cols-3 gap-1.5 text-[9px] font-mono">
         <div className="rounded bg-background/70 p-1.5"><div className="text-muted-foreground">Opened this scan</div><div className="mt-0.5 font-semibold">{opened}</div></div>
         <div className="rounded bg-background/70 p-1.5"><div className="text-muted-foreground">Already open</div><div className="mt-0.5 font-semibold">{alreadyOpen}</div></div>
