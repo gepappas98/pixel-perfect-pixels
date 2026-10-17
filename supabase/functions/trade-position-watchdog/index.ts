@@ -242,7 +242,7 @@ Deno.serve(async (req) => {
       : { prices: new Map<string, number>(), host: null, errors: [] as string[], cachedPairs: new Set<string>() };
     result.price_host = host;
     if (cachedPairs.size) result.errors.push(`cached marks are display-only; exit checks skipped for ${cachedPairs.size} positions`);
-    if (openTrades.length && !prices.size) {
+    if (openTrades.length && openTrades.every((trade) => !prices.has(binancePair(trade.symbol)) || cachedPairs.has(binancePair(trade.symbol)))) {
       result.errors.push(`all market price sources unavailable: ${priceErrors.join("; ")}`);
       const severity = await raiseAlert(supabase, {
         alert_key: "system:position_watchdog_price_feed",
