@@ -16,9 +16,9 @@ import { handleOptions, corsHeaders } from "../_shared/cors.ts";
 import { getServiceClient } from "../_shared/supabase.ts";
 
 const AI_BATCH_MAX = 15;
-const AI_MIN_MINUTES = 25;
-const AI_MIN_MINUTES_TRENDING = 15;
-const AI_MIN_MINUTES_CALM = 40;
+const AI_MIN_MINUTES = 18;
+const AI_MIN_MINUTES_TRENDING = 12;
+const AI_MIN_MINUTES_CALM = 30;
 const WHALE_LOOKBACK_MS = 6 * 60 * 60 * 1000;
 const INDICATOR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const GROQ_TIMEOUT_MS = 20_000;
