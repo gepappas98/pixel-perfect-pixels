@@ -4,7 +4,6 @@ const POSITION_USD = 1000;
 const ENTRY_FEE_RATE = 0.0005; // keep aligned with src/lib/fees.ts and trade-exit.ts
 const STOP_LOSS_PCT = 0.03;
 const TAKE_PROFIT_PCT = 0.04;
-const MAX_PRICE_AGE_MIN = 20;
 const COOLDOWN_HOURS = 1;
 const MIN_24H_CHANGE = 1;
 const MIN_1H_CHANGE = 0;
@@ -24,6 +23,21 @@ async function fetchBinanceUSDTBases(): Promise<Set<string>> {
   if (!bases.size) throw new Error("Binance Spot eligible base set is empty");
   return bases;
 }
+async function fetchBinanceSpotPrices(): Promise<Map<string, number>> {
+  const response = await fetch("https://api.binance.com/api/v3/ticker/price", { signal: AbortSignal.timeout(10000) });
+  if (!response.ok) throw new Error("Binance Spot ticker/price unavailable: " + response.status);
+  const body = await response.json();
+  if (!Array.isArray(body) || !body.length) throw new Error("Binance Spot ticker/price returned no prices");
+  const prices = new Map<string, number>();
+  for (const row of body) {
+    const symbol = String(row?.symbol ?? "").toUpperCase();
+    const price = num(row?.price);
+    if (symbol.endsWith("USDT") && price != null && price > 0) prices.set(symbol, price);
+  }
+  if (!prices.size) throw new Error("Binance Spot ticker/price contained no valid USDT prices");
+  return prices;
+}
+
 async function fetchRevolutXActiveBases(): Promise<Set<string>> {
   const response = await fetch("https://revx.revolut.com/api/1.0/public/configuration/pairs?region=EEA", {
     headers: { Accept: "application/json" }, signal: AbortSignal.timeout(10000)
@@ -59,13 +73,12 @@ Deno.serve(async (req: Request) => {
     // Require the current dynamically eligible asset universe. This avoids assuming that
     // every CMC listing has a Binance Spot USDT market and RevolutX EEA availability.
     const [{ data: watchlists, error: watchlistError }, { data: listings, error: listingError },
-      { data: prices, error: priceError }, { data: existing, error: tradeError }] = await Promise.all([
+      { data: existing, error: tradeError }] = await Promise.all([
       db.from("dynamic_watchlist_snapshots").select("symbols,computed_at").order("computed_at", { ascending: false }).limit(1),
       db.from("cmc_listing_snapshots").select("id,cmc_id,name,symbol,cmc_rank,price_usd,volume_24h_usd,market_cap_usd,percent_change_1h,percent_change_24h,percent_change_7d,captured_at,tags").order("captured_at", { ascending: false }).limit(1000),
-      db.from("asset_price_snapshots").select("asset,observed_at,price,source").eq("source", "binance-spot").gte("observed_at", new Date(now - MAX_PRICE_AGE_MIN * 60000).toISOString()).order("observed_at", { ascending: false }).limit(500),
       db.from("trades").select("symbol,created_at,status,entry_source,mode").eq("mode", "paper").eq("entry_source", "cmc_paper").order("created_at", { ascending: false }).limit(1000),
     ]);
-    const errors = [watchlistError, listingError, priceError, tradeError].filter(Boolean);
+    const errors = [watchlistError, listingError, tradeError].filter(Boolean);
     if (errors.length) throw new Error(errors.map((e: any) => e.message).join("; "));
 
     const latestBy = <T extends Record<string, any>>(rows: T[] | null, key: string) => {
@@ -80,10 +93,12 @@ Deno.serve(async (req: Request) => {
     const watchlistSymbols = new Set((Array.isArray(latestWatchlist?.symbols) ? latestWatchlist.symbols : []).map((s: unknown) => String(s).toUpperCase()));
     if (!latestWatchlist || !watchlistSymbols.size) throw new Error("No current dynamic watchlist snapshot; refusing CMC paper entries.");
     // Independently verify both venues; the merged dynamic watchlist also contains Hyperliquid/pinned symbols.
-    const [binanceBases, revolutBases] = await Promise.all([fetchBinanceUSDTBases(), fetchRevolutXActiveBases()]);
+    const [binanceBases, revolutBases, spotPrices] = await Promise.all([
+      fetchBinanceUSDTBases(), fetchRevolutXActiveBases(), fetchBinanceSpotPrices()
+    ]);
+    const priceObservedAt = new Date().toISOString();
     const eligibleSymbols = new Set([...watchlistSymbols].filter((s) => binanceBases.has(s) && revolutBases.has(s)));
     const listingBy = latestBy(listings, "symbol");
-    const priceBy = latestBy(prices, "asset");
     const tradeRows = existing ?? [];
     const active = new Set(tradeRows.filter((t: any) => t.status === "open").map((t: any) => String(t.symbol).toUpperCase()));
     const latestTradeAt = new Map<string, number>();
@@ -98,8 +113,8 @@ Deno.serve(async (req: Request) => {
     const candidates = [...eligibleSymbols].flatMap((asset: string) => {
       const binanceSymbol = asset === "MATIC" ? "POLUSDT" : asset === "RNDR" ? "RENDERUSDT" : asset + "USDT";
       const listing = listingBy.get(asset);
-      const priceRow = priceBy.get(asset);
-      if (!asset || !binanceSymbol.endsWith("USDT") || !listing || !priceRow) return [];
+      const price = spotPrices.get(binanceSymbol) ?? null;
+      if (!asset || !binanceSymbol.endsWith("USDT") || !listing || price == null) return [];
       const rank = num(listing.cmc_rank);
       const ch1 = num(listing.percent_change_1h);
       const ch24 = num(listing.percent_change_24h);
@@ -107,13 +122,10 @@ Deno.serve(async (req: Request) => {
       const volume = num(listing.volume_24h_usd);
       const marketCap = num(listing.market_cap_usd);
       const turnover = volume != null && marketCap != null && marketCap > 0 ? volume / marketCap * 100 : null;
-      const price = num(priceRow.price);
-      const observedAt = Date.parse(String(priceRow.observed_at ?? ""));
       if (rank == null || rank > MAX_CMC_RANK || ch1 == null || ch24 == null || ch7 == null ||
           volume == null || volume < MIN_CMC_VOLUME_USD || ch24 < MIN_24H_CHANGE || ch1 <= MIN_1H_CHANGE || ch7 <= MIN_7D_CHANGE ||
-          turnover == null || turnover < MIN_TURNOVER_PCT || !(price && price > 0) ||
-          !Number.isFinite(observedAt) || now - observedAt < 0 || now - observedAt > MAX_PRICE_AGE_MIN * 60000) return [];
-      return [{ asset, binanceSymbol, listing, price, priceRow, rank, ch1, ch24, ch7, volume, marketCap, turnover }];
+          turnover == null || turnover < MIN_TURNOVER_PCT || !(price && price > 0)) return [];
+      return [{ asset, binanceSymbol, listing, price, rank, ch1, ch24, ch7, volume, marketCap, turnover }];
     }).sort((a: any, b: any) => (b.ch24 + b.ch1 + b.ch7 * 0.15) - (a.ch24 + a.ch1 + a.ch7 * 0.15));
 
     for (const c of candidates) {
@@ -157,8 +169,8 @@ Deno.serve(async (req: Request) => {
             market_cap_usd: c.marketCap,
             volume_to_market_cap_pct: c.turnover,
             listing_observed_at: c.listing.captured_at,
-            price_source: "asset_price_snapshots:binance-spot",
-            price_observed_at: c.priceRow.observed_at,
+            price_source: "binance-spot-rest-ticker",
+            price_observed_at: priceObservedAt,
             binance_symbol: c.binanceSymbol,
             position_usd: POSITION_USD,
             stop_loss_pct: STOP_LOSS_PCT * 100,
@@ -188,7 +200,7 @@ Deno.serve(async (req: Request) => {
       eligible_assets: eligibleSymbols.size, qualifying_candidates: candidates.length,
       opened, position_usd: POSITION_USD,
       stop_loss_pct: STOP_LOSS_PCT * 100, take_profit_pct: TAKE_PROFIT_PCT * 100,
-      rules: { max_cmc_rank: MAX_CMC_RANK, min_1h_change_pct_exclusive: MIN_1H_CHANGE, min_24h_change_pct: MIN_24H_CHANGE, min_7d_change_pct_exclusive: MIN_7D_CHANGE, min_volume_to_market_cap_pct: MIN_TURNOVER_PCT, min_cmc_volume_24h_usd: MIN_CMC_VOLUME_USD, price_max_age_minutes: MAX_PRICE_AGE_MIN, cooldown_hours: COOLDOWN_HOURS },
+      rules: { max_cmc_rank: MAX_CMC_RANK, min_1h_change_pct_exclusive: MIN_1H_CHANGE, min_24h_change_pct: MIN_24H_CHANGE, min_7d_change_pct_exclusive: MIN_7D_CHANGE, min_volume_to_market_cap_pct: MIN_TURNOVER_PCT, min_cmc_volume_24h_usd: MIN_CMC_VOLUME_USD, cooldown_hours: COOLDOWN_HOURS },
       decisions: decisions.slice(0, 50), evaluated_at: nowIso,
       note: "Forward returns are evaluation labels only. Strategy auto-switch is not modified by this function."
     });
