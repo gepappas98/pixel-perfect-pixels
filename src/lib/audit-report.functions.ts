@@ -123,13 +123,19 @@ export const refreshAuditSnapshot = createServerFn({ method: "GET" }).handler(
       });
     }
 
+    findings.push({
+      category: "needs_recheck",
+      title: "Audit coverage limits",
+      detail: "This automated refresh checks pipeline run status/stage payloads and paper trades. It does not recheck cron activation, SQL timeout logs, CMC source health, variant cohort independence, or strategy-specific TP/SL settings.",
+    });
+
     const hasBug = findings.some((f) => f.category === "confirmed_bug");
     return {
       checked_at: now.toISOString(),
       title: "Runtime / Research Integrity Audit — refresh",
       severity: hasBug ? "warning" : "info",
       status: "refresh",
-      summary: "Read-only SELECT diagnostics computed at checked_at. Observed facts at audit time, not proof of data corruption.",
+      summary: "Partial read-only refresh of pipeline_runs (including stage result payloads) and paper trades. It does not recheck pg_cron activation, SQL timeout logs, CMC source health, variant cohort independence, or per-strategy TP/SL comparability; those remain in historical findings until targeted checks are added. Observed facts at audit time, not proof of data corruption.",
       findings,
       source: "ai-report refresh (read-only)",
       window_label: `${since} → ${now.toISOString()} (last 24h)`,
