@@ -75,9 +75,13 @@ export function StrategyPortfolioSummary() {
 
       if (queryError) throw queryError;
 
+      // Supabase's generated select type can lag behind the deployed entry metadata columns.
+      // Keep the cast localized to the query boundary; strategyOf still receives a typed row.
+      const tradeRows = (rows ?? []) as unknown as TradeRow[];
+
       return STRATEGIES.map((strategy) => {
-        const trades = (rows ?? []).filter(
-          (trade) => strategyOf(trade) === strategy.key,
+        const trades = tradeRows.filter(
+          (trade: TradeRow) => strategyOf(trade) === strategy.key,
         );
         const pnl = trades.reduce((sum, trade) => {
           const value = Number(trade.net_pnl ?? trade.pnl ?? 0);
