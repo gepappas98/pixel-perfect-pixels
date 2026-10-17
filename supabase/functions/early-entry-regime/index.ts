@@ -259,6 +259,9 @@ Deno.serve(async (req) => {
             source_tags: ["paper", "early-entry-regime", "spot-long-only", "research-unbounded", "purple-label"],
             entry_source: "early_entry_regime",
             entry_metadata: {
+              strategy: "early-entry-regime-v1",
+              strategy_version: 1,
+              variant: "A_CURRENT",
               activation_key: activationKey,
               transition_observed_at: transitionObservation?.observed_at ?? null,
               transition_age_minutes: transitionAgeMinutes,
