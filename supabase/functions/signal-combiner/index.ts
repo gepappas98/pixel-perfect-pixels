@@ -669,10 +669,12 @@ Deno.serve(async (req) => {
       supabase.from("indicator_snapshots").select("*")
         .in("symbol", dbSymbols).in("timeframe", [...TIMEFRAMES])
         .order("created_at", { ascending: false }).limit(2000),
+      // Fetch history first, then apply timestamp fallback and freshness in
+      // memory. A SQL synced_at filter would discard NULL synced_at rows before
+      // source_created_at can be considered.
       supabase.from("council_signals").select("*")
-        .in("symbol", symbols).gte("synced_at", councilSince)
-        .lte("synced_at", freshnessNowIso)
-        .order("synced_at", { ascending: false }).limit(1000),
+        .in("symbol", symbols)
+        .order("synced_at", { ascending: false }).limit(5000),
       supabase.from("trades").select("id,symbol,entry_price,created_at")
         .in("symbol", symbols).eq("mode", "paper").eq("status", "open")
         .order("created_at", { ascending: true }).limit(2000),
@@ -697,9 +699,24 @@ Deno.serve(async (req) => {
       indicatorsBySymbol.set(key, rows);
     }
     const councilsBySymbol = new Map<string, any>();
+    const councilFreshnessBySymbol = new Map<string, { status: string; age_ms: number | null }>();
+    const councilMaxAge = councilMaxAgeMsForRegime(productionRegimeLabel);
     for (const row of batchCouncils ?? []) {
       const key = String(row.symbol ?? "").toUpperCase();
-      if (!councilsBySymbol.has(key) && isFreshTimestamp(row?.synced_at ?? row?.source_created_at, councilMaxAgeMsForRegime(productionRegimeLabel), freshnessNow)) councilsBySymbol.set(key, row);
+      if (!key) continue;
+      const timestamp = row?.synced_at ?? row?.source_created_at;
+      const ts = new Date(String(timestamp ?? "")).getTime();
+      const ageMs = Number.isFinite(ts) ? freshnessNow - ts : null;
+      if (!councilFreshnessBySymbol.has(key)) {
+        councilFreshnessBySymbol.set(key, {
+          status: ageMs === null || ageMs < 0 ? "COUNCIL_TIMESTAMP_INVALID"
+            : ageMs <= councilMaxAge ? "COUNCIL_FRESH" : "COUNCIL_STALE",
+          age_ms: ageMs,
+        });
+      }
+      if (!councilsBySymbol.has(key) && isFreshTimestamp(timestamp, councilMaxAge, freshnessNow)) {
+        councilsBySymbol.set(key, row);
+      }
     }
     const openTradesBySymbol = new Map<string, any>();
     for (const trade of batchOpenTrades ?? []) {
@@ -768,6 +785,13 @@ Deno.serve(async (req) => {
       }
 
       const reasoningParts = [result.reasoning];
+      if (!council) {
+        const councilStatus = councilFreshnessBySymbol.get(String(symbol).toUpperCase())?.status
+          ?? "COUNCIL_NEVER_SEEN";
+        reasoningParts.push(councilStatus);
+      } else {
+        reasoningParts.push("COUNCIL_FRESH");
+      }
       if (mtf.primary || mtf.fast || mtf.trend) reasoningParts.push(`MTF: ${mtf.detail}`);
       if (gate.note) reasoningParts.push(gate.note);
 
