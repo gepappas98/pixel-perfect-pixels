@@ -585,7 +585,7 @@ Deno.serve(async (req) => {
     const [{ data: councilSymbolRows }, { data: whaleSymbolRows }, { data: watchlistSnapshot, error: watchlistError }] = await Promise.all([
       supabase.from("council_signals").select("symbol").order("source_created_at", { ascending: false }),
       supabase.from("whale_alerts").select("symbol").gte("created_at", since),
-      supabase.from("dynamic_watchlist_snapshots").select("symbols,expires_at,computed_at")
+      supabase.from("dynamic_watchlist_snapshots").select("symbols,dynamic_symbols,expires_at,computed_at")
         .order("computed_at", { ascending: false }).limit(1).maybeSingle(),
     ]);
     if (watchlistError) console.warn("[DYNAMIC_WATCHLIST] read failed; falling back to legacy base list and disabling accumulation boost:", watchlistError.message);
@@ -596,8 +596,15 @@ Deno.serve(async (req) => {
       && Number.isFinite(watchlistExpiresAt)
       && watchlistExpiresAt > freshnessNow;
     const normalizeSymbol = (value: unknown) => String(value ?? "").trim().toUpperCase().replace(/USDT$/, "");
-    const dynamicWatchlistSymbols = new Set<string>(
+    const watchlistSymbols = new Set<string>(
       (dynamicWatchlistFresh ? watchlistSnapshot.symbols : [])
+        .map(normalizeSymbol).filter(Boolean),
+    );
+    // The snapshot separates pinned/base members from coins admitted dynamically.
+    // Accumulation may boost only the latter, while all current watchlist members
+    // remain in the primary signal universe.
+    const dynamicWatchlistSymbols = new Set<string>(
+      (dynamicWatchlistFresh && Array.isArray(watchlistSnapshot.dynamic_symbols) ? watchlistSnapshot.dynamic_symbols : [])
         .map(normalizeSymbol).filter(Boolean),
     );
 
@@ -618,7 +625,7 @@ Deno.serve(async (req) => {
     // Use the current dynamic watchlist as the primary research universe.
     // Keep fresh council/whale discoveries outside it in the signal universe,
     // but never let those external discoveries receive the accumulation booster.
-    const primarySymbols = dynamicWatchlistFresh ? [...dynamicWatchlistSymbols] : WATCHLIST;
+    const primarySymbols = dynamicWatchlistFresh ? [...watchlistSymbols] : WATCHLIST;
     const symbols = [...new Set([...primarySymbols, ...councilSymbols, ...whaleSymbols].map(normalizeSymbol).filter(Boolean))];
     // Fetched once per run and consumed only by the isolated strategy-variant research path.
     const marketSentiment = await fetchCryptoMarketSentiment();
@@ -969,7 +976,8 @@ Deno.serve(async (req) => {
         dynamic_watchlist: {
           fresh: dynamicWatchlistFresh,
           snapshot_at: dynamicWatchlistFresh ? watchlistSnapshot?.computed_at ?? null : null,
-          symbols_count: dynamicWatchlistSymbols.size,
+          symbols_count: watchlistSymbols.size,
+          dynamic_symbols_count: dynamicWatchlistSymbols.size,
           accumulation_boosted_count: accumulationBoostedCount,
         },
         signals: created,
