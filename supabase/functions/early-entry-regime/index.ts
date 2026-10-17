@@ -261,6 +261,7 @@ Deno.serve(async (req) => {
             entry_metadata: {
               strategy: "early-entry-regime-v1",
               strategy_version: 1,
+              entry_path: "early-entry-regime",
               variant: "A_CURRENT",
               activation_key: activationKey,
               transition_observed_at: transitionObservation?.observed_at ?? null,
