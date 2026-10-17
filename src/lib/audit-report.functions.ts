@@ -30,17 +30,57 @@ export const refreshAuditSnapshot = createServerFn({ method: "GET" }).handler(
 
     const { data: runs, error: runsErr } = await db
       .from("pipeline_runs")
-      .select("status")
+      .select("status,result")
       .gte("started_at", since);
     if (runsErr) {
       findings.push({ category: "needs_recheck", title: "pipeline_runs unreadable", detail: runsErr.message });
     } else {
-      const total = runs?.length ?? 0;
-      const nonCompleted = (runs ?? []).filter((r: { status: string }) => r.status !== "completed").length;
+      const runRows = (runs ?? []) as Array<{ status: string; result: unknown }>;
+      const total = runRows.length;
+      const nonCompleted = runRows.filter((r) => r.status !== "completed").length;
+      const stageFailureCounts = new Map<string, number>();
+      let runsWithStageFailures = 0;
+
+      for (const run of runRows) {
+        const result = run.result && typeof run.result === "object"
+          ? run.result as Record<string, unknown>
+          : {};
+        const stages = Array.isArray(result.stages) ? result.stages : [];
+        let runHasFailure = false;
+
+        for (const rawStage of stages) {
+          if (!rawStage || typeof rawStage !== "object") continue;
+          const stage = rawStage as Record<string, unknown>;
+          const stageResult = stage.result && typeof stage.result === "object"
+            ? stage.result as Record<string, unknown>
+            : {};
+          const reportedFailures = Number(stageResult.failures ?? stage.failures ?? 0);
+          const httpStatus = Number(stage.status ?? 0);
+          if (stage.ok !== false && httpStatus < 400 && reportedFailures <= 0) continue;
+
+          runHasFailure = true;
+          const name = String(stage.name ?? "unknown-stage");
+          stageFailureCounts.set(name, (stageFailureCounts.get(name) ?? 0) + 1);
+        }
+        if (runHasFailure) runsWithStageFailures++;
+      }
+
       findings.push({
         category: nonCompleted > 0 ? "confirmed_bug" : "needs_recheck",
         title: "Pipeline runs (last 24h)",
-        detail: `${total} runs, ${nonCompleted} not completed. Stage-level failures are not visible from run status alone.`,
+        detail: `${total} runs, ${nonCompleted} not completed. Overall status alone does not establish stage health.`,
+      });
+
+      const stageFailureSummary = [...stageFailureCounts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([name, count]) => `${name}: ${count} affected runs`)
+        .join("; ");
+      findings.push({
+        category: runsWithStageFailures > 0 ? "needs_recheck" : "verified_ok",
+        title: "Stage-level partial failures (last 24h)",
+        detail: runsWithStageFailures > 0
+          ? `${runsWithStageFailures} runs contain failed stages or reported partial task failures. ${stageFailureSummary}`
+          : "No stage failures were recorded in the returned result payloads. This does not rule out failures that a stage fails to report.",
       });
     }
 
