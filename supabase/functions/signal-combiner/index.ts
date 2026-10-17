@@ -861,7 +861,7 @@ Deno.serve(async (req) => {
               market_session: productionMarketSession,
               created_at: new Date().toISOString(),
               source_fingerprint: [
-                "v2", strategy_name, symbol, variantSampleBucket,
+                "v3", strategy_name, symbol, variantSampleBucket,
               ].join("|"),
             };
           });
@@ -883,7 +883,7 @@ Deno.serve(async (req) => {
               market_session: productionMarketSession,
               created_at: new Date().toISOString(),
               source_fingerprint: [
-                "v2", "accumulation", symbol, variantSampleBucket,
+                "v3", "accumulation", symbol, variantSampleBucket,
               ].join("|"),
             });
           }
