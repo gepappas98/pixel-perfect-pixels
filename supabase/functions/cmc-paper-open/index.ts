@@ -1,6 +1,7 @@
 import { getServiceClient } from "../_shared/supabase.ts";
 
 const POSITION_USD = 1000;
+const ENTRY_FEE_RATE = 0.0005; // keep aligned with src/lib/fees.ts and trade-exit.ts
 const STOP_LOSS_PCT = 0.03;
 const TAKE_PROFIT_PCT = 0.04;
 const MAX_PRICE_AGE_MIN = 20;
@@ -128,7 +129,7 @@ Deno.serve(async (req: Request) => {
         status = "COOLDOWN"; reason = "CMC paper-entry cooldown (1h)";
       } else {
         const quantity = POSITION_USD / c.price;
-        const entryFee = POSITION_USD * 0.001;
+        const entryFee = POSITION_USD * ENTRY_FEE_RATE;
         const { data: trade, error } = await db.from("trades").insert({
           composite_signal_id: null,
           symbol,
