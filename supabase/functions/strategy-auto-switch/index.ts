@@ -3,6 +3,65 @@ import { getServiceClient } from "../_shared/supabase.ts";
 // Live scorer has three axes only: whale, 4h technicals, and council. Sentiment remains research-only.
 const P:any={balanced:[1,1,1],"whale-focused":[2,.5,.5],"chart-trader":[.5,2,.5],"sentiment-first":[.5,.5,.5],"ai-driven":[.5,.5,2],conservative:[1.2,1.2,1.2],"volatility-timing":[.3,2.2,1],"vwap-momentum":[.5,2.2,.8],"smc-reversal":[.4,2.5,.8]};
 const norm=(rs:any[])=>rs.map(r=>{const w=+r.wins||0,l=+r.losses||0,n=+r.resolved||0,t=+r.total_pnl_pct||0;return{strategy_name:String(r.strategy_name),wins:w,losses:l,resolved:n,total_pnl_pct:t,avg_pnl_pct:n?t/n:null,win_rate_pct:w+l?100*w/(w+l):null}});
+
+/**
+ * Read the V2 benchmark through its aggregate RPC. If the RPC is unavailable
+ * (for example, a stale PostgREST schema cache), fall back to the source table.
+ * The fallback pages every matching row so it never silently aggregates only
+ * the first PostgREST result page.
+ */
+async function getVariantPerformance(db: any, days = 7): Promise<any[]> {
+  const { data: rpcRows, error: rpcError } = await (db.rpc as any)(
+    "get_variant_performance_v2",
+    { days },
+  );
+  if (!rpcError) return rpcRows || [];
+
+  const since = new Date(Date.now() - Math.max(days, 1) * 24 * 60 * 60 * 1000).toISOString();
+  const pageSize = 1000;
+  const rows: any[] = [];
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await db
+      .from("strategy_variant_signals")
+      .select("strategy_name,outcome,pnl_pct")
+      .gte("created_at", since)
+      .eq("recommendation", "buy")
+      .like("source_fingerprint", "v2|%")
+      .range(from, from + pageSize - 1);
+    if (error) {
+      const rpcDetail = rpcError instanceof Error ? rpcError.message : JSON.stringify(rpcError);
+      throw new Error(
+        "get_variant_performance_v2 RPC failed (" + String(rpcDetail || "unknown error") +
+        ") and direct strategy_variant_signals fallback failed: " + error.message,
+      );
+    }
+    const batch = data || [];
+    rows.push(...batch);
+    if (batch.length < pageSize) break;
+  }
+
+  const grouped = new Map<string, any>();
+  for (const row of rows) {
+    const name = String(row.strategy_name || "");
+    if (!name) continue;
+    let aggregate = grouped.get(name);
+    if (!aggregate) {
+      aggregate = { strategy_name: name, wins: 0, losses: 0, expired: 0, open_count: 0, resolved: 0, total_pnl_pct: 0 };
+      grouped.set(name, aggregate);
+    }
+    const outcome = String(row.outcome || "");
+    if (outcome === "win") aggregate.wins++;
+    if (outcome === "loss") aggregate.losses++;
+    if (outcome === "expired") aggregate.expired++;
+    if (outcome === "open") aggregate.open_count++;
+    if (outcome === "win" || outcome === "loss" || outcome === "expired") {
+      aggregate.resolved++;
+      aggregate.total_pnl_pct += Number(row.pnl_pct) || 0;
+    }
+  }
+  return [...grouped.values()];
+}
+
 function choose(ps:any[],cur:string|null){const e=ps.filter(x=>Object.prototype.hasOwnProperty.call(P,x.strategy_name)&&x.resolved>=8&&x.win_rate_pct!=null);if(!e.length)return null;const a=e.map(x=>{const q=(x.win_rate_pct||0)/100,f=Math.min(1,x.resolved/25);return{x,score:(x.avg_pnl_pct||0)*(.85+.15*q)*(.75+.25*f)}}).sort((a,b)=>b.score-a.score),b=a[0],c=e.find(x=>x.strategy_name===cur);if(c){const q=(c.win_rate_pct||0)/100,v=c.avg_pnl_pct||0;if((v<0||q<.3)&&c.resolved>=8){const safe=ps.filter(x=>x.strategy_name!==cur&&x.resolved>=8&&(x.avg_pnl_pct||0)>0).sort((a,b)=>(b.avg_pnl_pct||0)-(a.avg_pnl_pct||0));return{preset:safe[0]?.strategy_name||"conservative",reason:"AUTO_DEMOTE current="+cur+" -> "+(safe[0]?.strategy_name||"conservative"),forced:true}};const s=v*(.85+.15*q)*(.75+.25*Math.min(1,c.resolved/25));if(b.score<=s*1.12)return null}return{preset:b.x.strategy_name,reason:"DETERMINISTIC best="+b.x.strategy_name,forced:false}}
 async function ask(cur:string,ps:any[],market:any){const k=Deno.env.get("GROQ_API_KEY");if(!k)return null;try{const r=await fetch("https://api.groq.com/openai/v1/chat/completions",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+k},body:JSON.stringify({model:Deno.env.get("GROQ_MODEL")||"openai/gpt-oss-20b",messages:[{role:"system",content:"Choose one allowed crypto strategy using performance. Return only JSON with preset and reasoning."},{role:"user",content:JSON.stringify({current:cur,market,performance:ps,allowed:Object.keys(P)})}],temperature:.15,max_completion_tokens:2048}),signal:AbortSignal.timeout(15000)});if(!r.ok)return null;const j=await r.json(),s=j.choices?.[0]?.message?.content||"",x=JSON.parse(s.trim());return P[x.preset]?{preset:x.preset,reason:String(x.reasoning||"Groq selection")}:null}catch{return null}}
 Deno.serve(async req=>{const h=handleOptions(req);if(h)return h;const db=getServiceClient();try{const {data:c,error}=await db.from("strategy_config").select("*").eq("id",1).maybeSingle();if(error)throw error;if(!c||!c.auto_switch_enabled)return Response.json({ok:true,switched:false,reason:c?"disabled":"no_config"},{headers:corsHeaders});const iv=Math.max(1,+c.auto_switch_interval_hours||4),last=c.last_auto_switch_at?new Date(c.last_auto_switch_at).getTime():0;if(last&&Date.now()-last<iv*36e5)return Response.json({ok:true,switched:false,reason:"cooldown"},{headers:corsHeaders});
@@ -20,9 +79,8 @@ const regimeFresh = Array.isArray(regimeRows) && regimeRows.length === 2 &&
     Date.now()-Date.parse(r.created_at) >= 0 &&
     Date.now()-Date.parse(r.created_at) <= 25*60*1000);
 if (regimeFresh) {
-  const {data: bearRows,error: bearPerfError}=await (db.rpc as any)("get_variant_performance_v2",{days:7});
-  if (bearPerfError) throw bearPerfError;
-  const bearPs=norm(bearRows||[]).filter((x:any)=>Object.prototype.hasOwnProperty.call(P,x.strategy_name));
+  const bearRows = await getVariantPerformance(db, 7);
+  const bearPs=norm(bearRows).filter((x:any)=>Object.prototype.hasOwnProperty.call(P,x.strategy_name));
   const bearCur=String(c.preset_name||"balanced");
   const bearCurrent=bearPs.find((x:any)=>x.strategy_name===bearCur);
   const bearResolved=bearCurrent?.resolved||0;
@@ -52,7 +110,7 @@ if (regimeFresh) {
   return Response.json({ok:true,switched:true,preset:bearTarget,source:"bear_demote_only",regime:"confirmed_bear",reason:bearReason,performance:bearPs},{headers:corsHeaders});
 }
 
-let rows:any[]=[];try{const {data:rpcRows,error:rpcError}=await (db.rpc as any)("get_variant_performance_v2",{days:7});if(rpcError)throw rpcError;rows=rpcRows||[]}catch(rpcFailure){const detail=rpcFailure instanceof Error?rpcFailure.message:JSON.stringify(rpcFailure);const reason="RPC fallback: get_variant_performance_v2 unavailable/failed: "+String(detail||"unknown error");await db.from("strategy_config").update({last_auto_reasoning:reason}).eq("id",1);return Response.json({ok:true,switched:false,reason:"rpc_fallback",error:String(detail||"unknown error")},{headers:corsHeaders})}const ps=norm(rows).filter((x:any)=>Object.prototype.hasOwnProperty.call(P,x.strategy_name)),good=ps.filter(x=>x.resolved>=25&&(x.avg_pnl_pct||0)>0);if(!good.length){
+const rows = await getVariantPerformance(db, 7);const ps=norm(rows).filter((x:any)=>Object.prototype.hasOwnProperty.call(P,x.strategy_name)),good=ps.filter(x=>x.resolved>=25&&(x.avg_pnl_pct||0)>0);if(!good.length){
  const cur=String(c.preset_name||"balanced");
  const current=ps.find((x:any)=>x.strategy_name===cur);
  const resolved=current?.resolved||0;
