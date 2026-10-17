@@ -11,8 +11,11 @@ type TradeRow = Pick<
 
 const STRATEGIES = [
   { key: "cmc", label: "CMC Paper" },
-  { key: "early", label: "Early Entry Regime" },
+  { key: "early", label: "Early Entry Regime (A)" },
+  { key: "early_b", label: "Early Entry — B Reversal" },
+  { key: "early_c", label: "Early Entry — C Adaptive" },
   { key: "event", label: "Event Flow Paper" },
+  { key: "whale_shock", label: "Whale Shock Reversal" },
   { key: "standard", label: "Standard" },
 ] as const;
 
@@ -30,15 +33,25 @@ function strategyOf(trade: TradeRow): StrategyKey {
   const raw = String(
     metadataStrategy ?? trade.entry_source ?? "",
   ).toLowerCase();
+  const source = String(trade.entry_source ?? "").toLowerCase();
 
-  if (raw.includes("cmc-paper") || raw.includes("cmc_paper")) {
+  if (raw.includes("cmc-paper") || raw.includes("cmc_paper") || source === "cmc_paper") {
     return "cmc";
   }
-  if (raw.includes("early_entry") || raw.includes("early-entry")) {
+  if (source === "early_entry_b_reversal" || raw.includes("early-entry-b-reversal")) {
+    return "early_b";
+  }
+  if (source === "early_entry_c_adaptive" || raw.includes("early-entry-c-adaptive")) {
+    return "early_c";
+  }
+  if (source === "early_entry_regime" || raw.includes("early-entry-regime")) {
     return "early";
   }
-  if (raw.includes("event_flow") || raw.includes("event-flow")) {
+  if (raw.includes("event_flow") || raw.includes("event-flow") || source === "event_flow_paper") {
     return "event";
+  }
+  if (source === "whale_shock" || raw.includes("whale-shock")) {
+    return "whale_shock";
   }
   return "standard";
 }
