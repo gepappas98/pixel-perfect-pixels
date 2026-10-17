@@ -497,10 +497,13 @@ function ruleBasedRecommendation(
     whale: 0, technicals: 0, council: 0,
   };
 
+  const directionLabel = (direction: Direction) =>
+    direction === "bullish" ? "bull" : direction === "bearish" ? "bear" : "neutral";
+  const mtfDiagnosticDetail = `4h ${mtf.primary ? directionLabel(mtf.p) : "missing"} · 1h ${mtf.fast ? directionLabel(mtf.f) : "missing"} · 1d ${mtf.trend ? directionLabel(mtf.t) : "missing"}`;
   const frames = [
-    { name: "4h", row: mtf.primary, direction: mtf.p, weight: 1 },
-    { name: "1h", row: mtf.fast, direction: mtf.f, weight: 0.65 },
-    { name: "1d", row: mtf.trend, direction: mtf.t, weight: 0.65 },
+    { row: mtf.primary, direction: mtf.p, weight: 1 },
+    { row: mtf.fast, direction: mtf.f, weight: 0.65 },
+    { row: mtf.trend, direction: mtf.t, weight: 0.65 },
   ].filter((frame) => frame.row !== null);
   const availableWeight = frames.reduce((sum, frame) => sum + frame.weight, 0);
   const directionalWeight = frames.reduce((sum, frame) =>
@@ -522,13 +525,13 @@ function ruleBasedRecommendation(
   if (Math.abs(components.technicals) >= 0.025) {
     reasons.push(`MTF technicals ${components.technicals > 0 ? "bullish" : "bearish"} (weighted score ${mtfDirectionScore.toFixed(2)}; ${mtf.detail})`);
   } else if (frames.length > 0 && mtf.bullCount > 0 && mtf.bearCount > 0) {
-    reasons.push(`MTF technical conflict: bullish and bearish timeframes offset each other (${mtf.detail})`);
+    reasons.push(`MTF technical conflict: bullish and bearish timeframes offset each other (${mtfDiagnosticDetail})`);
   } else if (frames.length > 0 && frames.every((frame) => frame.direction === "neutral")) {
-    reasons.push(`MTF technicals genuinely neutral across available timeframes (${mtf.detail})`);
+    reasons.push(`MTF technicals genuinely neutral across available timeframes (${mtfDiagnosticDetail})`);
   } else if (frames.length === 0) {
     reasons.push("MTF technical data unavailable: no fresh 4h/1h/1d snapshots");
   } else {
-    reasons.push(`MTF technicals net to neutral (${mtf.detail})`);
+    reasons.push(`MTF technicals net to neutral (${mtfDiagnosticDetail})`);
   }
 
   if (council?.final_verdict) {
