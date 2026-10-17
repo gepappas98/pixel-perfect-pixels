@@ -783,7 +783,7 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
         min_alerts: config.minAlerts,
         cooldown_minutes: config.cooldownMinutes,
         strategy: "whale-shock-reversal-v2",
-        strategy_version: "whale-shock-reversal-v2",
+        strategy_version: 2,
         entry_path: "trade-executor-whale-shock",
         research_only: true,
         regime_transition: regimeTransition,
