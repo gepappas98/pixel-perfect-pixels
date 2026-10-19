@@ -201,6 +201,8 @@ export async function readKnowledge(db: SupabaseClient, now = new Date().toISOSt
         last_archive_at: typeof raw["last_archive_at"] === "string" ? raw["last_archive_at"] as string : null,
         raw_cutoff: typeof raw["raw_cutoff"] === "string" ? raw["raw_cutoff"] as string : "",
         derived_cutoff: typeof raw["derived_cutoff"] === "string" ? raw["derived_cutoff"] as string : "",
+        archive_enabled: raw["archive_enabled"] === true,
+        delete_enabled: raw["delete_enabled"] === true,
         by_table,
       };
     } else {
