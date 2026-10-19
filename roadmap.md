@@ -8,10 +8,10 @@
 - [x] Add two independent production controls: archive capture disabled by default; source deletion disabled by default.
 - [x] Verify the retention cron schedule is unchanged (`17 3 * * *`) and that both controls are false.
 - [x] Confirm no retention-source rows were deleted; 22,150 eligible source rows remain intact.
-- [x] Reclaim research-table index bloat and drop a redundant source index; database size is 464 MB, below the 480 MB warning threshold.
-- [ ] Merge PR with matching safety/batch migrations and updated UI flags.
-- [ ] Pass SQL integration CI for the full migration chain (paused capture, forced archive failure, archive-only mode, and explicitly gated deletion in ephemeral PostgreSQL).
-- [ ] After code sync/publish, verify `pipeline_runs.result.research_knowledge_sync.status=ok` and the panel displays archive/deletion controls.
+- [x] Reclaim research-table index bloat and drop a redundant source index; database size is 464 MB, below the 480 MB warning threshold at the latest verified reading.
+- [x] Merge PR #132 with matching safety/batch migrations and updated UI flags.
+- [x] Pass SQL integration CI for the full migration chain (paused capture, forced archive failure, archive-only mode, and explicitly gated deletion in ephemeral PostgreSQL).
+- [ ] User-controlled Lovable sync/publish; then verify `pipeline_runs.result.research_knowledge_sync.status=ok` and the panel displays archive/deletion controls.
 - [ ] Review which historical source categories are worth compact archival before enabling `allow_archive`; current production capture remains paused.
 - [ ] Design evidence-backed candidate-finding generation with statistical calibration and out-of-sample checks; no findings are auto-generated or marked validated yet.
 - [ ] Audit event-flow decision history and Council Learning idempotency in a separate additive batch.
