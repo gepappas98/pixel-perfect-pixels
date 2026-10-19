@@ -12,6 +12,7 @@ export interface Evidence {
   fingerprint: string;
   role: EvidenceRole;
   summary: string;
+  symbol?: string | null;
 }
 export interface ResearchCase {
   id: string;
