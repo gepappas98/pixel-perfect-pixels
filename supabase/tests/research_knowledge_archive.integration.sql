@@ -69,6 +69,9 @@ create table public.whale_flow_snapshots (
 );
 
 \i supabase/migrations/20261020160000_research_knowledge_archive.sql
+\i supabase/migrations/20261020173000_research_archive_delete_guard.sql
+\i supabase/migrations/20261020180000_research_knowledge_sync_batch_fix.sql
+\i supabase/migrations/20261020182000_research_archive_capture_gate.sql
 
 insert into public.composite_signals(id,symbol,created_at,confidence,recommendation,regime_label,source_tags)
 values ('10000000-0000-0000-0000-000000000001','BTC',now()-interval '2 hours',0.8,'BUY','bullish',array['mtf','whale']);
@@ -108,6 +111,20 @@ end $$;
 
 select public.cleanup_research_data(72,168,true);
 
+-- Default production control is paused: even the scheduled non-dry-run path must not write or delete.
+select public.cleanup_research_data(72,168,false);
+do $$
+begin
+  if not exists (select 1 from public.asset_price_snapshots where id='40000000-0000-0000-0000-000000000001') then
+    raise exception 'source row deleted while archive gate was disabled';
+  end if;
+  if (public.get_research_archive_status(72,168)->>'archive_enabled')::boolean then
+    raise exception 'archive gate should default to disabled';
+  end if;
+end $$;
+
+-- Enable capture only inside this disposable test database to verify fail-closed behavior.
+update public.research_archive_control set allow_archive=true where id=1;
 create or replace function public.test_research_archive_fail() returns trigger
 language plpgsql as $fail$
 begin
@@ -135,6 +152,23 @@ end $$;
 drop trigger test_research_archive_fail on public.research_evidence;
 drop function public.test_research_archive_fail();
 
+-- With capture enabled but deletion still locked, evidence is stored and original rows remain.
+select public.cleanup_research_data(72,168,false);
+do $$
+begin
+  if not exists (select 1 from public.asset_price_snapshots where id='40000000-0000-0000-0000-000000000001') then
+    raise exception 'source row deleted while delete gate was disabled';
+  end if;
+  if (public.get_research_archive_status(72,168)->>'missing_sources')::integer <> 0 then
+    raise exception 'archive status should report zero missing sources after capture';
+  end if;
+  if (public.get_research_archive_status(72,168)->>'delete_enabled')::boolean then
+    raise exception 'source deletion should remain locked by default';
+  end if;
+end $$;
+
+-- The delete path is exercised only after both flags are explicitly enabled in this disposable database.
+update public.research_archive_control set allow_source_delete=true where id=1;
 select public.cleanup_research_data(72,168,false);
 do $$
 begin
@@ -147,7 +181,7 @@ begin
      or exists (select 1 from public.whale_flow_transition_context where id='40000000-0000-0000-0000-000000000007')
      or exists (select 1 from public.whale_flow_transitions where id='50000000-0000-0000-0000-000000000001')
      or exists (select 1 from public.whale_flow_snapshots where id='50000000-0000-0000-0000-000000000002') then
-    raise exception 'eligible source rows remain after verified archive cleanup';
+    raise exception 'eligible source rows remain after both explicit archive and delete approvals';
   end if;
   if (select count(*) from public.research_evidence where source_table in (
     'asset_price_snapshots','asset_flow_snapshots','asset_sentiment_snapshots','asset_news_events',
