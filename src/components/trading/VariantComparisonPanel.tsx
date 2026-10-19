@@ -86,23 +86,24 @@ const FALLBACK_SETTINGS: TradingSettings = {
 export function VariantComparisonPanel() {
   const [cohort, setCohort] = useState<"v3" | "v2" | "legacy">("v3");
 
-  // Fetch each scoring generation separately; no historical cohort is mixed into V3.
+  // Fetch only the selected cohort. V3 is the default, so legacy/V2 are not
+  // queried during normal refreshes; historical cohorts load only on explicit selection.
   const { data, isLoading, error } = useQuery<VariantPerfCohorts>({
-    queryKey: ["strategy-variants-perf-cohorts"],
+    queryKey: ["strategy-variants-perf-cohorts", cohort],
     queryFn: async () => {
-      const [legacyResult, v2Result, v3Result] = await Promise.all([
-        supabase.rpc("get_variant_performance", { days: 7 }),
-        (supabase as any).rpc("get_variant_performance_v2", { days: 7 }),
-        (supabase as any).rpc("get_variant_performance_v3", { days: 7 }),
-      ]);
-      if (legacyResult.error) throw legacyResult.error;
-      if (v2Result.error) throw v2Result.error;
-      if (v3Result.error) throw v3Result.error;
-      return {
-        legacy: (legacyResult.data ?? []) as VariantPerfRow[],
-        v2: (v2Result.data ?? []) as VariantPerfRow[],
-        v3: (v3Result.data ?? []) as VariantPerfRow[],
-      };
+      if (cohort === "v3") {
+        const { data, error } = await (supabase as any).rpc("get_variant_performance_v3", { days: 7 });
+        if (error) throw error;
+        return { legacy: [], v2: [], v3: (data ?? []) as VariantPerfRow[] };
+      }
+      if (cohort === "v2") {
+        const { data, error } = await (supabase as any).rpc("get_variant_performance_v2", { days: 7 });
+        if (error) throw error;
+        return { legacy: [], v2: (data ?? []) as VariantPerfRow[], v3: [] };
+      }
+      const { data, error } = await supabase.rpc("get_variant_performance", { days: 7 });
+      if (error) throw error;
+      return { legacy: (data ?? []) as VariantPerfRow[], v2: [], v3: [] };
     },
     refetchInterval: 60_000,
     staleTime: 30_000,
