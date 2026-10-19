@@ -186,3 +186,14 @@ This is a confirmed P1 wiring defect, not a request to optimize strategy perform
 - Retention cleanup is replaced only inside the unapplied migration. It captures bounded evidence, verifies source coverage, then deletes; an error aborts the transaction before source deletion. The production cron/function has not been changed.
 - CI on commit `4ef16df1c3cbde95b8173cda005e7d18e10717b2` passed production build, strict TypeScript check, all 123 unit tests, Supabase Edge Function type-check, and the ephemeral PostgreSQL migration/fail-closed integration test (`research knowledge archive integration: PASS`).
 - No production migration applied, no production data moved/deleted, no deployment/publish performed.
+
+
+## 2026-10-20 — Production safety correction and bounded V3 refresh
+
+- Applied the initial Research Knowledge schema migration and follow-up migrations to canonical Supabase. This created evidence/case/finding tables and the read-only archive status function.
+- After a broad refresh call exceeded the SQL statement timeout, replaced it with a bounded 250-row batch function and then narrowed automatic variant materialization to V3 only. V2/Legacy remain intact in `strategy_variant_signals`; 2,250 resolved V2 cases were materialized before the V3-only gate, and no further V2/Legacy duplication is performed automatically.
+- Added a two-flag control table: `allow_archive=false` and `allow_source_delete=false`. The scheduled retention function now returns before any archive write while capture is disabled; even if capture is explicitly enabled, source deletion remains separately locked. Existing cron schedule `17 3 * * *` is unchanged.
+- Confirmed 22,150 retention-eligible source rows are still present and unarchived. No retention-source data was deleted.
+- The aborted broad refresh attempt caused index bloat in the new research tables. Dropped the redundant `research_cases_source_idx` and reindexed the new research-table indexes. Database size decreased from a 498 MB reading to 464 MB, below the 480 MB warning threshold. The main large tables still needing separate storage work are `strategy_shadow_diagnostics`, `composite_signals`, `strategy_variant_signals`, `pipeline_runs`, `whale_alerts`, and `market_candles`.
+- Follow-up PR branch `feat/research-archive-safety-guards` adds the matching migration history, control flags in the existing panel, and SQL integration tests for paused capture, fail-closed archival, and explicitly gated deletion.
+- No Lovable publish/deploy was performed. The pipeline hook is in GitHub main but only runs from the app after the user syncs/publishes the code.
