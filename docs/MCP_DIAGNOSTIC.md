@@ -19,8 +19,8 @@ bunx tsgo --noEmit
 
 ## Test call
 ```
-curl -s -X POST "$URL/api/public/mcp-diagnostic" -H "Authorization: Bearer $MCP_DIAGNOSTIC_TOKEN" \\
-  -H "Content-Type: application/json" \\
+curl -s -X POST "$URL/api/public/mcp-diagnostic" -H "Authorization: Bearer $MCP_DIAGNOSTIC_TOKEN" \
+  -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_diagnostic_snapshot","arguments":{"window_minutes":15}}}'
 ```
 
