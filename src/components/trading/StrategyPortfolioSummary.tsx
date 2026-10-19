@@ -2,12 +2,15 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
-import type { Database } from "@/integrations/supabase/types";
 
-type TradeRow = Pick<
-  Database["public"]["Tables"]["trades"]["Row"],
-  "status" | "mode" | "net_pnl" | "pnl" | "entry_source" | "entry_metadata"
->;
+type TradeRow = {
+  status: string | null;
+  mode: string | null;
+  net_pnl: number | null;
+  pnl: number | null;
+  entry_source: string | null;
+  entry_metadata: Record<string, unknown> | null;
+};
 
 const STRATEGIES = [
   { key: "cmc", label: "CMC Paper" },
