@@ -167,6 +167,51 @@ export async function readKnowledge(db: SupabaseClient, now = new Date().toISOSt
     return { ...c, evidence_ids: [...new Set([...c.evidence_ids, ...evidenceIds])] };
   });
   const findings = findingRows.map(r => ({ id: text(r, "id") ?? "", title: (text(r, "title") ?? "").slice(0, 200), statement: (text(r, "statement") ?? "").slice(0, 2000), status: text(r, "status") as Finding["status"], confidence: numeric(r, "confidence") ?? 0, cohort: text(r, "cohort") as Finding["cohort"], scorer_version: text(r, "scorer_version") ?? "unknown", sample_size: numeric(r, "sample_size") ?? 0, evidence_ids: ids(r, "evidence_ids"), case_ids: ids(r, "case_ids"), checked_at: text(r, "checked_at") ?? "", limitations: text(r, "limitations") ?? "", reproduction: text(r, "reproduction") ?? "" }));
+  let archival: KnowledgeSnapshot["archival"] = "migration_pending";
+  let archive_status: KnowledgeSnapshot["archive_status"] = null;
+  try {
+    const statusDb = db as unknown as {
+      rpc: (name: string, args: Record<string, unknown>) => {
+        abortSignal: (signal: AbortSignal) => Promise<{ data: unknown; error: { code?: string; message: string } | null }>;
+      };
+    };
+    const statusResult = await statusDb.rpc("get_research_archive_status", { p_raw_hours: 72, p_derived_hours: 168 })
+      .abortSignal(AbortSignal.timeout(8_000));
+    if (statusResult.error) {
+      const code = statusResult.error.code ?? "unknown";
+      const missingFunction = /PGRST202|42883|does not exist|schema cache|could not find the function/i.test(code + " " + statusResult.error.message);
+      archival = missingFunction ? "migration_pending" : "error";
+      issues.push(missingFunction
+        ? "Retention archive status function is not installed; archival readiness remains unverified."
+        : "Retention archive status query failed; archival readiness remains unverified.");
+    } else if (statusResult.data && typeof statusResult.data === "object") {
+      const raw = statusResult.data as Record<string, unknown>;
+      const status = raw.status;
+      archival = status === "ready" || status === "incomplete" ? status : "unverified";
+      const number = (value: unknown) => Number.isFinite(Number(value)) ? Number(value) : 0;
+      const byTableRaw = raw.by_table && typeof raw.by_table === "object" ? raw.by_table as Record<string, unknown> : {};
+      const by_table = Object.fromEntries(Object.entries(byTableRaw).map(([key, value]) => {
+        const row = value && typeof value === "object" ? value as Record<string, unknown> : {};
+        return [key, { eligible: number(row.eligible), archived: number(row.archived), missing: number(row.missing) }];
+      }));
+      archive_status = {
+        eligible_sources: number(raw.eligible_sources),
+        archived_sources: number(raw.archived_sources),
+        missing_sources: number(raw.missing_sources),
+        last_archive_at: typeof raw.last_archive_at === "string" ? raw.last_archive_at : null,
+        raw_cutoff: typeof raw.raw_cutoff === "string" ? raw.raw_cutoff : "",
+        derived_cutoff: typeof raw.derived_cutoff === "string" ? raw.derived_cutoff : "",
+        by_table,
+      };
+    } else {
+      archival = "error";
+      issues.push("Retention archive status returned no usable data.");
+    }
+  } catch {
+    archival = "error";
+    issues.push("Retention archive status timed out or failed; readiness is not assumed.");
+  }
+
   for (const r of storedCases) {
     const sourceTable = text(r, "source_table") ?? "";
     const sourceId = text(r, "source_id") ?? "";
@@ -178,7 +223,7 @@ export async function readKnowledge(db: SupabaseClient, now = new Date().toISOSt
       cases[index] = { ...current, ...c, evidence_ids: [...new Set([...current.evidence_ids, ...c.evidence_ids])] };
     } else cases.push(c);
   }
-  return { checked_at: now, cases, evidence, findings, counts, issues, archival: "unverified", bounded: Object.entries(counts).some(([table, count]) => count !== null && count > (["research_evidence", "research_findings"].includes(table) ? 100 : 250)), lessons: lessons.map(r => { const sourceId = text(r, "source_trade_id"); return { id: text(r, "id") ?? "", symbol: text(r, "symbol") ?? "unknown", source_trade_id: sourceId, created_at: text(r, "created_at") ?? "", provenance: !sourceId || !lookupSucceeded ? "unresolved" : linked.has(sourceId) ? "linked" : "orphan" }; }) };
+  return { checked_at: now, cases, evidence, findings, counts, issues, archival, archive_status, bounded: Object.entries(counts).some(([table, count]) => count !== null && count > (["research_evidence", "research_findings"].includes(table) ? 100 : 250)), lessons: lessons.map(r => { const sourceId = text(r, "source_trade_id"); return { id: text(r, "id") ?? "", symbol: text(r, "symbol") ?? "unknown", source_trade_id: sourceId, created_at: text(r, "created_at") ?? "", provenance: !sourceId || !lookupSucceeded ? "unresolved" : linked.has(sourceId) ? "linked" : "orphan" }; }) };
 }
 
 /** Public read-only endpoint uses the same canonical public configuration as existing views, with RLS. */
