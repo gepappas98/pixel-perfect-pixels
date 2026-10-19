@@ -166,3 +166,14 @@ This is a confirmed P1 wiring defect, not a request to optimize strategy perform
 - The proposed fix keeps legacy observations queryable through `get_variant_performance()`, adds `get_variant_performance_v2()` for rows whose fingerprint starts with `v2|`, and routes both the Edge Function and server-side auto-switch paths through v2 only. With no qualifying v2 samples, auto-switch must remain blocked.
 - Variant Performance gains an explicit V2 / Legacy selector; the two cohorts are fetched and aggregated separately. Legacy rows remain visible for historical context but are not used as v2 evidence.
 - Migration and Edge Function changes are staged in draft PR #93. Deployment order: apply `20261012173000_variant_benchmark_cohorts.sql`, deploy `signal-combiner` and `strategy-auto-switch`, then deploy the frontend. No production migration/deploy or historical data mutation has occurred.
+
+
+## 2026-10-20 — Intelligent Research Knowledge Archive (non-destructive first phase)
+
+- Performed read-only audit of canonical Supabase data and existing project paths before proposing archive work.
+- Confirmed the existing Council Learning generates concise post-mortems, but a lesson is not equivalent to a validated cross-strategy finding. Preserve weak/orphan lessons as historical provenance; require evidence links for new findings.
+- Confirmed the existing retention function deletes raw price/flow/sentiment/news at 72h and derived whale/event records at 168h. Dry-run counts were inspected only; no production retention changes or deletions were made.
+- Added an additive migration draft for `research_knowledge_findings` and `research_knowledge_evidence`, read-only dashboard overview, a research-only dashboard panel, and pure validation tests. The panel shows the archive as pending until the migration is applied; it must not fabricate findings from counts alone.
+- Explicit safety boundaries: no database reset, no historical data mutation, no cron change, no scorer/entry/executor change, no live-order change, no deployment.
+- Validation status at authoring time: tests/lint/build and production migration application remain pending. Do not claim the archive is populated or self-updating until the migration, evidence capture workflow, and end-to-end verification are completed.
+- Branch: `feat/intelligent-research-knowledge-archive`.
