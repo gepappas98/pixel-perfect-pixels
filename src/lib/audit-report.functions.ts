@@ -151,19 +151,52 @@ export const saveAuditSnapshot = createServerFn({ method: "POST" })
     return d;
   })
   .handler(async ({ data }) => {
-    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const db = supabaseAdmin as unknown as Loose;
-    const row = {
-      checked_at: data.checked_at,
-      title: data.title.slice(0, 200),
-      severity: data.severity,
-      status: String(data.status).slice(0, 50),
-      summary: String(data.summary).slice(0, 2000),
-      findings: data.findings.slice(0, 100),
-      source: String(data.source).slice(0, 200),
-      window_label: data.window_label,
-    };
-    const { data: inserted, error } = await db.from("system_audit_reports").insert(row).select("*").single();
-    if (error) throw new Error(error.message);
-    return inserted as AuditReport;
+    try {
+      const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+      const db = supabaseAdmin as unknown as Loose;
+      const row = {
+        checked_at: data.checked_at,
+        title: data.title.slice(0, 200),
+        severity: data.severity,
+        status: String(data.status).slice(0, 50),
+        summary: String(data.summary).slice(0, 2000),
+        findings: data.findings.slice(0, 100),
+        source: String(data.source).slice(0, 200),
+        window_label: data.window_label,
+      };
+      const { data: inserted, error } = await db.from("system_audit_reports").insert(row).select("*").single();
+      if (error) {
+        const errorMessage = String(error.message ?? "").toLowerCase();
+        if (
+          error.code === "PGRST301" ||
+          errorMessage.includes("api key") ||
+          errorMessage.includes("jwt") ||
+          errorMessage.includes("unauthorized")
+        ) {
+          throw new Error(
+            "Server configuration error: CANONICAL_SERVICE_ROLE_KEY is invalid or unauthorized for the canonical Supabase project."
+          );
+        }
+        console.error("[Audit report] Failed to save audit snapshot.", {
+          code: error.code ?? "unknown",
+        });
+        throw new Error("Failed to save audit snapshot. Check server logs for details.");
+      }
+      return inserted as AuditReport;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const normalized = msg.toLowerCase();
+      if (
+        normalized.includes("missing server-only") ||
+        normalized.includes("api key") ||
+        normalized.includes("unauthorized") ||
+        normalized.includes("invalid jwt") ||
+        normalized.includes("jwt expired")
+      ) {
+        throw new Error(
+          "Server configuration error: CANONICAL_SERVICE_ROLE_KEY is missing or unauthorized for the canonical Supabase project."
+        );
+      }
+      throw err;
+    }
   });
