@@ -130,6 +130,15 @@ export interface KnowledgeSnapshot {
   lessons: Array<{ id: string; source_trade_id: string | null; symbol: string; created_at: string; provenance: "linked" | "orphan" | "unresolved" }>;
   counts: Record<string, number | null>;
   issues: string[];
-  archival: "unverified";
+  archival: "unverified" | "ready" | "incomplete" | "migration_pending" | "error";
+  archive_status: {
+    eligible_sources: number;
+    archived_sources: number;
+    missing_sources: number;
+    last_archive_at: string | null;
+    raw_cutoff: string;
+    derived_cutoff: string;
+    by_table: Record<string, { eligible: number; archived: number; missing: number }>;
+  } | null;
   bounded: boolean;
 }
