@@ -127,6 +127,10 @@ export async function readKnowledge(db: SupabaseClient, now = new Date().toISOSt
         "confidence=" + (text(r, "confidence") ?? "unknown"),
         "recommendation=" + (text(r, "recommendation") ?? "unknown"),
         "regime=" + (text(r, "regime_label") ?? "unknown"),
+        "production_regime=" + (text(r, "production_regime_label") ?? "unknown"),
+        "market_regime_score=" + (text(r, "market_regime_score") ?? "unknown"),
+        "asset_trend=" + (text(r, "asset_trend_regime") ?? "unknown"),
+        "asset_volatility=" + (text(r, "asset_volatility_regime") ?? "unknown"),
         "tags=" + ids(r, "source_tags").join(","),
       ].join(" ").slice(0, 2000),
     };
