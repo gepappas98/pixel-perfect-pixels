@@ -45,28 +45,28 @@ export const refreshAuditSnapshot = createServerFn({ method: "GET" }).handler(
         const result = run.result && typeof run.result === "object"
           ? run.result as Record<string, unknown>
           : {};
-        const stages = Array.isArray(result.stages) ? result.stages : [];
+        const stages = Array.isArray(result["stages"]) ? result["stages"] : [];
         let runHasFailure = false;
 
         for (const rawStage of stages) {
           if (!rawStage || typeof rawStage !== "object") continue;
           const stage = rawStage as Record<string, unknown>;
-          const stageResult = stage.result && typeof stage.result === "object"
-            ? stage.result as Record<string, unknown>
+          const stageResult = stage["result"] && typeof stage["result"] === "object"
+            ? stage["result"] as Record<string, unknown>
             : {};
-          const reportedFailures = Number(stageResult.failures ?? stage.failures ?? 0);
-          const httpStatus = Number(stage.status ?? 0);
-          const hasReportedError = Boolean(stageResult.error || stage.error);
+          const reportedFailures = Number(stageResult["failures"] ?? stage["failures"] ?? 0);
+          const httpStatus = Number(stage["status"] ?? 0);
+          const hasReportedError = Boolean(stageResult["error"] || stage["error"]);
           if (
-            stage.ok !== false &&
-            stageResult.ok !== false &&
+            stage["ok"] !== false &&
+            stageResult["ok"] !== false &&
             httpStatus < 400 &&
             reportedFailures <= 0 &&
             !hasReportedError
           ) continue;
 
           runHasFailure = true;
-          const name = String(stage.name ?? "unknown-stage");
+          const name = String(stage["name"] ?? "unknown-stage");
           stageFailureCounts.set(name, (stageFailureCounts.get(name) ?? 0) + 1);
         }
         if (runHasFailure) runsWithStageFailures++;
