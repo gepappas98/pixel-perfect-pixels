@@ -2115,7 +2115,7 @@ Rule of thumb: Αν σε 14 μέρες shadow mode το counterfactual δείξ�
 - `council_lessons`: 193 rows, 29 source_trade_id references absent from current trades. Preserve as unresolved provenance; no automatic repair or deletion.
 - Current retention dry-run (72h raw / 168h derived): 5,439 sentiment, 334 news, 6,750 flow, 6,750 price, 1,017 whale-flow snapshots, 394 transitions, 394 transition contexts, 393 shock followups, 1 event-flow transmission. Production cron remains active and unchanged.
 - Timestamp consistency check found no rows where the current retention sources' recorded availability timestamps preceded their observation timestamps. This supports, but does not replace, migration testing.
-- No production data copied/deleted; no production migration applied; no cron, scoring, entry, execution, or live-order behavior changed. Build/test checks remain pending.
+- No production data copied/deleted; no production migration applied; no cron, scoring, entry, execution, or live-order behavior changed. CI on commit `4ef16df1c3cbde95b8173cda005e7d18e10717b2` passed production build, strict TypeScript, 123 unit tests, Edge Function type-check, and the ephemeral PostgreSQL archive/fail-closed integration test.
 
 
 ## 2026-10-20 — Batch 2: point-in-time evidence linkage and self-refresh path
