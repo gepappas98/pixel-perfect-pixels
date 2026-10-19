@@ -27,7 +27,7 @@ export async function readKnowledge(db: SupabaseClient, now = new Date().toISOSt
     }
   };
   const [trades, variants, lessons, evidenceRows, findingRows, storedCases] = await Promise.all([
-    read("trades", "id,symbol,side,mode,status,created_at,closed_at,close_reason,net_pnl,regime_label,composite_signal_id", "created_at"),
+    read("trades", "id,symbol,side,mode,status,created_at,closed_at,close_reason,pnl,net_pnl,total_fees,entry_price,regime_label,source_tags,market_session,entry_source,composite_signal_id", "created_at"),
     read("strategy_variant_signals", "id,strategy_name,symbol,source_fingerprint,created_at,resolved_at,outcome,pnl_pct,regime_label,confidence,recommendation,score,source_tags,production_regime_label,market_regime_score,asset_trend_regime,asset_volatility_regime", "created_at"),
     read("council_lessons", "id,symbol,source_trade_id,created_at", "created_at"),
     read("research_evidence", "id,source_table,source_id,symbol,observed_at,available_at,captured_at,fingerprint,role,summary", "captured_at", 100),
@@ -63,14 +63,14 @@ export async function readKnowledge(db: SupabaseClient, now = new Date().toISOSt
   let cases: ResearchCase[] = [
     ...trades.map((r): ResearchCase => ({
       id: `trades:${text(r, "id")}`, source_table: "trades", source_id: text(r, "id") ?? "", symbol: text(r, "symbol") ?? "unknown",
-      strategy: `${text(r, "mode") ?? "unknown"}/${text(r, "side") ?? "unknown"}`, cohort: "Unknown", scorer_version: "unknown", fingerprint: null,
+      strategy: `${text(r, "entry_source") ?? text(r, "mode") ?? "unknown"}/${text(r, "side") ?? "unknown"}`, cohort: "Unknown", scorer_version: "paper-trade", fingerprint: null,
       entry_at: text(r, "created_at") ?? "", resolved_at: text(r, "closed_at"), maturity_at: null, outcome: text(r, "status") ?? "unknown",
-      net_pnl: numeric(r, "net_pnl"), pnl_unit: "USD", close_reason: text(r, "close_reason"), regime: text(r, "regime_label"), evidence_ids: [],
+      net_pnl: numeric(r, "net_pnl") ?? numeric(r, "pnl"), pnl_unit: "USD", close_reason: text(r, "close_reason"), regime: text(r, "regime_label"), evidence_ids: [],
     })),
     ...variants.map((r): ResearchCase => ({
       id: `strategy_variant_signals:${text(r, "id")}`, source_table: "strategy_variant_signals", source_id: text(r, "id") ?? "", symbol: text(r, "symbol") ?? "unknown",
       strategy: text(r, "strategy_name") ?? "unknown", cohort: cohortOf(text(r, "source_fingerprint")), scorer_version: "unknown", fingerprint: text(r, "source_fingerprint"),
-      entry_at: text(r, "created_at") ?? "", resolved_at: text(r, "resolved_at"), maturity_at: null, outcome: text(r, "outcome") ?? "unknown",
+      entry_at: text(r, "created_at") ?? "", resolved_at: text(r, "resolved_at"), maturity_at: ["win", "loss", "expired"].includes((text(r, "outcome") ?? "").toLowerCase()) ? text(r, "resolved_at") : null, outcome: text(r, "outcome") ?? "unknown",
       net_pnl: numeric(r, "pnl_pct"), pnl_unit: "percent", close_reason: null, regime: text(r, "regime_label"), evidence_ids: [],
     })),
   ];
@@ -87,6 +87,29 @@ export async function readKnowledge(db: SupabaseClient, now = new Date().toISOSt
     role: text(r, "role") as Evidence["role"],
     summary: (text(r, "summary") ?? "").slice(0, 2000),
   }));
+  const tradeEvidence: Evidence[] = trades.map(r => {
+    const id = text(r, "id") ?? "";
+    const observedAt = text(r, "created_at") ?? "";
+    return {
+      id: "trades:" + id,
+      source_table: "trades",
+      source_id: id,
+      symbol: text(r, "symbol"),
+      observed_at: observedAt,
+      available_at: observedAt,
+      captured_at: observedAt,
+      fingerprint: "trades:" + id + ":" + observedAt,
+      role: "entry_context",
+      summary: [
+        "entry_source=" + (text(r, "entry_source") ?? text(r, "mode") ?? "unknown"),
+        "side=" + (text(r, "side") ?? "unknown"),
+        "entry_price=" + (text(r, "entry_price") ?? "unknown"),
+        "regime=" + (text(r, "regime_label") ?? "unknown"),
+        "market_session=" + (text(r, "market_session") ?? "unknown"),
+        "tags=" + ids(r, "source_tags").join(","),
+      ].join(" ").slice(0, 2000),
+    };
+  });
   const signalEvidence: Evidence[] = signalRows.map(r => {
     const id = text(r, "id") ?? "";
     const observedAt = text(r, "created_at") ?? "";
@@ -135,7 +158,7 @@ export async function readKnowledge(db: SupabaseClient, now = new Date().toISOSt
       ].join(" ").slice(0, 2000),
     };
   });
-  const evidence: Evidence[] = [...archivedEvidence, ...signalEvidence, ...variantEvidence];
+  const evidence: Evidence[] = [...archivedEvidence, ...tradeEvidence, ...signalEvidence, ...variantEvidence];
 
   cases = cases.map(c => {
     const entryMs = Date.parse(c.entry_at);
@@ -143,7 +166,7 @@ export async function readKnowledge(db: SupabaseClient, now = new Date().toISOSt
     const linkedSignalId = trade ? text(trade, "composite_signal_id") : null;
     const evidenceIds = evidence.filter(e => {
       if (!eligibleEntryEvidence(e, c.entry_at)) return false;
-      if (c.source_table === "strategy_variant_signals" && e.source_table === "strategy_variant_signals" && e.source_id === c.source_id) return true;
+      if ((c.source_table === "strategy_variant_signals" || c.source_table === "trades") && e.source_table === c.source_table && e.source_id === c.source_id) return true;
       if (linkedSignalId && e.source_table === "composite_signals" && e.source_id === linkedSignalId) return true;
       const observedMs = Date.parse(e.observed_at);
       if (!Number.isFinite(entryMs) || !Number.isFinite(observedMs) || observedMs > entryMs || entryMs - observedMs > 15 * 60 * 1000) return false;
