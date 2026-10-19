@@ -69,7 +69,7 @@ export async function readKnowledge(db: SupabaseClient, now = new Date().toISOSt
     })),
     ...variants.map((r): ResearchCase => ({
       id: `strategy_variant_signals:${text(r, "id")}`, source_table: "strategy_variant_signals", source_id: text(r, "id") ?? "", symbol: text(r, "symbol") ?? "unknown",
-      strategy: text(r, "strategy_name") ?? "unknown", cohort: cohortOf(text(r, "source_fingerprint")), scorer_version: "unknown", fingerprint: text(r, "source_fingerprint"),
+      strategy: text(r, "strategy_name") ?? "unknown", cohort: cohortOf(text(r, "source_fingerprint")), scorer_version: cohortOf(text(r, "source_fingerprint")) === "V3" ? "v3-mtf-aligned" : cohortOf(text(r, "source_fingerprint")) === "V2" ? "v2" : "unknown", fingerprint: text(r, "source_fingerprint"),
       entry_at: text(r, "created_at") ?? "", resolved_at: text(r, "resolved_at"), maturity_at: ["win", "loss", "expired"].includes((text(r, "outcome") ?? "").toLowerCase()) ? text(r, "resolved_at") : null, outcome: text(r, "outcome") ?? "unknown",
       net_pnl: numeric(r, "pnl_pct"), pnl_unit: "percent", close_reason: null, regime: text(r, "regime_label"), evidence_ids: [],
     })),
