@@ -2115,14 +2115,24 @@ Rule of thumb: Αν σε 14 μέρες shadow mode το counterfactual δείξ�
 - `council_lessons`: 193 rows, 29 source_trade_id references absent from current trades. Preserve as unresolved provenance; no automatic repair or deletion.
 - Current retention dry-run (72h raw / 168h derived): 5,439 sentiment, 334 news, 6,750 flow, 6,750 price, 1,017 whale-flow snapshots, 394 transitions, 394 transition contexts, 393 shock followups, 1 event-flow transmission. Production cron remains active and unchanged.
 - Timestamp consistency check found no rows where the current retention sources' recorded availability timestamps preceded their observation timestamps. This supports, but does not replace, migration testing.
-- No production data copied/deleted; no production migration applied; no cron, scoring, entry, execution, or live-order behavior changed. CI on commit `4ef16df1c3cbde95b8173cda005e7d18e10717b2` passed production build, strict TypeScript, 123 unit tests, Edge Function type-check, and the ephemeral PostgreSQL archive/fail-closed integration test.
+- The additive archive migration and three follow-up safety/batch migrations are now applied to canonical Supabase. No source rows were deleted, archived, or copied from the retention source tables. Both `allow_archive` and `allow_source_delete` are false; the scheduled cleanup is therefore paused before archive writes and deletion. Cron schedule remains `17 3 * * *`. The first broad refresh attempt timed out; the function was replaced with bounded batches and V3-only automatic refresh. Research-table index bloat from aborted attempts was reclaimed by reindexing the new tables and dropping one redundant index. Database size is now 464 MB, below the 480 MB warning threshold.
 
 
 ## 2026-10-20 — Batch 2: point-in-time evidence linkage and self-refresh path
 
 - Added symbol-aware evidence linkage in the existing `readKnowledge` path. A case can link to its own entry record, its linked composite signal, same-symbol evidence within a 15-minute pre-entry window, and global whale-flow context within that window. Evidence is eligible only when both observation and availability timestamps are at/before entry.
 - Trade evidence summaries contain only entry-time fields; trade PnL/close fields are not copied into entry-context evidence. Variant evidence carries strategy, score/confidence, recommendation, production/market regime, asset trend/volatility, and source tags in a bounded summary.
-- Added `refresh_research_knowledge_cases(72)` in the migration. It idempotently writes bounded entry evidence and cohort-separated case rows for paper trades and recent/newly resolved variants; V3 maturity is set only from a real terminal outcome with a non-null resolver timestamp. Open variants remain unevaluated.
+- Added `refresh_research_knowledge_cases(72)`. It idempotently writes bounded entry evidence for paper trades and the V3 cohort in batches of 250; it no longer duplicates additional V2/Legacy rows automatically. The initial materialization currently has 199 trade cases, 2,250 resolved V2 cases from the first bounded batches, and 551 open V3 cases. V3 maturity is set only from a real terminal outcome with a non-null resolver timestamp. All 551 current V3 cases remain open and unevaluated.
 - The existing pipeline now attempts this research-only RPC after post-mortems, with an 8-second timeout and fail-open handling. A missing migration is reported as `schema_pending`; an archive sync error is recorded in the pipeline result and does not affect trading decisions.
-- The retention migration archives bounded source summaries and checks that each eligible source ID has evidence before any DELETE. If capture/check fails, the transaction raises before deleting. Forward-return transmission/follow-up rows are marked `outcome`, not entry context.
+- The retention path archives bounded source summaries and checks coverage before any DELETE, but a separate control table now gates both capture and deletion. In production both flags are false, so the existing cron cannot archive or delete until storage/value review explicitly enables capture. Forward-return transmission/follow-up rows are marked `outcome`, not entry context.
 - Still pending: migration application, SQL execution validation on a staging copy, and automated finding generation. No findings are fabricated from simple aggregate counts.
+
+
+## Production verification — 2026-10-20
+
+- Archive control: `allow_archive=false`, `allow_source_delete=false`.
+- Retention job: unchanged schedule `17 3 * * *`; its non-dry-run path returns before capture/deletion while the archive gate is off.
+- Current retention archive status: 22,150 eligible source rows, 0 archived, 22,150 missing evidence; this is intentionally paused, not marked ready.
+- Current materialization: 3,000 research cases and 3,019 bounded evidence records. The 551 V3 cases are open with `maturity_at IS NULL`.
+- Database size after reindexing the new archive indexes: 464 MB (486,878,355 bytes), down from a peak reading of 498 MB; the 480 MB warning threshold is now cleared. No retention-source rows were deleted.
+- Remaining work: merge the safety-migration history and UI flags PR; validate its full migration chain in ephemeral PostgreSQL CI; later design candidate-finding generation and historical aggregate analysis without duplicating the full 66k variant table.

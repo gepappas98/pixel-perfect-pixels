@@ -18,12 +18,16 @@ export function ResearchKnowledgeView({ snapshot, loading, error, refreshing = f
   const archiveState = snapshot?.archival ?? "unverified";
   const archiveStatus = snapshot?.archive_status;
   const archiveMessage = archiveState === "ready"
-    ? "All currently retention-eligible source IDs have evidence records. This is not a guarantee of full-history coverage or exact source-content equivalence."
-    : archiveState === "incomplete"
-      ? "Some retention-eligible sources are missing evidence. A fail-closed cleanup must abort rather than delete these rows."
-      : archiveState === "migration_pending"
-        ? "Archive migration is not installed. The current production retention function may still delete old source rows."
-        : "Archive readiness could not be verified; assume it is not ready.";
+    ? archiveStatus?.delete_enabled === false
+      ? "All currently retention-eligible source IDs have evidence records, but source deletion remains locked pending review. This is not a guarantee of full-history coverage or exact source-content equivalence."
+      : "All currently retention-eligible source IDs have evidence records. This is not a guarantee of full-history coverage or exact source-content equivalence."
+    : archiveState === "incomplete" && archiveStatus?.archive_enabled === false
+      ? "Archive capture is paused pending storage and evidence-value review. Scheduled cleanup is locked against both archiving and source deletion; old source rows remain intact."
+      : archiveState === "incomplete"
+        ? "Some retention-eligible sources are missing evidence. A fail-closed cleanup must abort rather than delete these rows."
+        : archiveState === "migration_pending"
+          ? "Archive migration is not installed. The current production retention function may still delete old source rows."
+          : "Archive readiness could not be verified; assume it is not ready.";
   return <section aria-label="Research Knowledge" className="space-y-4 border-t border-border py-5">
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div><h2 className="flex items-center gap-2 text-lg font-medium"><BookOpen className="size-5 text-primary" />Research Knowledge</h2>
@@ -40,7 +44,7 @@ export function ResearchKnowledgeView({ snapshot, loading, error, refreshing = f
       <div className={`border-l-2 pl-3 text-sm ${archiveState === "ready" ? "border-bull" : "border-warn"}`}>
         <p className={`font-medium ${archiveState === "ready" ? "text-bull" : "text-warn"}`}>Retention / archive readiness: {archiveState.toUpperCase()}</p>
         <p className="text-xs text-muted-foreground">72h raw / 168h derived retention. {archiveMessage} V3 rows without an explicit resolved timestamp remain unevaluated.</p>
-        {archiveStatus && <p className="mt-1 text-xs text-muted-foreground">Eligible: {archiveStatus.eligible_sources.toLocaleString()} · archived source IDs: {archiveStatus.archived_sources.toLocaleString()} · missing: {archiveStatus.missing_sources.toLocaleString()} · last evidence capture: {archiveStatus.last_archive_at ?? "none recorded"}</p>}
+        {archiveStatus && <p className="mt-1 text-xs text-muted-foreground">Capture: {archiveStatus.archive_enabled ? "enabled" : "paused"} · source deletion: {archiveStatus.delete_enabled ? "enabled" : "locked"} · eligible: {archiveStatus.eligible_sources.toLocaleString()} · archived source IDs: {archiveStatus.archived_sources.toLocaleString()} · missing: {archiveStatus.missing_sources.toLocaleString()} · last evidence capture: {archiveStatus.last_archive_at ?? "none recorded"}</p>}
         {archiveStatus && archiveStatus.missing_sources > 0 && <details className="mt-2"><summary className="cursor-pointer text-xs">Missing evidence by source</summary><ul className="mt-1 list-disc pl-5 text-xs">{Object.entries(archiveStatus.by_table).filter(([, row]) => row.missing > 0).map(([table, row]) => <li key={table}>{table}: {row.missing} / {row.eligible} missing</li>)}</ul></details>}
       </div>
       {snapshot.issues.length > 0 && <details><summary className="cursor-pointer text-sm text-warn">Source availability ({snapshot.issues.length})</summary><ul className="mt-2 list-disc space-y-1 pl-5 text-xs">{snapshot.issues.map(i => <li key={i}>{i}</li>)}</ul></details>}
