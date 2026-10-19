@@ -28,7 +28,7 @@ export async function readKnowledge(db: SupabaseClient, now = new Date().toISOSt
   };
   const [trades, variants, lessons, evidenceRows, findingRows, storedCases] = await Promise.all([
     read("trades", "id,symbol,side,mode,status,created_at,closed_at,close_reason,net_pnl,regime_label,composite_signal_id", "created_at"),
-    read("strategy_variant_signals", "id,strategy_name,symbol,source_fingerprint,created_at,resolved_at,outcome,pnl_pct,regime_label", "created_at"),
+    read("strategy_variant_signals", "id,strategy_name,symbol,source_fingerprint,created_at,resolved_at,outcome,pnl_pct,regime_label,confidence,recommendation,score,source_tags,production_regime_label,market_regime_score,asset_trend_regime,asset_volatility_regime", "created_at"),
     read("council_lessons", "id,symbol,source_trade_id,created_at", "created_at"),
     read("research_evidence", "id,source_table,source_id,symbol,observed_at,available_at,captured_at,fingerprint,role,summary", "captured_at", 100),
     read("research_findings", "id,title,statement,status,confidence,cohort,scorer_version,sample_size,evidence_ids,case_ids,checked_at,limitations,reproduction", "checked_at", 100),
