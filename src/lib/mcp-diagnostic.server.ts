@@ -26,7 +26,7 @@ export const READ_ONLY_TABLES = [
   "trade_alerts",
   "asset_price_snapshots",
 ] as const;
-export const READ_ONLY_RPCS = ["get_portfolio_summary", "get_variant_performance", "get_variant_performance_v2", "get_variant_performance_v3"] as const;
+export const READ_ONLY_RPCS = ["get_portfolio_summary", "get_variant_performance_v3"] as const;
 
 type Row = Record<string, unknown>;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
