@@ -2101,3 +2101,18 @@ Rule of thumb: Αν σε 14 μέρες shadow mode το counterfactual δείξ�
 · Toggle να ενεργοποιήσεις live mode
 
 Ή να δούμε το auto-tuning script που προσαρμόζει τα thresholds βάσει ιστορικών δεδομένων;
+
+
+---
+
+## 2026-10-20 — Intelligent Research Knowledge audit and archive migration draft
+
+- Canonical GitHub `main` is four commits ahead of Lovable's currently inspected HEAD `4715c91c60d880a98a4c02b0c303f442177ffea5`. Main already contains a Research Knowledge panel, pure validation contracts/tests, and read-only `getResearchKnowledge`; do not create a duplicate app or duplicate UI.
+- Production Supabase currently has no `research_evidence`, `research_cases`, or `research_findings` tables. Existing Research Knowledge UI therefore cannot persist or retrieve archived knowledge until the schema migration is explicitly applied.
+- Branch `feat/intelligent-research-knowledge-archive-main` adds migration draft `supabase/migrations/20261020160000_research_knowledge_archive.sql`, aligned to the existing code contracts. It adds the three expected tables and proposes fail-closed retention archival. The migration is NOT applied.
+- Read-only production snapshot: database 459 MB. Largest table+index sizes: `strategy_shadow_diagnostics` 84 MB, `composite_signals` 68 MB, `strategy_variant_signals` 38 MB, `pipeline_runs` 35 MB, `whale_alerts` 30 MB.
+- V3 snapshot: 492 rows, all open and 0 resolved. Their age was below the 72h outcome horizon at the check; do not interpret this alone as resolver failure.
+- `council_lessons`: 193 rows, 29 source_trade_id references absent from current trades. Preserve as unresolved provenance; no automatic repair or deletion.
+- Current retention dry-run (72h raw / 168h derived): 5,439 sentiment, 334 news, 6,750 flow, 6,750 price, 1,017 whale-flow snapshots, 394 transitions, 394 transition contexts, 393 shock followups, 1 event-flow transmission. Production cron remains active and unchanged.
+- Timestamp consistency check found no rows where the current retention sources' recorded availability timestamps preceded their observation timestamps. This supports, but does not replace, migration testing.
+- No production data copied/deleted; no production migration applied; no cron, scoring, entry, execution, or live-order behavior changed. Build/test checks remain pending.
