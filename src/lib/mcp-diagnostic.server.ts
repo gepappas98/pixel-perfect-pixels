@@ -311,28 +311,26 @@ export async function getTradeState(db: ReadOnlyDb, a: Row) {
 export async function getVariantState(db: ReadOnlyDb, a: Row) {
   const sym = str(a["symbol"], 32);
   let q = db.select("strategy_variant_signals", "strategy_name,outcome,pnl_pct,symbol,source_fingerprint")
-    .gte("created_at", new Date(Date.now() - 7 * 86400_000).toISOString()).limit(10000);
+    .gte("created_at", new Date(Date.now() - 7 * 86400_000).toISOString())
+    .like("source_fingerprint", "v3|%")
+    .limit(10000);
   if (sym) q = q.eq("symbol", sym);
-  const [rows, legacyPerf, v2Perf] = await Promise.all([
+  const [rows, v3Perf] = await Promise.all([
     q,
-    db.rpc("get_variant_performance", { days: 7 }),
-    db.rpc("get_variant_performance_v2", { days: 7 }),
+    db.rpc("get_variant_performance_v3", { days: 7 }),
   ]);
-  const legacyCounts: Record<string, Record<string, number>> = {};
-  const v2Counts: Record<string, Record<string, number>> = {};
+  const v3Counts: Record<string, Record<string, number>> = {};
   for (const r of (rows.data ?? []) as Row[]) {
-    const cohort = String(r["source_fingerprint"] ?? "").startsWith("v2|") ? v2Counts : legacyCounts;
     const s = String(r["strategy_name"]), o = String(r["outcome"] ?? "open");
-    cohort[s] ??= {};
-    cohort[s][o] = (cohort[s][o] ?? 0) + 1;
+    v3Counts[s] ??= {};
+    v3Counts[s][o] = (v3Counts[s][o] ?? 0) + 1;
   }
   return {
     window_days: 7,
-    counts_by_strategy_outcome: legacyCounts,
-    v2_counts_by_strategy_outcome: v2Counts,
-    performance: legacyPerf.data ?? null,
-    v2_performance: v2Perf.data ?? null,
-    errors: [rows.error?.message, legacyPerf.error?.message, v2Perf.error?.message].filter(Boolean),
+    cohort: "v3",
+    counts_by_strategy_outcome: v3Counts,
+    performance: v3Perf.data ?? null,
+    errors: [rows.error?.message, v3Perf.error?.message].filter(Boolean),
   };
 }
 
