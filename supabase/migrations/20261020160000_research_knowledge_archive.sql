@@ -96,6 +96,80 @@ comment on table public.research_evidence is 'Bounded, timestamped evidence refe
 comment on table public.research_cases is 'Cohort-separated historical cases; open V3 rows must remain unevaluated until explicit maturity.';
 comment on table public.research_findings is 'Research hypotheses/findings with reproducibility and evidence references; never a trading signal.';
 
+create or replace function public.get_research_archive_status(
+  p_raw_hours integer default 72,
+  p_derived_hours integer default 168
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $status$
+declare
+  raw_cutoff timestamptz := now() - make_interval(hours => p_raw_hours);
+  derived_cutoff timestamptz := now() - make_interval(hours => p_derived_hours);
+  v_total bigint := 0;
+  v_archived bigint := 0;
+  v_missing bigint := 0;
+  v_by_table jsonb := '{}'::jsonb;
+begin
+  if p_raw_hours < 24 or p_derived_hours < p_raw_hours then
+    raise exception 'Invalid retention windows';
+  end if;
+
+  with required as (
+    select 'asset_price_snapshots'::text source_table, s.id::text source_id from public.asset_price_snapshots s where s.observed_at < raw_cutoff
+    union all select 'asset_flow_snapshots',s.id::text from public.asset_flow_snapshots s where s.bucket_at < raw_cutoff
+    union all select 'asset_sentiment_snapshots',s.id::text from public.asset_sentiment_snapshots s where s.observed_at < raw_cutoff
+    union all select 'asset_news_events',s.id::text from public.asset_news_events s where s.event_at < raw_cutoff
+    union all select 'event_flow_transmissions',s.id::text from public.event_flow_transmissions s where s.event_at < derived_cutoff
+    union all select 'whale_flow_shock_followups',s.id::text from public.whale_flow_shock_followups s where s.shock_at < derived_cutoff
+    union all select 'whale_flow_transition_context',s.id::text from public.whale_flow_transition_context s where s.created_at < derived_cutoff
+    union all select 'whale_flow_transitions',s.id::text from public.whale_flow_transitions s where s.created_at < derived_cutoff
+    union all select 'whale_flow_snapshots',s.id::text from public.whale_flow_snapshots s where s.created_at < derived_cutoff
+  ), checked as (
+    select r.source_table,r.source_id,
+      exists(select 1 from public.research_evidence e where e.source_table=r.source_table and e.source_id=r.source_id) archived
+    from required r
+  )
+  select count(*),count(*) filter(where archived),count(*) filter(where not archived)
+    into v_total,v_archived,v_missing from checked;
+
+  with required as (
+    select 'asset_price_snapshots'::text source_table,s.id::text source_id from public.asset_price_snapshots s where s.observed_at < raw_cutoff
+    union all select 'asset_flow_snapshots',s.id::text from public.asset_flow_snapshots s where s.bucket_at < raw_cutoff
+    union all select 'asset_sentiment_snapshots',s.id::text from public.asset_sentiment_snapshots s where s.observed_at < raw_cutoff
+    union all select 'asset_news_events',s.id::text from public.asset_news_events s where s.event_at < raw_cutoff
+    union all select 'event_flow_transmissions',s.id::text from public.event_flow_transmissions s where s.event_at < derived_cutoff
+    union all select 'whale_flow_shock_followups',s.id::text from public.whale_flow_shock_followups s where s.shock_at < derived_cutoff
+    union all select 'whale_flow_transition_context',s.id::text from public.whale_flow_transition_context s where s.created_at < derived_cutoff
+    union all select 'whale_flow_transitions',s.id::text from public.whale_flow_transitions s where s.created_at < derived_cutoff
+    union all select 'whale_flow_snapshots',s.id::text from public.whale_flow_snapshots s where s.created_at < derived_cutoff
+  ), checked as (
+    select r.source_table,exists(select 1 from public.research_evidence e where e.source_table=r.source_table and e.source_id=r.source_id) archived
+    from required r
+  )
+  select coalesce(jsonb_object_agg(source_table,jsonb_build_object(
+    'eligible',eligible,'archived',archived,'missing',missing
+  )),'{}'::jsonb)
+  into v_by_table
+  from (
+    select source_table,count(*) eligible,count(*) filter(where archived) archived,count(*) filter(where not archived) missing
+    from checked group by source_table
+  ) grouped;
+
+  return jsonb_build_object(
+    'status',case when v_missing=0 then 'ready' else 'incomplete' end,
+    'eligible_sources',v_total,'archived_sources',v_archived,'missing_sources',v_missing,
+    'last_archive_at',(select max(captured_at) from public.research_evidence),
+    'raw_cutoff',raw_cutoff,'derived_cutoff',derived_cutoff,'by_table',v_by_table
+  );
+end;
+$status$;
+
+revoke all on function public.get_research_archive_status(integer,integer) from public;
+grant execute on function public.get_research_archive_status(integer,integer) to anon, authenticated, service_role;
+
 create or replace function public.refresh_research_knowledge_cases(
   p_lookback_hours integer default 72
 )
