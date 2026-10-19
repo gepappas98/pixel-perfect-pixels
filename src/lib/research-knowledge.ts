@@ -138,6 +138,8 @@ export interface KnowledgeSnapshot {
     last_archive_at: string | null;
     raw_cutoff: string;
     derived_cutoff: string;
+    archive_enabled: boolean;
+    delete_enabled: boolean;
     by_table: Record<string, { eligible: number; archived: number; missing: number }>;
   } | null;
   bounded: boolean;
