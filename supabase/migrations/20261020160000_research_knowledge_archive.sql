@@ -170,7 +170,7 @@ begin
     'Unknown','paper-trade',null,t.created_at,t.closed_at,null,coalesce(t.status,'unknown'),
     coalesce(t.net_pnl,t.pnl),'USD',t.close_reason,t.regime_label,
     coalesce((
-      select array_agg(distinct e.id::text) from public.research_evidence e
+      select array_agg(distinct e.id::text order by e.id::text) from public.research_evidence e
       where e.role='entry_context' and e.available_at <= t.created_at and e.observed_at <= t.created_at
         and (
           (e.source_table='trades' and e.source_id=t.id::text)
@@ -184,7 +184,7 @@ begin
     symbol=excluded.symbol,strategy=excluded.strategy,entry_at=excluded.entry_at,
     resolved_at=excluded.resolved_at,outcome=excluded.outcome,net_pnl=excluded.net_pnl,
     close_reason=excluded.close_reason,regime=excluded.regime,
-    evidence_ids=(select coalesce(array_agg(distinct item), '{}'::text[])
+    evidence_ids=(select coalesce(array_agg(distinct item order by item), '{}'::text[])
       from unnest(coalesce(research_cases.evidence_ids,'{}'::text[])||excluded.evidence_ids) as u(item)),
     updated_at=now()
   where research_cases.resolved_at is distinct from excluded.resolved_at
@@ -211,7 +211,7 @@ begin
     case when lower(coalesce(v.outcome,'')) in ('win','loss','expired') and v.resolved_at is not null then v.resolved_at else null end,
     lower(coalesce(v.outcome,'unknown')),v.pnl_pct,'percent',null,v.regime_label,
     coalesce((
-      select array_agg(distinct e.id::text) from public.research_evidence e
+      select array_agg(distinct e.id::text order by e.id::text) from public.research_evidence e
       where e.role='entry_context' and e.available_at <= v.created_at and e.observed_at <= v.created_at
         and (
           (e.source_table='strategy_variant_signals' and e.source_id=v.id::text)
@@ -225,7 +225,7 @@ begin
     symbol=excluded.symbol,strategy=excluded.strategy,fingerprint=excluded.fingerprint,
     entry_at=excluded.entry_at,resolved_at=excluded.resolved_at,maturity_at=excluded.maturity_at,
     outcome=excluded.outcome,net_pnl=excluded.net_pnl,regime=excluded.regime,
-    evidence_ids=(select coalesce(array_agg(distinct item), '{}'::text[])
+    evidence_ids=(select coalesce(array_agg(distinct item order by item), '{}'::text[])
       from unnest(coalesce(research_cases.evidence_ids,'{}'::text[])||excluded.evidence_ids) as u(item)),
     updated_at=now()
   where research_cases.resolved_at is distinct from excluded.resolved_at
