@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { archiveReady, cohortOf, dedupeCases, eligibleEntryEvidence, isEvaluated, validateFinding, type ResearchCase, type Evidence, type Finding } from "../research-knowledge";
+import { archiveReady, cohortOf, dedupeCases, eligibleEntryEvidence, entryEvidenceIdsForCase, isEvaluated, validateFinding, type ResearchCase, type Evidence, type Finding } from "../research-knowledge";
 const now = "2026-10-19T22:00:00Z";
 const entry = "2026-10-18T00:00:00Z";
 const evidence: Evidence = { id: "e", source_table: "indicator_snapshots", source_id: "s", observed_at: entry, available_at: entry, captured_at: now, fingerprint: "f", role: "entry_context", summary: "bullish 1h" };
@@ -35,4 +35,27 @@ describe("archival fail-closed contract", () => {
   it("blocks incomplete capture", () => expect(archiveReady(required, [], true)).toBe(false));
   it("blocks stale fingerprint receipt", () => expect(archiveReady(required, [{ source_id: "s", fingerprint: "old" }], true)).toBe(false));
   it("accepts exactly matching evidence receipts", () => expect(archiveReady(required, required, true)).toBe(true));
+});
+
+describe("case evidence linkage", () => {
+  it("links the case's own variant signal as entry-time evidence", () => {
+    const own: Evidence = { ...evidence, id: "variant-e", source_table: "strategy_variant_signals", source_id: c.source_id, symbol: c.symbol };
+    expect(entryEvidenceIdsForCase(c, [own])).toEqual(["variant-e"]);
+  });
+  it("links a trade's composite signal only when available at entry", () => {
+    const trade: ResearchCase = { ...c, id: "trade-case", source_table: "trades", source_id: "trade-1", cohort: "Unknown", scorer_version: "paper-trade" };
+    const signal: Evidence = { ...evidence, id: "signal-e", source_table: "composite_signals", source_id: "signal-1", symbol: c.symbol };
+    expect(entryEvidenceIdsForCase(trade, [signal], "signal-1")).toEqual(["signal-e"]);
+    expect(entryEvidenceIdsForCase(trade, [{ ...signal, available_at: now }], "signal-1")).toEqual([]);
+  });
+  it("links same-symbol snapshots only inside the pre-entry lookback window", () => {
+    const near: Evidence = { ...evidence, id: "near", source_table: "asset_sentiment_snapshots", source_id: "sentiment-1", symbol: c.symbol, observed_at: "2026-10-17T23:55:00Z", available_at: "2026-10-17T23:56:00Z" };
+    const old: Evidence = { ...near, id: "old", observed_at: "2026-10-17T23:30:00Z", available_at: "2026-10-17T23:30:00Z" };
+    const future: Evidence = { ...near, id: "future", observed_at: "2026-10-18T00:01:00Z", available_at: "2026-10-18T00:01:00Z" };
+    expect(entryEvidenceIdsForCase(c, [near, old, future])).toEqual(["near"]);
+  });
+  it("does not link outcome evidence as entry context", () => {
+    const outcome: Evidence = { ...evidence, id: "outcome", source_table: "event_flow_transmissions", source_id: "tx", role: "outcome", symbol: c.symbol };
+    expect(entryEvidenceIdsForCase(c, [outcome])).toEqual([]);
+  });
 });

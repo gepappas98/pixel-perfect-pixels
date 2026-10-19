@@ -12,6 +12,7 @@ export interface Evidence {
   fingerprint: string;
   role: EvidenceRole;
   summary: string;
+  symbol?: string | null;
 }
 export interface ResearchCase {
   id: string;
@@ -74,6 +75,25 @@ export function isEvaluated(c: ResearchCase, now: string): boolean {
   if (c.cohort === "V3" && (!Number.isFinite(time(c.maturity_at)) || time(c.maturity_at) > clock)) return false;
   return true;
 }
+export function entryEvidenceIdsForCase(
+  c: ResearchCase,
+  evidence: Evidence[],
+  linkedSignalId: string | null = null,
+  windowMs = 15 * 60 * 1000,
+): string[] {
+  const entry = time(c.entry_at);
+  return evidence.filter(e => {
+    if (!eligibleEntryEvidence(e, c.entry_at)) return false;
+    if ((c.source_table === "strategy_variant_signals" || c.source_table === "trades")
+      && e.source_table === c.source_table && e.source_id === c.source_id) return true;
+    if (linkedSignalId && e.source_table === "composite_signals" && e.source_id === linkedSignalId) return true;
+    const observed = time(e.observed_at);
+    if (!Number.isFinite(entry) || !Number.isFinite(observed) || observed > entry || entry - observed > windowMs) return false;
+    if (e.symbol && e.symbol === c.symbol) return true;
+    return !e.symbol && ["whale_flow_snapshots", "whale_flow_transition_context"].includes(e.source_table);
+  }).map(e => e.id);
+}
+
 export function caseKey(c: ResearchCase): string {
   return JSON.stringify([c.source_table, c.source_id, c.cohort, c.scorer_version]);
 }
@@ -110,6 +130,15 @@ export interface KnowledgeSnapshot {
   lessons: Array<{ id: string; source_trade_id: string | null; symbol: string; created_at: string; provenance: "linked" | "orphan" | "unresolved" }>;
   counts: Record<string, number | null>;
   issues: string[];
-  archival: "unverified";
+  archival: "unverified" | "ready" | "incomplete" | "migration_pending" | "error";
+  archive_status: {
+    eligible_sources: number;
+    archived_sources: number;
+    missing_sources: number;
+    last_archive_at: string | null;
+    raw_cutoff: string;
+    derived_cutoff: string;
+    by_table: Record<string, { eligible: number; archived: number; missing: number }>;
+  } | null;
   bounded: boolean;
 }

@@ -2101,3 +2101,28 @@ Rule of thumb: Αν σε 14 μέρες shadow mode το counterfactual δείξ�
 · Toggle να ενεργοποιήσεις live mode
 
 Ή να δούμε το auto-tuning script που προσαρμόζει τα thresholds βάσει ιστορικών δεδομένων;
+
+
+---
+
+## 2026-10-20 — Intelligent Research Knowledge audit and archive migration draft
+
+- Canonical GitHub `main` is four commits ahead of Lovable's currently inspected HEAD `4715c91c60d880a98a4c02b0c303f442177ffea5`. Main already contains a Research Knowledge panel, pure validation contracts/tests, and read-only `getResearchKnowledge`; do not create a duplicate app or duplicate UI.
+- Production Supabase currently has no `research_evidence`, `research_cases`, or `research_findings` tables. Existing Research Knowledge UI therefore cannot persist or retrieve archived knowledge until the schema migration is explicitly applied.
+- Branch `feat/intelligent-research-knowledge-archive-main` adds migration draft `supabase/migrations/20261020160000_research_knowledge_archive.sql`, aligned to the existing code contracts. It adds the three expected tables and proposes fail-closed retention archival. The migration is NOT applied.
+- Read-only production snapshot: database 459 MB. Largest table+index sizes: `strategy_shadow_diagnostics` 84 MB, `composite_signals` 68 MB, `strategy_variant_signals` 38 MB, `pipeline_runs` 35 MB, `whale_alerts` 30 MB.
+- V3 snapshot: 492 rows, all open and 0 resolved. Their age was below the 72h outcome horizon at the check; do not interpret this alone as resolver failure.
+- `council_lessons`: 193 rows, 29 source_trade_id references absent from current trades. Preserve as unresolved provenance; no automatic repair or deletion.
+- Current retention dry-run (72h raw / 168h derived): 5,439 sentiment, 334 news, 6,750 flow, 6,750 price, 1,017 whale-flow snapshots, 394 transitions, 394 transition contexts, 393 shock followups, 1 event-flow transmission. Production cron remains active and unchanged.
+- Timestamp consistency check found no rows where the current retention sources' recorded availability timestamps preceded their observation timestamps. This supports, but does not replace, migration testing.
+- No production data copied/deleted; no production migration applied; no cron, scoring, entry, execution, or live-order behavior changed. CI on commit `4ef16df1c3cbde95b8173cda005e7d18e10717b2` passed production build, strict TypeScript, 123 unit tests, Edge Function type-check, and the ephemeral PostgreSQL archive/fail-closed integration test.
+
+
+## 2026-10-20 — Batch 2: point-in-time evidence linkage and self-refresh path
+
+- Added symbol-aware evidence linkage in the existing `readKnowledge` path. A case can link to its own entry record, its linked composite signal, same-symbol evidence within a 15-minute pre-entry window, and global whale-flow context within that window. Evidence is eligible only when both observation and availability timestamps are at/before entry.
+- Trade evidence summaries contain only entry-time fields; trade PnL/close fields are not copied into entry-context evidence. Variant evidence carries strategy, score/confidence, recommendation, production/market regime, asset trend/volatility, and source tags in a bounded summary.
+- Added `refresh_research_knowledge_cases(72)` in the migration. It idempotently writes bounded entry evidence and cohort-separated case rows for paper trades and recent/newly resolved variants; V3 maturity is set only from a real terminal outcome with a non-null resolver timestamp. Open variants remain unevaluated.
+- The existing pipeline now attempts this research-only RPC after post-mortems, with an 8-second timeout and fail-open handling. A missing migration is reported as `schema_pending`; an archive sync error is recorded in the pipeline result and does not affect trading decisions.
+- The retention migration archives bounded source summaries and checks that each eligible source ID has evidence before any DELETE. If capture/check fails, the transaction raises before deleting. Forward-return transmission/follow-up rows are marked `outcome`, not entry context.
+- Still pending: migration application, SQL execution validation on a staging copy, and automated finding generation. No findings are fabricated from simple aggregate counts.

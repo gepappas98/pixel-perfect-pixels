@@ -4271,6 +4271,32 @@ export async function runFullPipeline() {
     if (learning.generated > 0) console.log(`[LESSON] Generated ${learning.generated} new lessons`);
     if (learning.status !== "ok") console.warn(`[LESSON] AI status: ${learning.status} — ${learning.error ?? "unknown"}`);
 
+    // Research-only knowledge sync. It never feeds back into scoring, entry gates, or execution.
+    // Until the additive archive migration is applied, a missing RPC is reported as schema_pending.
+    let researchKnowledgeSync: { status: string; code?: string; detail?: string; result?: unknown } = { status: "schema_pending" };
+    try {
+      const syncDb = db as unknown as {
+        rpc: (name: string, args: Record<string, unknown>) => {
+          abortSignal: (signal: AbortSignal) => Promise<{ data: unknown; error: { code?: string; message: string } | null }>;
+        };
+      };
+      const syncResult = await syncDb.rpc("refresh_research_knowledge_cases", { p_lookback_hours: 72 })
+        .abortSignal(AbortSignal.timeout(8_000));
+      if (syncResult.error) {
+        const code = syncResult.error.code ?? "unknown";
+        const missingFunction = /PGRST202|42883|does not exist|schema cache|could not find the function/i.test(code + " " + syncResult.error.message);
+        researchKnowledgeSync = missingFunction
+          ? { status: "schema_pending", code }
+          : { status: "error", code, detail: syncResult.error.message.slice(0, 200) };
+        if (!missingFunction) console.warn(`[RESEARCH_KNOWLEDGE] sync failed code=${code}; trading flow continues unchanged`);
+      } else {
+        researchKnowledgeSync = { status: "ok", result: syncResult.data };
+      }
+    } catch (syncError) {
+      researchKnowledgeSync = { status: "error", detail: syncError instanceof Error ? syncError.message.slice(0, 200) : "sync failed" };
+      console.warn("[RESEARCH_KNOWLEDGE] sync failed; trading flow continues unchanged");
+    }
+
     const completedAt = new Date();
     const finalStatus = health.degraded ? "degraded" : "success";
     const errorMessage = health.degraded ? `DEGRADED: ${health.degradedReasons.join("; ")}` : null;
@@ -4314,6 +4340,7 @@ export async function runFullPipeline() {
           result: {
             execution_audit: executionAuditPayload,
             whale_health: whaleHealth,
+            research_knowledge_sync: researchKnowledgeSync,
           },
         } as never)
         .eq("id", runId);
