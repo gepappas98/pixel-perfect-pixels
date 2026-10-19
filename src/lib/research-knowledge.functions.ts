@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { createClient } from "@supabase/supabase-js";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { cohortOf, type Evidence, type Finding, type KnowledgeSnapshot, type ResearchCase } from "./research-knowledge";
+import { cohortOf, entryEvidenceIdsForCase, type Evidence, type Finding, type KnowledgeSnapshot, type ResearchCase } from "./research-knowledge";
 
 type Row = Record<string, unknown>;
 const text = (r: Row, key: string): string | null => typeof r[key] === "string" ? r[key] as string : null;
@@ -161,18 +161,9 @@ export async function readKnowledge(db: SupabaseClient, now = new Date().toISOSt
   const evidence: Evidence[] = [...archivedEvidence, ...tradeEvidence, ...signalEvidence, ...variantEvidence];
 
   cases = cases.map(c => {
-    const entryMs = Date.parse(c.entry_at);
     const trade = c.source_table === "trades" ? trades.find(r => text(r, "id") === c.source_id) : undefined;
     const linkedSignalId = trade ? text(trade, "composite_signal_id") : null;
-    const evidenceIds = evidence.filter(e => {
-      if (!eligibleEntryEvidence(e, c.entry_at)) return false;
-      if ((c.source_table === "strategy_variant_signals" || c.source_table === "trades") && e.source_table === c.source_table && e.source_id === c.source_id) return true;
-      if (linkedSignalId && e.source_table === "composite_signals" && e.source_id === linkedSignalId) return true;
-      const observedMs = Date.parse(e.observed_at);
-      if (!Number.isFinite(entryMs) || !Number.isFinite(observedMs) || observedMs > entryMs || entryMs - observedMs > 15 * 60 * 1000) return false;
-      if (e.symbol && e.symbol === c.symbol) return true;
-      return !e.symbol && ["whale_flow_snapshots", "whale_flow_transition_context"].includes(e.source_table);
-    }).map(e => e.id);
+    const evidenceIds = entryEvidenceIdsForCase(c, evidence, linkedSignalId);
     return { ...c, evidence_ids: [...new Set([...c.evidence_ids, ...evidenceIds])] };
   });
   const findings = findingRows.map(r => ({ id: text(r, "id") ?? "", title: (text(r, "title") ?? "").slice(0, 200), statement: (text(r, "statement") ?? "").slice(0, 2000), status: text(r, "status") as Finding["status"], confidence: numeric(r, "confidence") ?? 0, cohort: text(r, "cohort") as Finding["cohort"], scorer_version: text(r, "scorer_version") ?? "unknown", sample_size: numeric(r, "sample_size") ?? 0, evidence_ids: ids(r, "evidence_ids"), case_ids: ids(r, "case_ids"), checked_at: text(r, "checked_at") ?? "", limitations: text(r, "limitations") ?? "", reproduction: text(r, "reproduction") ?? "" }));
