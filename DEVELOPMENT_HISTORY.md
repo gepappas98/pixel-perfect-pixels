@@ -166,3 +166,13 @@ This is a confirmed P1 wiring defect, not a request to optimize strategy perform
 - The proposed fix keeps legacy observations queryable through `get_variant_performance()`, adds `get_variant_performance_v2()` for rows whose fingerprint starts with `v2|`, and routes both the Edge Function and server-side auto-switch paths through v2 only. With no qualifying v2 samples, auto-switch must remain blocked.
 - Variant Performance gains an explicit V2 / Legacy selector; the two cohorts are fetched and aggregated separately. Legacy rows remain visible for historical context but are not used as v2 evidence.
 - Migration and Edge Function changes are staged in draft PR #93. Deployment order: apply `20261012173000_variant_benchmark_cohorts.sql`, deploy `signal-combiner` and `strategy-auto-switch`, then deploy the frontend. No production migration/deploy or historical data mutation has occurred.
+
+
+## 2026-10-20 — Research Knowledge schema and retention audit
+
+- Discovered that GitHub `main` already contains the Research Knowledge UI/contracts/read path, while the canonical Supabase database does not yet contain the `research_evidence`, `research_cases`, or `research_findings` tables those paths query. The next step is to complete the existing implementation, not add a second archive system.
+- Added a draft additive migration aligned with existing DTOs and tests. The migration adds bounded evidence summaries, source identifiers/fingerprints, separate cohort-aware cases, reproducible findings, read-only browser policies, and server-role writes.
+- Proposed fail-closed retention behavior: archive bounded evidence summaries first; verify each source ID has archived evidence; only then delete retention-eligible rows. If capture or verification raises, the transaction aborts before source deletion. Future validation must exercise the SQL function against a staging copy before production application.
+- Production dry-run was read-only. It surfaced 5,439 sentiment snapshots, 334 news events, 6,750 flow snapshots, 6,750 price snapshots, 1,017 whale-flow snapshots, 394 transitions/contexts, 393 followups, and 1 transmission eligible for retention.
+- Production state remains unchanged. Migration is a review artifact only; no historical data was moved and the existing retention job/function has not been replaced in production.
+- Work branch: `feat/intelligent-research-knowledge-archive-main`. The earlier duplicate draft PR #130 was closed without merging after finding the existing implementation on main.
