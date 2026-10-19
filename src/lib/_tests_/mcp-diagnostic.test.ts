@@ -26,6 +26,10 @@ describe("read-only guard", () => {
     const db = readOnlyDb(client);
     expect(() => db.select("whale_alerts")).toThrow(/read_only_guard/);
     expect(() => db.rpc("reconcile_stuck_pipeline_runs")).toThrow(/read_only_guard/);
+    expect(() => db.rpc("get_variant_performance")).toThrow(/read_only_guard/);
+    expect(() => db.rpc("get_variant_performance_v2")).toThrow(/read_only_guard/);
+    expect(() => db.rpc("get_variant_performance_v3")).not.toThrow();
+    expect(client.rpc).toHaveBeenCalledWith("get_variant_performance_v3", {});
     expect(Object.keys(db).sort()).toEqual(["rpc", "select"]);
   });
   it("all tools never call insert/update/delete/upsert", async () => {
