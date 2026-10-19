@@ -36,10 +36,13 @@ function createSupabaseAdminClient() {
   // Lovable Cloud or other build-time Supabase project. Only the canonical
   // project's service-role key is accepted here, and it remains server-only.
   const SUPABASE_URL = CANONICAL_SUPABASE_URL;
-  const SUPABASE_SERVICE_ROLE_KEY = process.env['SUPABASE_SERVICE_ROLE_KEY'];
+  const SUPABASE_SERVICE_ROLE_KEY =
+    process.env['CANONICAL_SERVICE_ROLE_KEY'] ||
+    process.env['CANONICAL_SUPABASE_SERVICE_ROLE_KEY'] ||
+    process.env['SUPABASE_SERVICE_ROLE_KEY'];
 
   if (!SUPABASE_SERVICE_ROLE_KEY) {
-    const message = 'Missing server-only SUPABASE_SERVICE_ROLE_KEY for the canonical Supabase project.';
+    const message = 'Missing server-only CANONICAL_SERVICE_ROLE_KEY for the canonical Supabase project.';
     console.error(`[Supabase] ${message}`);
     throw new Error(message);
   }
