@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { exportTxtReport, type DiagnosticReportLike } from "@/lib/export-txt";
 import AuditReportPanel from "@/components/trading/AuditReportPanel";
+import ResearchKnowledgePanel from "@/components/trading/ResearchKnowledgePanel";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = any;
@@ -1487,6 +1488,7 @@ Interpretation rules:
       )}
 
       <AuditReportPanel />
+      <ResearchKnowledgePanel />
     </div>
   );
 }
