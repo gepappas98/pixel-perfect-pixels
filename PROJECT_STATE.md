@@ -2125,7 +2125,7 @@ Rule of thumb: Αν σε 14 μέρες shadow mode το counterfactual δείξ�
 - Added `refresh_research_knowledge_cases(72)`. It idempotently writes bounded entry evidence for paper trades and the V3 cohort in batches of 250; it no longer duplicates additional V2/Legacy rows automatically. The initial materialization currently has 199 trade cases, 2,250 resolved V2 cases from the first bounded batches, and 551 open V3 cases. V3 maturity is set only from a real terminal outcome with a non-null resolver timestamp. All 551 current V3 cases remain open and unevaluated.
 - The existing pipeline now attempts this research-only RPC after post-mortems, with an 8-second timeout and fail-open handling. A missing migration is reported as `schema_pending`; an archive sync error is recorded in the pipeline result and does not affect trading decisions.
 - The retention path archives bounded source summaries and checks coverage before any DELETE, but a separate control table now gates both capture and deletion. In production both flags are false, so the existing cron cannot archive or delete until storage/value review explicitly enables capture. Forward-return transmission/follow-up rows are marked `outcome`, not entry context.
-- Still pending: migration application, SQL execution validation on a staging copy, and automated finding generation. No findings are fabricated from simple aggregate counts.
+- Migrations are applied to canonical Supabase and the complete migration chain passed an ephemeral PostgreSQL integration test. A full staging clone was not available, so production archive capture remains paused pending a storage-aware evidence-value review. Automated candidate-finding generation is still pending; no findings are fabricated from aggregate counts.
 
 
 ## Production verification — 2026-10-20
@@ -2135,4 +2135,4 @@ Rule of thumb: Αν σε 14 μέρες shadow mode το counterfactual δείξ�
 - Current retention archive status: 22,150 eligible source rows, 0 archived, 22,150 missing evidence; this is intentionally paused, not marked ready.
 - Current materialization: 3,000 research cases and 3,019 bounded evidence records. The 551 V3 cases are open with `maturity_at IS NULL`.
 - Database size after reindexing the new archive indexes: 464 MB (486,878,355 bytes), down from a peak reading of 498 MB; the 480 MB warning threshold is now cleared. No retention-source rows were deleted.
-- Remaining work: merge the safety-migration history and UI flags PR; validate its full migration chain in ephemeral PostgreSQL CI; later design candidate-finding generation and historical aggregate analysis without duplicating the full 66k variant table.
+- PR #132 is merged. Its full migration chain passed ephemeral PostgreSQL integration tests. Remaining work: user-controlled Lovable sync/publish, verify the deployed pipeline RPC status, and design candidate-finding generation/historical aggregates without duplicating the full 66k variant table.
