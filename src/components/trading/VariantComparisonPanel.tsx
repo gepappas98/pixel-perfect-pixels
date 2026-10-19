@@ -1,7 +1,6 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Loader2, GitCompare, Info } from "lucide-react";
 
@@ -13,12 +12,6 @@ interface VariantPerfRow {
   open_count: number;
   resolved: number;
   total_pnl_pct: number;
-}
-
-interface VariantPerfCohorts {
-  legacy: VariantPerfRow[];
-  v2: VariantPerfRow[];
-  v3: VariantPerfRow[];
 }
 
 interface TradingSettings {
@@ -84,25 +77,14 @@ const FALLBACK_SETTINGS: TradingSettings = {
 };
 
 export function VariantComparisonPanel() {
-  const [cohort, setCohort] = useState<"v3" | "v2" | "legacy">("v3");
-
-  // Fetch each scoring generation separately; no historical cohort is mixed into V3.
-  const { data, isLoading, error } = useQuery<VariantPerfCohorts>({
-    queryKey: ["strategy-variants-perf-cohorts"],
+  // V3 is the only active benchmark cohort. Historical rows remain stored,
+  // but the live panel never queries legacy/V2 performance functions.
+  const { data, isLoading, error } = useQuery<VariantPerfRow[]>({
+    queryKey: ["strategy-variants-perf-v3"],
     queryFn: async () => {
-      const [legacyResult, v2Result, v3Result] = await Promise.all([
-        supabase.rpc("get_variant_performance", { days: 7 }),
-        (supabase as any).rpc("get_variant_performance_v2", { days: 7 }),
-        (supabase as any).rpc("get_variant_performance_v3", { days: 7 }),
-      ]);
-      if (legacyResult.error) throw legacyResult.error;
-      if (v2Result.error) throw v2Result.error;
-      if (v3Result.error) throw v3Result.error;
-      return {
-        legacy: (legacyResult.data ?? []) as VariantPerfRow[],
-        v2: (v2Result.data ?? []) as VariantPerfRow[],
-        v3: (v3Result.data ?? []) as VariantPerfRow[],
-      };
+      const { data, error } = await (supabase as any).rpc("get_variant_performance_v3", { days: 7 });
+      if (error) throw error;
+      return (data ?? []) as VariantPerfRow[];
     },
     refetchInterval: 60_000,
     staleTime: 30_000,
@@ -160,7 +142,7 @@ export function VariantComparisonPanel() {
     );
   }
 
-  const rows = cohort === "v3" ? data?.v3 ?? [] : cohort === "v2" ? data?.v2 ?? [] : data?.legacy ?? [];
+  const rows = data ?? [];
   const s = settings;
 
   // ── Build aggregation ──
@@ -224,17 +206,10 @@ export function VariantComparisonPanel() {
             Variant Performance (7d)
           </h2>
           <p className="mt-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-            {cohort === "v3"
-              ? "V3 aligned MTF scoring · isolated benchmark per preset"
-              : cohort === "v2" ? "V2 deduplicated samples · previous scoring version" : "Legacy historical samples · isolated from V2/V3"}
+            V3 aligned MTF scoring · isolated benchmark per preset
           </p>
         </div>
         <div className="flex flex-col items-end gap-1.5">
-          <div className="flex rounded-md border border-border p-0.5">
-            <button type="button" onClick={() => setCohort("v3")} aria-pressed={cohort === "v3"} className={`rounded px-2 py-1 text-[10px] ${cohort === "v3" ? "bg-accent/15 text-foreground" : "text-muted-foreground"}`}>V3</button>
-            <button type="button" onClick={() => setCohort("v2")} aria-pressed={cohort === "v2"} className={`rounded px-2 py-1 text-[10px] ${cohort === "v2" ? "bg-accent/15 text-foreground" : "text-muted-foreground"}`}>V2</button>
-            <button type="button" onClick={() => setCohort("legacy")} aria-pressed={cohort === "legacy"} className={`rounded px-2 py-1 text-[10px] ${cohort === "legacy" ? "bg-accent/15 text-foreground" : "text-muted-foreground"}`}>Legacy</button>
-          </div>
           <span className="text-[10px] text-muted-foreground">{totalResolved} resolved · {totalOpen} open</span>
         </div>
       </div>
@@ -262,18 +237,14 @@ export function VariantComparisonPanel() {
           position caps.
           <br />
           <span className="text-muted-foreground/70">
-            {cohort === "v3"
-              ? "V3 uses aligned 4h/1h/1d technical scoring and a separate versioned cohort. V2 and legacy rows are excluded. Research only; does NOT affect real trades."
-              : cohort === "v2" ? "V2 uses the previous technical scoring. It is kept separate and is not used by the V3 auto-switch." : "Legacy historical cohort only; V2/V3 rows are excluded. Retained for comparison. Does NOT affect real trades."}
+            V3 uses aligned 4h/1h/1d technical scoring and a separate versioned cohort. Historical V2 and legacy rows are excluded. Research only; does NOT affect real trades.
           </span>
         </p>
       </div>
 
       {totalObserved === 0 ? (
         <p className="text-sm text-muted-foreground">
-          {cohort === "v3"
-            ? "No V3 samples yet. They populate after the signal-combiner, benchmark migration, and V3 resolver are deployed."
-            : cohort === "v2" ? "No V2 samples in the selected 7-day window." : "No legacy variant signals in the selected 7-day window."}
+          No V3 samples yet. They populate after the signal-combiner, benchmark migration, and V3 resolver are deployed.
         </p>
       ) : (
         <div className="overflow-x-auto">
