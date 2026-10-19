@@ -1,24 +1,22 @@
-# Research Knowledge — safe first phase
+# Intelligent Research Knowledge — implementation status
 
-- [x] Audit existing research-learning contracts, cohort separation, evidence eligibility, and dashboard integration already present on main.
-- [x] Add an unapplied additive schema draft matching the existing `research_evidence`, `research_cases`, and `research_findings` contracts.
-- [x] Propose fail-closed retention archival in the migration: source deletion is gated on evidence capture/verification in the same transaction.
-- [x] Record read-only production coverage, storage, V3 maturity, orphan lesson and retention dry-run findings.
-- [ ] Re-run build/type-check/unit tests after the latest evidence-linkage and pipeline-sync changes (earlier baseline passed 119 tests).
-- [ ] Review SQL migration against a staging copy, including rollback and concurrency behavior, before production application.
-- [x] Add idempotent bounded case/evidence refresh path (gated on migration) and call it from the existing pipeline with fail-open research-only behavior.
-- [ ] Add candidate-finding generation only after statistical design and evidence coverage validation; do not treat current counts or LLM prose as verified findings.
-- [ ] Verify dashboard coverage after schema application and compare source/evidence fingerprints without deleting or rewriting source rows.
+- [x] Map the existing Research Knowledge UI, contracts, read path, cohort isolation, and evidence eligibility.
+- [x] Add an additive migration for `research_evidence`, `research_cases`, and `research_findings`, aligned to the existing app.
+- [x] Add bounded point-in-time evidence summaries and idempotent case/evidence refresh.
+- [x] Link evidence to cases only when observed/available timestamps are at or before entry; forward returns remain outcome evidence.
+- [x] Add read-only retention/archive readiness counts by source table.
+- [x] Replace retention cleanup inside the unapplied migration with fail-closed archive-then-delete behavior.
+- [x] Add ephemeral PostgreSQL integration tests proving migration application, case maturity rules, successful archive cleanup, and that a forced archive failure leaves source rows intact.
+- [x] Integrate a research-only, fail-open refresh RPC after post-mortems; it does not feed the scorer or executor.
+- [x] Update the existing dashboard, project state, development history, and test coverage.
+- [x] CI passed on `4ef16df1c3cbde95b8173cda005e7d18e10717b2`: production build, strict TypeScript, 123 unit tests, Edge Function type-check, SQL integration.
+- [ ] Merge PR #131 after final review.
+- [ ] Apply the migration to canonical Supabase only after review; migration application has not happened.
+- [ ] Run the refresh RPC once after migration and verify actual evidence/case counts.
+- [ ] Verify the next retention dry-run and archive status before allowing a scheduled cleanup to delete any old rows.
+- [ ] Design evidence-backed candidate-finding generation with statistical calibration and out-of-sample checks; current findings are not auto-generated or marked validated.
 - [ ] Reconcile event-flow decision history and Council Learning idempotency in a separate additive batch.
 
-Safety boundaries: no production migration application, no production data mutation/deletion, no pipeline invocation, no scoring/execution changes, and no publishing in this phase.
+## Safety boundaries
 
-
-- [ ] Inspect actual learning, outcome, retention, schema and UI paths.
-- [ ] Add evidence eligibility, temporal validation, cohort isolation and archive contracts with tests.
-- [ ] Add bounded read-only knowledge panel to existing dashboard and AI Report.
-- [ ] Prepare unapplied additive schema and fail-closed archival proposals plus verification SQL.
-- [ ] Document duplicate-learning and orphan repair rollout without altering source rows.
-- [ ] Run tests, lint and preview checks; record actual results and outstanding blockers.
-
-No production migrations, data mutations, pipeline invocations or publishing are authorized in this phase.
+No production data was copied, updated, archived, or deleted during this branch work. No production migration or cron change has been applied. No scoring, entry, execution, or live-order behavior changed. No Lovable publish/deploy was performed. The archive migration is an unapplied artifact until the explicit apply step.
