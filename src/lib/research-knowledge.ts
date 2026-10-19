@@ -47,6 +47,19 @@ export interface Finding {
   checked_at: string;
   limitations: string;
   reproduction: string;
+  symbol: string | null;
+  strategy: string | null;
+  regime: string | null;
+  win_rate: number | null;
+  mean_pnl: number | null;
+  median_pnl: number | null;
+  win_count: number;
+  loss_count: number;
+  expired_count: number;
+  unique_symbols: number;
+  sample_start: string | null;
+  sample_end: string | null;
+  method_version: string;
 }
 export function cohortOf(fingerprint: string | null): Cohort {
   if (!fingerprint) return "Unknown";
