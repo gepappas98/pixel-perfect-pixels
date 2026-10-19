@@ -186,21 +186,21 @@ export async function readKnowledge(db: SupabaseClient, now = new Date().toISOSt
         : "Retention archive status query failed; archival readiness remains unverified.");
     } else if (statusResult.data && typeof statusResult.data === "object") {
       const raw = statusResult.data as Record<string, unknown>;
-      const status = raw.status;
+      const status = raw["status"];
       archival = status === "ready" || status === "incomplete" ? status : "unverified";
       const number = (value: unknown) => Number.isFinite(Number(value)) ? Number(value) : 0;
-      const byTableRaw = raw.by_table && typeof raw.by_table === "object" ? raw.by_table as Record<string, unknown> : {};
+      const byTableRaw = raw["by_table"] && typeof raw["by_table"] === "object" ? raw["by_table"] as Record<string, unknown> : {};
       const by_table = Object.fromEntries(Object.entries(byTableRaw).map(([key, value]) => {
         const row = value && typeof value === "object" ? value as Record<string, unknown> : {};
-        return [key, { eligible: number(row.eligible), archived: number(row.archived), missing: number(row.missing) }];
+        return [key, { eligible: number(row["eligible"]), archived: number(row["archived"]), missing: number(row["missing"]) }];
       }));
       archive_status = {
-        eligible_sources: number(raw.eligible_sources),
-        archived_sources: number(raw.archived_sources),
-        missing_sources: number(raw.missing_sources),
-        last_archive_at: typeof raw.last_archive_at === "string" ? raw.last_archive_at : null,
-        raw_cutoff: typeof raw.raw_cutoff === "string" ? raw.raw_cutoff : "",
-        derived_cutoff: typeof raw.derived_cutoff === "string" ? raw.derived_cutoff : "",
+        eligible_sources: number(raw["eligible_sources"]),
+        archived_sources: number(raw["archived_sources"]),
+        missing_sources: number(raw["missing_sources"]),
+        last_archive_at: typeof raw["last_archive_at"] === "string" ? raw["last_archive_at"] as string : null,
+        raw_cutoff: typeof raw["raw_cutoff"] === "string" ? raw["raw_cutoff"] as string : "",
+        derived_cutoff: typeof raw["derived_cutoff"] === "string" ? raw["derived_cutoff"] as string : "",
         by_table,
       };
     } else {
