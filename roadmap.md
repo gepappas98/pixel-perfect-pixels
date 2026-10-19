@@ -4,9 +4,10 @@
 - [x] Add an unapplied additive schema draft matching the existing `research_evidence`, `research_cases`, and `research_findings` contracts.
 - [x] Propose fail-closed retention archival in the migration: source deletion is gated on evidence capture/verification in the same transaction.
 - [x] Record read-only production coverage, storage, V3 maturity, orphan lesson and retention dry-run findings.
-- [ ] Run tests, lint and build on the connected Lovable/GitHub CI runtime; results are not yet available.
+- [ ] Re-run build/type-check/unit tests after the latest evidence-linkage and pipeline-sync changes (earlier baseline passed 119 tests).
 - [ ] Review SQL migration against a staging copy, including rollback and concurrency behavior, before production application.
-- [ ] Add automated evidence capture and finding-generation workflow only after schema validation; do not treat current counts or LLM prose as verified findings.
+- [x] Add idempotent bounded case/evidence refresh path (gated on migration) and call it from the existing pipeline with fail-open research-only behavior.
+- [ ] Add candidate-finding generation only after statistical design and evidence coverage validation; do not treat current counts or LLM prose as verified findings.
 - [ ] Verify dashboard coverage after schema application and compare source/evidence fingerprints without deleting or rewriting source rows.
 - [ ] Reconcile event-flow decision history and Council Learning idempotency in a separate additive batch.
 
