@@ -176,3 +176,13 @@ This is a confirmed P1 wiring defect, not a request to optimize strategy perform
 - Production dry-run was read-only. It surfaced 5,439 sentiment snapshots, 334 news events, 6,750 flow snapshots, 6,750 price snapshots, 1,017 whale-flow snapshots, 394 transitions/contexts, 393 followups, and 1 transmission eligible for retention.
 - Production state remains unchanged. Migration is a review artifact only; no historical data was moved and the existing retention job/function has not been replaced in production.
 - Work branch: `feat/intelligent-research-knowledge-archive-main`. The earlier duplicate draft PR #130 was closed without merging after finding the existing implementation on main.
+
+
+## 2026-10-20 — Batch 2: evidence linkage and automatic research sync
+
+- The existing Research Knowledge reader now links point-in-time evidence to cases, including direct entry records and composite-signal references, while enforcing the observed/available-at cutoff. Same-symbol/global snapshots are linked only within a bounded pre-entry window.
+- Added a server-side SQL refresh function in the unapplied migration. The pipeline calls it after post-mortem generation, with timeout/fail-open behavior and stores sync status inside `pipeline_runs.result.research_knowledge_sync`. This is research-only and does not feed back into scoring or execution.
+- Historical source tables remain the system of record. The sync materializes all paper-trade cases and only the recent/newly resolved strategy-variant cohort to avoid duplicating all 66k variant rows. Legacy/V2/V3 remain separate; V3 requires a non-null resolver timestamp before its case can be evaluated.
+- Retention cleanup is replaced only inside the unapplied migration. It captures bounded evidence, verifies source coverage, then deletes; an error aborts the transaction before source deletion. The production cron/function has not been changed.
+- CI on commit `1c7eab7e5c8a44a5f62b49eb44d86add7297caab` passed build, strict TypeScript check and all 119 unit tests; later batch-2 edits require a fresh CI run.
+- No production migration applied, no production data moved/deleted, no deployment/publish performed.
