@@ -33,3 +33,6 @@ jobs:
 
       - name: Run BTC divergence regression tests
         run: deno test --no-lock supabase/functions/trade-executor/_shared/regime-divergence.test.ts
+
+      - name: Run weighted MTF scoring tests
+        run: deno test --no-lock supabase/functions/_shared/mtf-scoring.test.ts

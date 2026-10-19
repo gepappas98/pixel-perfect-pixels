@@ -1,4 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { calculateWeightedMtfScore } from "../_shared/mtf-scoring.ts";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -341,8 +342,20 @@ function calculateVariant(
   const reasons: string[] = [];
   if (whale?.direction === "accumulation") { score += weights.whale; reasons.push("whale accumulation"); }
   if (whale?.direction === "distribution") { score -= weights.whale; reasons.push("whale distribution"); }
-  if (mtf.p === "bullish") { score += weights.technicals; reasons.push("bullish technicals"); }
-  if (mtf.p === "bearish") { score -= weights.technicals; reasons.push("bearish technicals"); }
+  const mtfDirectionScore = calculateWeightedMtfScore([
+    { signal: mtf.p, available: mtf.primary !== null, weight: 1 },
+    { signal: mtf.f, available: mtf.fast !== null, weight: 0.65 },
+    { signal: mtf.t, available: mtf.trend !== null, weight: 0.65 },
+  ]);
+  const technicalScore = mtfDirectionScore * weights.technicals;
+  score += technicalScore;
+  if (technicalScore !== 0) {
+    reasons.push(`MTF technicals ${technicalScore > 0 ? "bullish" : "bearish"} (weighted score ${mtfDirectionScore.toFixed(2)}; ${mtf.detail})`);
+  } else if (mtf.primary || mtf.fast || mtf.trend) {
+    reasons.push(`MTF technicals neutral/conflicted (${mtf.detail})`);
+  } else {
+    reasons.push("MTF technical data unavailable");
+  }
 
   // Sentiment is enabled only for the isolated sentiment-first research variant.
   if (weights.sentiment > 0) {
@@ -505,10 +518,11 @@ function ruleBasedRecommendation(
     { row: mtf.fast, direction: mtf.f, weight: 0.65 },
     { row: mtf.trend, direction: mtf.t, weight: 0.65 },
   ].filter((frame) => frame.row !== null);
-  const availableWeight = frames.reduce((sum, frame) => sum + frame.weight, 0);
-  const directionalWeight = frames.reduce((sum, frame) =>
-    sum + (frame.direction === "bullish" ? frame.weight : frame.direction === "bearish" ? -frame.weight : 0), 0);
-  const mtfDirectionScore = availableWeight > 0 ? directionalWeight / availableWeight : 0;
+  const mtfDirectionScore = calculateWeightedMtfScore([
+    { signal: mtf.p, available: mtf.primary !== null, weight: 1 },
+    { signal: mtf.f, available: mtf.fast !== null, weight: 0.65 },
+    { signal: mtf.t, available: mtf.trend !== null, weight: 0.65 },
+  ]);
   components.technicals = mtfDirectionScore * weights.technicals;
   score += components.technicals;
 
@@ -596,7 +610,7 @@ Deno.serve(async (req) => {
     const freshnessNowIso = new Date(freshnessNow).toISOString();
     // Versioned research identity: one strategy/symbol sample per 10-minute observation window.
     // This is separate from council row IDs, which can churn without a new market observation.
-    // The v2 prefix deliberately preserves all existing historical fingerprints unchanged.
+    // The v3 prefix isolates observations using the corrected shared MTF scoring.
     const variantSampleBucket = Math.floor(freshnessNow / (10 * 60 * 1000));
     const since = new Date(freshnessNow - WHALE_LOOKBACK_MS).toISOString();
     // Regime inputs use the neutral 30-minute council window because the regime
@@ -847,7 +861,7 @@ Deno.serve(async (req) => {
               market_session: productionMarketSession,
               created_at: new Date().toISOString(),
               source_fingerprint: [
-                "v2", strategy_name, symbol, variantSampleBucket,
+                "v3", strategy_name, symbol, variantSampleBucket,
               ].join("|"),
             };
           });
@@ -869,7 +883,7 @@ Deno.serve(async (req) => {
               market_session: productionMarketSession,
               created_at: new Date().toISOString(),
               source_fingerprint: [
-                "v2", "accumulation", symbol, variantSampleBucket,
+                "v3", "accumulation", symbol, variantSampleBucket,
               ].join("|"),
             });
           }

@@ -5,14 +5,14 @@ const P:any={balanced:[1,1,1],"whale-focused":[2,.5,.5],"chart-trader":[.5,2,.5]
 const norm=(rs:any[])=>rs.map(r=>{const w=+r.wins||0,l=+r.losses||0,n=+r.resolved||0,t=+r.total_pnl_pct||0;return{strategy_name:String(r.strategy_name),wins:w,losses:l,resolved:n,total_pnl_pct:t,avg_pnl_pct:n?t/n:null,win_rate_pct:w+l?100*w/(w+l):null}});
 
 /**
- * Read the V2 benchmark through its aggregate RPC. If the RPC is unavailable
+ * Read the V3 benchmark through its aggregate RPC. If the RPC is unavailable
  * (for example, a stale PostgREST schema cache), fall back to the source table.
  * The fallback pages every matching row so it never silently aggregates only
  * the first PostgREST result page.
  */
 async function getVariantPerformance(db: any, days = 7): Promise<any[]> {
   const { data: rpcRows, error: rpcError } = await (db.rpc as any)(
-    "get_variant_performance_v2",
+    "get_variant_performance_v3",
     { days },
   );
   if (!rpcError) return rpcRows || [];
@@ -26,14 +26,14 @@ async function getVariantPerformance(db: any, days = 7): Promise<any[]> {
       .select("id,created_at,strategy_name,outcome,pnl_pct")
       .gte("created_at", since)
       .eq("recommendation", "buy")
-      .like("source_fingerprint", "v2|%")
+      .like("source_fingerprint", "v3|%")
       .order("created_at", { ascending: true })
       .order("id", { ascending: true })
       .range(from, from + pageSize - 1);
     if (error) {
       const rpcDetail = rpcError instanceof Error ? rpcError.message : JSON.stringify(rpcError);
       throw new Error(
-        "get_variant_performance_v2 RPC failed (" + String(rpcDetail || "unknown error") +
+        "get_variant_performance_v3 RPC failed (" + String(rpcDetail || "unknown error") +
         ") and direct strategy_variant_signals fallback failed: " + error.message,
       );
     }

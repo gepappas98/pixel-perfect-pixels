@@ -297,8 +297,8 @@ async function gatherSnapshot(): Promise<MarketSnapshot> {
 /* ───────────── Variant performance ───────────── */
 
 /**
- * Φορτώνει variant performance μόνο από το deduplicated v2 cohort
- * get_variant_performance_v2(days). Το legacy ιστορικό δεν οδηγεί auto-switch.
+ * Φορτώνει variant performance μόνο από το διορθωμένο V3 cohort
+ * get_variant_performance_v3(days). Τα legacy/V2 δεδομένα δεν οδηγούν auto-switch.
  *
  * Non-fatal: ��ν αποτύχει, επιστρέφει empty array και το prompt
  * θα τρέ��ει χωρίς historical performance.
@@ -310,7 +310,7 @@ async function fetchVariantPerformance(
     const { supabaseAdmin: db } = await import(
       "@/integrations/supabase/client.server"
     );
-    const { data, error } = await (db.rpc as any)("get_variant_performance_v2", {
+    const { data, error } = await (db.rpc as any)("get_variant_performance_v3", {
       days,
     });
     if (error) throw error;
