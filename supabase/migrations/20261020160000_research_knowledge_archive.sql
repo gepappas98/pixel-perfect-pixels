@@ -202,11 +202,11 @@ begin
   select 'strategy_variant_signals',v.id::text,v.symbol,coalesce(v.strategy_name,'unknown'),
     case when v.source_fingerprint like 'v3|%' then 'V3'
          when v.source_fingerprint like 'v2|%' then 'V2'
-         when v.source_fingerprint ~ '^v[0-9]+\\|' then 'Unknown'
+         when v.source_fingerprint ~ '^v[0-9]+[|]' then 'Unknown'
          when v.source_fingerprint is null then 'Unknown' else 'Legacy' end,
     case when v.source_fingerprint like 'v3|%' then 'v3-mtf-aligned'
          when v.source_fingerprint like 'v2|%' then 'v2'
-         when v.source_fingerprint is null or v.source_fingerprint ~ '^v[0-9]+\\|' then 'unknown' else 'legacy' end,
+         when v.source_fingerprint is null or v.source_fingerprint ~ '^v[0-9]+[|]' then 'unknown' else 'legacy' end,
     v.source_fingerprint,v.created_at,v.resolved_at,
     case when lower(coalesce(v.outcome,'')) in ('win','loss','expired') and v.resolved_at is not null then v.resolved_at else null end,
     lower(coalesce(v.outcome,'unknown')),v.pnl_pct,'percent',null,v.regime_label,
