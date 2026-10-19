@@ -7,7 +7,7 @@ import { getResearchKnowledge } from "@/lib/research-knowledge.functions";
 import { dedupeCases, eligibleEntryEvidence, isEvaluated, validateFinding, type Cohort, type KnowledgeSnapshot } from "@/lib/research-knowledge";
 
 export function ResearchKnowledgeView({ snapshot, loading, error, refreshing = false, onRefresh, onExport }: {
-  snapshot?: KnowledgeSnapshot; loading: boolean; error: string | null; refreshing?: boolean;
+  snapshot: KnowledgeSnapshot | undefined; loading: boolean; error: string | null; refreshing?: boolean;
   onRefresh?: () => void; onExport?: () => void;
 }) {
   const [cohort, setCohort] = useState<Cohort>("V3");
