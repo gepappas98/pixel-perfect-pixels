@@ -114,19 +114,19 @@ begin
     win_count=excluded.win_count,loss_count=excluded.loss_count,expired_count=excluded.expired_count,
     unique_symbols=excluded.unique_symbols,sample_start=excluded.sample_start,sample_end=excluded.sample_end,
     method_version=excluded.method_version,updated_at=now()
-  where public.research_findings.status='candidate'
-    and (public.research_findings.statement is distinct from excluded.statement
-      or public.research_findings.sample_size is distinct from excluded.sample_size
-      or public.research_findings.evidence_ids is distinct from excluded.evidence_ids
-      or public.research_findings.case_ids is distinct from excluded.case_ids
-      or public.research_findings.win_rate is distinct from excluded.win_rate
-      or public.research_findings.mean_pnl is distinct from excluded.mean_pnl
-      or public.research_findings.median_pnl is distinct from excluded.median_pnl
-      or public.research_findings.win_count is distinct from excluded.win_count
-      or public.research_findings.loss_count is distinct from excluded.loss_count
-      or public.research_findings.expired_count is distinct from excluded.expired_count
-      or public.research_findings.sample_start is distinct from excluded.sample_start
-      or public.research_findings.sample_end is distinct from excluded.sample_end);
+  where research_findings.status='candidate'
+    and (research_findings.statement is distinct from excluded.statement
+      or research_findings.sample_size is distinct from excluded.sample_size
+      or research_findings.evidence_ids is distinct from excluded.evidence_ids
+      or research_findings.case_ids is distinct from excluded.case_ids
+      or research_findings.win_rate is distinct from excluded.win_rate
+      or research_findings.mean_pnl is distinct from excluded.mean_pnl
+      or research_findings.median_pnl is distinct from excluded.median_pnl
+      or research_findings.win_count is distinct from excluded.win_count
+      or research_findings.loss_count is distinct from excluded.loss_count
+      or research_findings.expired_count is distinct from excluded.expired_count
+      or research_findings.sample_start is distinct from excluded.sample_start
+      or research_findings.sample_end is distinct from excluded.sample_end);
   get diagnostics v_upserted = row_count;
 
   return jsonb_build_object(
