@@ -12,6 +12,7 @@ import { RegimePanel } from "@/components/trading/RegimePanel";
 import { CmcMarketStructurePanel } from "@/components/trading/CmcMarketStructurePanel";
 import { StrategyPanel } from "@/components/trading/StrategyPanel";
 import { LessonsPanel } from "@/components/trading/LessonsPanel";
+import { ResearchKnowledgePanel } from "@/components/trading/ResearchKnowledgePanel";
 import { VariantComparisonPanel } from "@/components/trading/VariantComparisonPanel";
 import { TradesPanel } from "@/components/trading/TradesPanel";
 import { TradeAlertsPanel } from "@/components/trading/TradeAlertsPanel";
@@ -334,6 +335,7 @@ function CommandCenter() {
         <CmcMarketStructurePanel />
         <StrategyPanel />
         <LessonsPanel />
+        <ResearchKnowledgePanel />
         <VariantComparisonPanel />
   <AIRiskSummary />
   <RiskPanel />
