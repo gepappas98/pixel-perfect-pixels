@@ -132,7 +132,7 @@ begin
   insert into public.research_evidence(source_table,source_id,observed_at,available_at,captured_at,fingerprint,role,summary)
   select 'asset_sentiment_snapshots',s.id::text,s.observed_at,s.created_at,now(),
     md5('asset_sentiment_snapshots|'||s.id::text||'|'||jsonb_strip_nulls(jsonb_build_object('asset',s.asset,'observed_at',s.observed_at,'source',s.source,'mention_count',s.mention_count,'unique_items',s.unique_items,'bullish_count',s.bullish_count,'bearish_count',s.bearish_count,'neutral_count',s.neutral_count,'sentiment_score',s.sentiment_score,'mention_velocity',s.mention_velocity,'sentiment_velocity',s.sentiment_velocity,'shock_score',s.shock_score))::text),
-    'entry_context',left(format('asset=%s source=%s sentiment=%s mentions=%s unique=%s shock=%s',s.asset,s.source,s.sentiment_score,s.mention_count,s.unique_items,s.shock_score),2000)
+    'entry_context',left(format('asset=%s source=%s sentiment=%s mentions=%s unique=%s bullish=%s bearish=%s neutral=%s mention_velocity=%s sentiment_velocity=%s shock=%s',s.asset,s.source,s.sentiment_score,s.mention_count,s.unique_items,s.bullish_count,s.bearish_count,s.neutral_count,s.mention_velocity,s.sentiment_velocity,s.shock_score),2000)
   from public.asset_sentiment_snapshots s where s.observed_at < raw_cutoff
   on conflict (fingerprint) do nothing;
   get diagnostics n_sentiment = row_count;
@@ -156,7 +156,7 @@ begin
   insert into public.research_evidence(source_table,source_id,observed_at,available_at,captured_at,fingerprint,role,summary)
   select 'whale_flow_shock_followups',s.id::text,s.shock_at,s.updated_at,now(),
     md5('whale_flow_shock_followups|'||s.id::text||'|'||jsonb_strip_nulls(jsonb_build_object('transition_id',s.transition_id,'shock_at',s.shock_at,'shock_delta_pp',s.shock_delta_pp,'shock_speed',s.shock_speed,'flow_15m',s.flow_15m,'flow_30m',s.flow_30m,'flow_60m',s.flow_60m,'flow_4h',s.flow_4h,'flow_24h',s.flow_24h,'delta_15m_pp',s.delta_15m_pp,'delta_30m_pp',s.delta_30m_pp,'delta_60m_pp',s.delta_60m_pp,'delta_4h_pp',s.delta_4h_pp,'delta_24h_pp',s.delta_24h_pp,'flow_response',s.flow_response,'price_response',s.price_response,'curvature',s.curvature,'data_quality',s.data_quality))::text),
-    'outcome',left(format('shock_delta=%s speed=%s flow_response=%s price_response=%s curvature=%s quality=%s',s.shock_delta_pp,s.shock_speed,s.flow_response,s.price_response,s.curvature,s.data_quality),2000)
+    'outcome',left(format('shock_delta=%s speed=%s flow15=%s flow30=%s flow60=%s flow4h=%s flow24h=%s delta15=%s delta30=%s delta60=%s delta4h=%s delta24h=%s btc15=%s btc30=%s btc1h=%s btc4h=%s btc24h=%s flow_response=%s price_response=%s curvature=%s quality=%s',s.shock_delta_pp,s.shock_speed,s.flow_15m,s.flow_30m,s.flow_60m,s.flow_4h,s.flow_24h,s.delta_15m_pp,s.delta_30m_pp,s.delta_60m_pp,s.delta_4h_pp,s.delta_24h_pp,s.btc_return_15m,s.btc_return_30m,s.btc_return_1h,s.btc_return_4h,s.btc_return_24h,s.flow_response,s.price_response,s.curvature,s.data_quality),2000)
   from public.whale_flow_shock_followups s where s.shock_at < derived_cutoff
   on conflict (fingerprint) do nothing;
   get diagnostics n_followups = row_count;
@@ -164,7 +164,7 @@ begin
   insert into public.research_evidence(source_table,source_id,observed_at,available_at,captured_at,fingerprint,role,summary)
   select 'whale_flow_transition_context',s.id::text,s.captured_at,s.created_at,now(),
     md5('whale_flow_transition_context|'||s.id::text||'|'||jsonb_strip_nulls(jsonb_build_object('transition_id',s.transition_id,'captured_at',s.captured_at,'lookback_minutes',s.lookback_minutes,'data_quality',s.data_quality,'indicator_samples',s.indicator_context->>'samples','signal_samples',s.signal_context->>'samples','sentiment_samples',s.sentiment_context->>'samples','news_samples',s.news_context->>'samples'))::text),
-    'entry_context',left(format('transition=%s lookback=%s quality=%s indicators=%s signals=%s sentiment=%s news=%s',s.transition_id,s.lookback_minutes,s.data_quality,s.indicator_context->>'samples',s.signal_context->>'samples',s.sentiment_context->>'samples',s.news_context->>'samples'),2000)
+    'entry_context',left(format('transition=%s lookback=%s quality=%s indicators=%s signal_samples=%s buy=%s sell=%s regimes=%s sentiment_samples=%s sentiment_avg=%s sentiment_bullish=%s sentiment_bearish=%s news_samples=%s news_avg=%s news_bullish=%s news_bearish=%s',s.transition_id,s.lookback_minutes,s.data_quality,s.indicator_context->>'samples',s.signal_context->>'samples',s.signal_context->>'buy',s.signal_context->>'sell',left(coalesce(s.signal_context->>'regimes',''),250),s.sentiment_context->>'samples',s.sentiment_context->>'avg_score',s.sentiment_context->>'bullish',s.sentiment_context->>'bearish',s.news_context->>'samples',s.news_context->>'avg_score',s.news_context->>'bullish',s.news_context->>'bearish'),2000)
   from public.whale_flow_transition_context s where s.created_at < derived_cutoff
   on conflict (fingerprint) do nothing;
   get diagnostics n_context = row_count;
