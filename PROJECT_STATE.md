@@ -2101,3 +2101,19 @@ Rule of thumb: Αν σε 14 μέρες shadow mode το counterfactual δείξ�
 · Toggle να ενεργοποιήσεις live mode
 
 Ή να δούμε το auto-tuning script που προσαρμόζει τα thresholds βάσει ιστορικών δεδομένων;
+
+
+---
+
+## 2026-10-20 — Intelligent Research Knowledge Archive (implementation branch)
+
+- Branch: `feat/intelligent-research-knowledge-archive`; based on canonical HEAD `4715c91c60d880a98a4c02b0c303f442177ffea5`.
+- Additive schema draft: `supabase/migrations/20261020160000_research_knowledge_archive.sql`. Adds evidence-backed finding/evidence tables, bounded text fields, unique fingerprints, cohort/status constraints, indexes, RLS read policies, and server-only write permissions.
+- Research UI draft: `ResearchKnowledgePanel` integrated into the existing dashboard. It is explicitly research-only and does not feed BUY/scorer/executor paths.
+- Server overview: `src/lib/research-knowledge.functions.ts` reads source coverage and archive status, handles not-yet-applied schema gracefully, and reports V3 open/resolved separately.
+- Pure validation helpers and tests cover Legacy/V2/V3 separation, open/ambiguous outcomes not resolved, entry-time evidence cutoff, evidence-required findings, and fingerprint dedupe.
+- Production DB and cron were NOT changed. Migration was NOT applied. No data was copied, archived, reset, or deleted. Lovable publish/deploy was NOT run.
+- Read-only production snapshot (2026-10-20): database 459 MB; largest relation sizes including indexes: strategy_shadow_diagnostics 84 MB, composite_signals 68 MB, strategy_variant_signals 38 MB, pipeline_runs 35 MB, whale_alerts 30 MB. 492 V3 variant rows were open and 0 resolved at the snapshot; this is not evidence of resolver failure without allowing the 72h horizon to mature.
+- Council lessons: 193 rows; 29 source_trade_id references did not match currently present trades. Preserve as unresolved provenance; do not auto-remap/delete.
+- Retention dry-run preview only (72h raw / 168h derived): 5,439 sentiment, 334 news, 6,750 flow, 6,750 price, 1,017 whale-flow snapshots, 394 transitions, 394 transition contexts, 393 shock followups, 1 event-flow transmission. Existing retention cron remains active and unchanged.
+- Remaining gates before merge/apply: inspect full diff, run test/lint/build, verify RLS/function permissions against canonical project, and design a fail-closed archival step before changing retention behavior.
