@@ -264,7 +264,10 @@ begin
   where research_cases.resolved_at is distinct from excluded.resolved_at
      or research_cases.outcome is distinct from excluded.outcome
      or research_cases.net_pnl is distinct from excluded.net_pnl
-     or research_cases.evidence_ids is distinct from excluded.evidence_ids
+     or research_cases.evidence_ids is distinct from (
+       select coalesce(array_agg(distinct item order by item), '{}'::text[])
+       from unnest(coalesce(research_cases.evidence_ids,'{}'::text[])||excluded.evidence_ids) as u(item)
+     )
      or research_cases.close_reason is distinct from excluded.close_reason
      or research_cases.regime is distinct from excluded.regime;
   get diagnostics n_trade_cases = row_count;
@@ -306,7 +309,10 @@ begin
      or research_cases.maturity_at is distinct from excluded.maturity_at
      or research_cases.outcome is distinct from excluded.outcome
      or research_cases.net_pnl is distinct from excluded.net_pnl
-     or research_cases.evidence_ids is distinct from excluded.evidence_ids
+     or research_cases.evidence_ids is distinct from (
+       select coalesce(array_agg(distinct item order by item), '{}'::text[])
+       from unnest(coalesce(research_cases.evidence_ids,'{}'::text[])||excluded.evidence_ids) as u(item)
+     )
      or research_cases.fingerprint is distinct from excluded.fingerprint;
   get diagnostics n_variant_cases = row_count;
 
