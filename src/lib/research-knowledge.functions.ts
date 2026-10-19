@@ -31,9 +31,35 @@ export async function readKnowledge(db: SupabaseClient, now = new Date().toISOSt
     read("strategy_variant_signals", "id,strategy_name,symbol,source_fingerprint,created_at,resolved_at,outcome,pnl_pct,regime_label,confidence,recommendation,score,source_tags,production_regime_label,market_regime_score,asset_trend_regime,asset_volatility_regime", "created_at"),
     read("council_lessons", "id,symbol,source_trade_id,created_at", "created_at"),
     read("research_evidence", "id,source_table,source_id,symbol,observed_at,available_at,captured_at,fingerprint,role,summary", "captured_at", 100),
-    read("research_findings", "id,title,statement,status,confidence,cohort,scorer_version,sample_size,evidence_ids,case_ids,checked_at,limitations,reproduction", "checked_at", 100),
+    read("research_findings", "id,title,statement,status,confidence,cohort,scorer_version,sample_size,evidence_ids,case_ids,checked_at,limitations,reproduction,symbol,strategy,regime,win_rate,mean_pnl,median_pnl,win_count,loss_count,expired_count,unique_symbols,sample_start,sample_end,method_version", "checked_at", 100),
     read("research_cases", "id,source_table,source_id,symbol,strategy,cohort,scorer_version,fingerprint,entry_at,resolved_at,maturity_at,outcome,net_pnl,pnl_unit,close_reason,regime,evidence_ids", "entry_at"),
   ]);
+  const findingCaseIds = [...new Set(findingRows.flatMap(r => ids(r, "case_ids")))].slice(0, 1000);
+  const findingEvidenceIds = [...new Set(findingRows.flatMap(r => ids(r, "evidence_ids")))].slice(0, 1000);
+  let findingCaseRows: Row[] = [];
+  let findingEvidenceRows: Row[] = [];
+  if (findingCaseIds.length) {
+    try {
+      const related = await db.from("research_cases")
+        .select("id,source_table,source_id,symbol,strategy,cohort,scorer_version,fingerprint,entry_at,resolved_at,maturity_at,outcome,net_pnl,pnl_unit,close_reason,regime,evidence_ids")
+        .in("id", findingCaseIds).abortSignal(AbortSignal.timeout(8_000));
+      if (related.error) issues.push("research_cases: finding-linked case lookup failed.");
+      else findingCaseRows = (related.data ?? []) as unknown as Row[];
+    } catch { issues.push("research_cases: finding-linked case lookup timed out."); }
+  }
+  if (findingEvidenceIds.length) {
+    try {
+      const related = await db.from("research_evidence")
+        .select("id,source_table,source_id,symbol,observed_at,available_at,captured_at,fingerprint,role,summary")
+        .in("id", findingEvidenceIds).abortSignal(AbortSignal.timeout(8_000));
+      if (related.error) issues.push("research_evidence: finding-linked evidence lookup failed.");
+      else findingEvidenceRows = (related.data ?? []) as unknown as Row[];
+    } catch { issues.push("research_evidence: finding-linked evidence lookup timed out."); }
+  }
+  const uniqueById = (rows: Row[]) => [...new Map(rows.map(row => [text(row, "id") ?? "", row]).filter(([id]) => Boolean(id))).values()];
+  const allStoredCases = uniqueById([...storedCases, ...findingCaseRows]);
+  const allEvidenceRows = uniqueById([...evidenceRows, ...findingEvidenceRows]);
+
   const tradeSignalIds = [...new Set(trades.map(r => text(r, "composite_signal_id")).filter((id): id is string => Boolean(id)))];
   let signalRows: Row[] = [];
   if (tradeSignalIds.length) {
@@ -75,7 +101,7 @@ export async function readKnowledge(db: SupabaseClient, now = new Date().toISOSt
     })),
   ];
   // Explicit DTOs only: never send entry_metadata/raw snapshots, wallet identifiers or credentials.
-  const archivedEvidence: Evidence[] = evidenceRows.map(r => ({
+  const archivedEvidence: Evidence[] = allEvidenceRows.map(r => ({
     id: text(r, "id") ?? "",
     source_table: text(r, "source_table") ?? "",
     source_id: text(r, "source_id") ?? "",
@@ -166,7 +192,20 @@ export async function readKnowledge(db: SupabaseClient, now = new Date().toISOSt
     const evidenceIds = entryEvidenceIdsForCase(c, evidence, linkedSignalId);
     return { ...c, evidence_ids: [...new Set([...c.evidence_ids, ...evidenceIds])] };
   });
-  const findings = findingRows.map(r => ({ id: text(r, "id") ?? "", title: (text(r, "title") ?? "").slice(0, 200), statement: (text(r, "statement") ?? "").slice(0, 2000), status: text(r, "status") as Finding["status"], confidence: numeric(r, "confidence") ?? 0, cohort: text(r, "cohort") as Finding["cohort"], scorer_version: text(r, "scorer_version") ?? "unknown", sample_size: numeric(r, "sample_size") ?? 0, evidence_ids: ids(r, "evidence_ids"), case_ids: ids(r, "case_ids"), checked_at: text(r, "checked_at") ?? "", limitations: text(r, "limitations") ?? "", reproduction: text(r, "reproduction") ?? "" }));
+  const findings = findingRows.map(r => ({
+    id: text(r, "id") ?? "", title: (text(r, "title") ?? "").slice(0, 200),
+    statement: (text(r, "statement") ?? "").slice(0, 2000), status: text(r, "status") as Finding["status"],
+    confidence: numeric(r, "confidence") ?? 0, cohort: text(r, "cohort") as Finding["cohort"],
+    scorer_version: text(r, "scorer_version") ?? "unknown", sample_size: numeric(r, "sample_size") ?? 0,
+    evidence_ids: ids(r, "evidence_ids"), case_ids: ids(r, "case_ids"), checked_at: text(r, "checked_at") ?? "",
+    limitations: text(r, "limitations") ?? "", reproduction: text(r, "reproduction") ?? "",
+    symbol: text(r, "symbol"), strategy: text(r, "strategy"), regime: text(r, "regime"),
+    win_rate: numeric(r, "win_rate"), mean_pnl: numeric(r, "mean_pnl"), median_pnl: numeric(r, "median_pnl"),
+    win_count: numeric(r, "win_count") ?? 0, loss_count: numeric(r, "loss_count") ?? 0,
+    expired_count: numeric(r, "expired_count") ?? 0, unique_symbols: numeric(r, "unique_symbols") ?? 0,
+    sample_start: text(r, "sample_start"), sample_end: text(r, "sample_end"),
+    method_version: text(r, "method_version") ?? "manual",
+  }));
   let archival: KnowledgeSnapshot["archival"] = "migration_pending";
   let archive_status: KnowledgeSnapshot["archive_status"] = null;
   try {
@@ -214,7 +253,7 @@ export async function readKnowledge(db: SupabaseClient, now = new Date().toISOSt
     issues.push("Retention archive status timed out or failed; readiness is not assumed.");
   }
 
-  for (const r of storedCases) {
+  for (const r of allStoredCases) {
     const sourceTable = text(r, "source_table") ?? "";
     const sourceId = text(r, "source_id") ?? "";
     const index = cases.findIndex(c => c.source_table === sourceTable && c.source_id === sourceId);
