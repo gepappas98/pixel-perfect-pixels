@@ -1,6 +1,6 @@
--- Optimize archive readiness checks without changing the public JSON contract.
--- Required-source rows are materialized once; evidence keys are grouped once.
--- CREATE OR REPLACE preserves the existing function identity and ACL.
+-- Optimize archive readiness checks with a single required-source pass.
+-- Preserve the production JSON contract, validation behavior, SECURITY DEFINER,
+-- search_path, and the function's existing ACL (CREATE OR REPLACE keeps grants).
 CREATE OR REPLACE FUNCTION public.get_research_archive_status(
   p_raw_hours integer DEFAULT 72,
   p_derived_hours integer DEFAULT 168
@@ -25,29 +25,21 @@ BEGIN
   WITH required AS MATERIALIZED (
     SELECT 'asset_price_snapshots'::text AS source_table, s.id::text AS source_id
       FROM public.asset_price_snapshots s WHERE s.observed_at < raw_cutoff
-    UNION ALL
-    SELECT 'asset_flow_snapshots', s.id::text
+    UNION ALL SELECT 'asset_flow_snapshots', s.id::text
       FROM public.asset_flow_snapshots s WHERE s.bucket_at < raw_cutoff
-    UNION ALL
-    SELECT 'asset_sentiment_snapshots', s.id::text
+    UNION ALL SELECT 'asset_sentiment_snapshots', s.id::text
       FROM public.asset_sentiment_snapshots s WHERE s.observed_at < raw_cutoff
-    UNION ALL
-    SELECT 'asset_news_events', s.id::text
+    UNION ALL SELECT 'asset_news_events', s.id::text
       FROM public.asset_news_events s WHERE s.event_at < raw_cutoff
-    UNION ALL
-    SELECT 'event_flow_transmissions', s.id::text
+    UNION ALL SELECT 'event_flow_transmissions', s.id::text
       FROM public.event_flow_transmissions s WHERE s.event_at < derived_cutoff
-    UNION ALL
-    SELECT 'whale_flow_shock_followups', s.id::text
+    UNION ALL SELECT 'whale_flow_shock_followups', s.id::text
       FROM public.whale_flow_shock_followups s WHERE s.shock_at < derived_cutoff
-    UNION ALL
-    SELECT 'whale_flow_transition_context', s.id::text
+    UNION ALL SELECT 'whale_flow_transition_context', s.id::text
       FROM public.whale_flow_transition_context s WHERE s.created_at < derived_cutoff
-    UNION ALL
-    SELECT 'whale_flow_transitions', s.id::text
+    UNION ALL SELECT 'whale_flow_transitions', s.id::text
       FROM public.whale_flow_transitions s WHERE s.created_at < derived_cutoff
-    UNION ALL
-    SELECT 'whale_flow_snapshots', s.id::text
+    UNION ALL SELECT 'whale_flow_snapshots', s.id::text
       FROM public.whale_flow_snapshots s WHERE s.created_at < derived_cutoff
   ),
   evidence_keys AS MATERIALIZED (
@@ -73,21 +65,13 @@ BEGIN
            count(*)::bigint AS eligible,
            count(*) FILTER (WHERE archived)::bigint AS archived,
            count(*) FILTER (WHERE NOT archived)::bigint AS missing
-    FROM checked
-    GROUP BY source_table
+    FROM checked GROUP BY source_table
   )
   SELECT totals.eligible, totals.archived, totals.missing,
-         coalesce(
-           (SELECT jsonb_object_agg(
-             p.source_table,
-             jsonb_build_object(
-               'eligible', p.eligible,
-               'archived', p.archived,
-               'missing', p.missing
-             )
-           ) FROM per_table p),
-           '{}'::jsonb
-         )
+         coalesce((SELECT jsonb_object_agg(
+           p.source_table,
+           jsonb_build_object('eligible',p.eligible,'archived',p.archived,'missing',p.missing)
+         ) FROM per_table p), '{}'::jsonb)
     INTO v_total, v_archived, v_missing, v_by_table
   FROM totals;
 
@@ -101,16 +85,11 @@ BEGIN
     'derived_cutoff', derived_cutoff,
     'by_table', v_by_table,
     'delete_enabled', coalesce(
-      (SELECT allow_source_delete FROM public.research_archive_control WHERE id = 1),
-      false
+      (SELECT allow_source_delete FROM public.research_archive_control WHERE id = 1), false
     ),
     'archive_enabled', coalesce(
-      (SELECT allow_archive FROM public.research_archive_control WHERE id = 1),
-      false
+      (SELECT allow_archive FROM public.research_archive_control WHERE id = 1), false
     )
   );
 END;
 $function$;
-
-REVOKE ALL ON FUNCTION public.get_research_archive_status(integer, integer) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.get_research_archive_status(integer, integer) TO anon, authenticated, service_role;
