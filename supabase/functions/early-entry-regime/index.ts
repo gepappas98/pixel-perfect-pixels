@@ -117,7 +117,7 @@ Deno.serve(async (req) => {
       .order("close_time", { ascending: false }).limit(500);
     if (candlesError) throw candlesError;
     const latestCandles = new Map<string, any>();
-    for (const row of candles5m ?? []) if (Date.parse(String(row.close_time)) < now.getTime() && Date.parse(String(row.captured_at)) <= now.getTime() && !latestCandles.has(row.symbol)) latestCandles.set(row.symbol, row);
+    for (const row of candles5m ?? []) if (Date.parse(String(row.close_time)) < now.getTime() && Date.parse(String(row.captured_at)) >= Date.parse(String(row.close_time)) && Date.parse(String(row.captured_at)) <= now.getTime() && !latestCandles.has(row.symbol)) latestCandles.set(row.symbol, row);
     // Store compact, immutable source candle identity separately from strategy JSON.
     const candleEvaluationId = crypto.randomUUID();
     const candleLineageRows = [...latestCandles.values()]
