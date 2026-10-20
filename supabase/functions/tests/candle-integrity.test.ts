@@ -9,6 +9,7 @@ function usableAt(closeTime: string, capturedAt: string, evaluationAt: string): 
   return Number.isFinite(Date.parse(closeTime))
     && Number.isFinite(Date.parse(capturedAt))
     && Date.parse(closeTime) < Date.parse(evaluationAt)
+    && Date.parse(capturedAt) >= Date.parse(closeTime)
     && Date.parse(capturedAt) <= Date.parse(evaluationAt);
 }
 
