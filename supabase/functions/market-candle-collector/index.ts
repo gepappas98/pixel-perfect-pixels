@@ -20,7 +20,12 @@ Deno.serve(async (req) => {
       const response=await fetch(`${host}/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${timeframe}&limit=3`,{signal:AbortSignal.timeout(7000)});
       if(!response.ok){lastError=`HTTP ${response.status}`;continue;}
       const rows=await response.json() as unknown[][];
-      const candles=rows.map(r=>({symbol,timeframe,open_time:new Date(Number(r[0])).toISOString(),open:Number(r[1]),high:Number(r[2]),low:Number(r[3]),close:Number(r[4]),base_volume:Number(r[5]),close_time:new Date(Number(r[6])).toISOString(),quote_volume:Number(r[7]),trade_count:Number(r[8]),taker_buy_base_volume:Number(r[9]),taker_buy_quote_volume:Number(r[10]),source:"binance-spot-klines",captured_at:new Date().toISOString()})).filter(c=>[c.open,c.high,c.low,c.close,c.base_volume,c.quote_volume,c.taker_buy_base_volume,c.taker_buy_quote_volume].every(Number.isFinite));
+      const capturedAt=new Date();
+      const capturedAtIso=capturedAt.toISOString();
+      const evaluationMs=capturedAt.getTime();
+      // Binance closeTime is inclusive; require strict close_time < capture time.
+      // This excludes the still-forming candle, including exact timestamp equality.
+      const candles=rows.map(r=>({symbol,timeframe,open_time:new Date(Number(r[0])).toISOString(),open:Number(r[1]),high:Number(r[2]),low:Number(r[3]),close:Number(r[4]),base_volume:Number(r[5]),quote_volume:Number(r[7]),close_time:new Date(Number(r[6])).toISOString(),trade_count:Number(r[8]),taker_buy_base_volume:Number(r[9]),taker_buy_quote_volume:Number(r[10]),source:"binance-spot-klines",captured_at:capturedAtIso})).filter(c=>[c.open,c.high,c.low,c.close,c.base_volume,c.quote_volume,c.taker_buy_base_volume,c.taker_buy_quote_volume].every(Number.isFinite)&&Number.isFinite(Date.parse(c.close_time))&&Date.parse(c.close_time)<evaluationMs);
       if(!candles.length){lastError="No valid candle rows";continue;}
       const {error}=await db.from("market_candles").upsert(candles,{onConflict:"symbol,timeframe,open_time"});
       if(error) throw error;
