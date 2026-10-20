@@ -4,6 +4,7 @@ import { aggregateWhaleShocks, DEFAULT_WHALE_SHOCK_CONFIG, evaluate1hTechnicalCo
 import { evaluateMicroTimeframeGate, type MicroTimeframeState } from "./_shared/micro-trend-gate.ts";
 import { computeMarketRegimeAssessment, evaluateSidewaysEntryGate, type MarketRegimeAssessment } from "./_shared/market-regime-gate.ts";
 import { computeDivergenceAssessment, evaluateBtcDowntrendEntryGate, evaluateBtcTrend, type BtcTrendMetrics } from "./_shared/regime-divergence.ts";
+import { summarizeEligibleSignalAudit } from "../_shared/execution-audit.ts";
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -1315,6 +1316,7 @@ Deno.serve(async (req) => {
     }
 
     const completedAt = new Date().toISOString();
+    const auditCoverage = summarizeEligibleSignalAudit(eligibleSignals, auditEvents, MIN_CONFIDENCE);
 
     return new Response(JSON.stringify({
       mode: "paper",
@@ -1339,11 +1341,7 @@ Deno.serve(async (req) => {
         trades: opened.length,
         summary: {
           buy_signals_seen: eligibleSignals.length,
-          eligible_buy_signals: eligibleSignals.filter((s) => Number(s.confidence) >= MIN_CONFIDENCE).length,
-          audited_eligible_signals: auditEvents.filter((e) => Number(e.confidence) >= MIN_CONFIDENCE).length,
-          uncovered_eligible_signals: Math.max(0,
-            eligibleSignals.filter((s) => Number(s.confidence) >= MIN_CONFIDENCE).length -
-            auditEvents.filter((e) => Number(e.confidence) >= MIN_CONFIDENCE).length),
+          ...auditCoverage,
           opened: opened.length,
           skipped: auditEvents.filter((event) => event.decision === "SKIP").length,
           errors: errors.length,
