@@ -125,7 +125,7 @@ Deno.serve(async (req) => {
         && Date.parse(String(c.close_time)) < now.getTime()
         && Date.parse(String(c.captured_at)) >= Date.parse(String(c.close_time))
         && Date.parse(String(c.captured_at)) <= now.getTime())
-      .map((c:any) => ({ evaluation_id:candleEvaluationId, function_name:"early-entry-regime",
+      .map((c:any) => ({ evaluation_id:candleEvaluationId, evaluation_at:candleEvaluationAt, function_name:"early-entry-regime",
         symbol:String(c.symbol).toUpperCase(), timeframe:String(c.timeframe), open_time:c.open_time,
         close_time:c.close_time, captured_at:c.captured_at, source:String(c.source ?? "unknown") }));
     let candleLineageWriteStatus = candleLineageRows.length ? "pending" : "empty";
