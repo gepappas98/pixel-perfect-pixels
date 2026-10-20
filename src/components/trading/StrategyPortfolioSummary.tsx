@@ -2,62 +2,12 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
-
-type TradeRow = {
-  status: string | null;
-  mode: string | null;
-  net_pnl: number | null;
-  pnl: number | null;
-  entry_source: string | null;
-  entry_metadata: Record<string, unknown> | null;
-};
-
-const STRATEGIES = [
-  { key: "cmc", label: "CMC Paper" },
-  { key: "early", label: "Early Entry Regime (A)" },
-  { key: "early_b", label: "Early Entry — B Reversal" },
-  { key: "early_c", label: "Early Entry — C Adaptive" },
-  { key: "event", label: "Event Flow Paper" },
-  { key: "whale_shock", label: "Whale Shock Reversal" },
-  { key: "standard", label: "Standard" },
-] as const;
-
-type StrategyKey = (typeof STRATEGIES)[number]["key"];
-
-function strategyOf(trade: TradeRow): StrategyKey {
-  const metadata = trade.entry_metadata;
-  const metadataStrategy =
-    metadata !== null &&
-    typeof metadata === "object" &&
-    !Array.isArray(metadata)
-      ? metadata["strategy"]
-      : undefined;
-
-  const raw = String(
-    metadataStrategy ?? trade.entry_source ?? "",
-  ).toLowerCase();
-  const source = String(trade.entry_source ?? "").toLowerCase();
-
-  if (raw.includes("cmc-paper") || raw.includes("cmc_paper") || source === "cmc_paper") {
-    return "cmc";
-  }
-  if (source === "early_entry_b_reversal" || raw.includes("early-entry-b-reversal")) {
-    return "early_b";
-  }
-  if (source === "early_entry_c_adaptive" || raw.includes("early-entry-c-adaptive")) {
-    return "early_c";
-  }
-  if (source === "early_entry_regime" || raw.includes("early-entry-regime")) {
-    return "early";
-  }
-  if (raw.includes("event_flow") || raw.includes("event-flow") || source === "event_flow_paper") {
-    return "event";
-  }
-  if (source === "whale_shock" || raw.includes("whale-shock")) {
-    return "whale_shock";
-  }
-  return "standard";
-}
+import {
+  summarizeStrategies,
+  tallyShadowDecisions,
+  type AttributionTrade,
+  type ShadowTally,
+} from "@/lib/strategy-attribution";
 
 const usd = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -66,33 +16,37 @@ const usd = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 2,
 });
 
+const SHADOW_VARIANT: Record<string, string> = {
+  early_b: "B_EARLY_REVERSAL",
+  early_c: "C_ADAPTIVE_REVERSAL",
+};
+
 export function StrategyPortfolioSummary() {
   const { data, isLoading, error, dataUpdatedAt } = useQuery({
-    queryKey: ["strategy-portfolio-summary", "paper"],
+    queryKey: ["strategy-portfolio-summary", "paper", "v2"],
     queryFn: async () => {
       const { data: rows, error: queryError } = await supabase
         .from("trades")
         .select("status,mode,net_pnl,pnl,entry_source,entry_metadata")
         .eq("mode", "paper")
-        .eq("status", "closed");
-
+        .in("status", ["closed", "open"]);
       if (queryError) throw queryError;
+      // Generated types lag behind entry_source/entry_metadata columns.
+      const results = summarizeStrategies((rows ?? []) as unknown as AttributionTrade[]);
 
-      // Supabase's generated select type can lag behind the deployed entry metadata columns.
-      // Keep the cast localized to the query boundary; strategyOf still receives a typed row.
-      const tradeRows = (rows ?? []) as unknown as TradeRow[];
-
-      return STRATEGIES.map((strategy) => {
-        const trades = tradeRows.filter(
-          (trade: TradeRow) => strategyOf(trade) === strategy.key,
-        );
-        const pnl = trades.reduce((sum, trade) => {
-          const value = Number(trade.net_pnl ?? trade.pnl ?? 0);
-          return sum + (Number.isFinite(value) ? value : 0);
-        }, 0);
-
-        return { ...strategy, count: trades.length, pnl };
-      });
+      // Shadow decisions are optional context; failure must not hide trade results.
+      let shadow: ShadowTally[] = [];
+      try {
+        const { data: dec, error: decErr } = await (supabase as any)
+          .from("early_entry_variant_decisions")
+          .select("variant,decision,trade_id")
+          .in("variant", ["B_EARLY_REVERSAL", "C_ADAPTIVE_REVERSAL"])
+          .limit(5000);
+        if (!decErr) shadow = tallyShadowDecisions(dec ?? []);
+      } catch {
+        shadow = [];
+      }
+      return { results, shadow };
     },
     refetchInterval: 30_000,
     staleTime: 20_000,
@@ -104,7 +58,7 @@ export function StrategyPortfolioSummary() {
         <div>
           <h2 className="panel-title">Paper strategy results</h2>
           <p className="mt-1 text-[10px] text-muted-foreground">
-            Closed paper trades · realized net PnL after fees · historical records preserved
+            Real paper trades only · realized net PnL after fees · shadow decisions are never counted as trades
           </p>
         </div>
         {dataUpdatedAt > 0 && (
@@ -115,57 +69,60 @@ export function StrategyPortfolioSummary() {
       </div>
 
       {isLoading ? (
-        <p className="text-xs text-muted-foreground">
-          Loading strategy results…
-        </p>
+        <p className="text-xs text-muted-foreground">Loading strategy results…</p>
       ) : error ? (
         <p className="text-xs text-destructive">
-          Could not load strategy results:{" "}
-          {error instanceof Error ? error.message : String(error)}
+          Could not load strategy results: {error instanceof Error ? error.message : String(error)}
         </p>
       ) : (
         <div className="space-y-2">
-          {data?.map((strategy) => (
-            <div
-              key={strategy.key}
-              className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 rounded-md border border-border/70 bg-background/30 px-3 py-2"
-            >
-              <span className="text-xs font-medium">{strategy.label}</span>
-              <span className="text-[10px] text-muted-foreground">
-                {strategy.count} closed
-              </span>
-              <span
-                className={`text-right font-mono text-xs font-semibold ${
-                  strategy.pnl > 0
-                    ? "text-bull"
-                    : strategy.pnl < 0
-                      ? "text-bear"
-                      : "text-muted-foreground"
-                }`}
-              >
-                {strategy.count > 0
-                  ? `${strategy.pnl >= 0 ? "+" : "−"}${usd.format(
-                      Math.abs(strategy.pnl),
-                    )}`
-                  : "—"}
-              </span>
-            </div>
-          ))}
+          {data?.results.map((s) => {
+            const shadow = SHADOW_VARIANT[s.key]
+              ? data.shadow.find((t) => t.variant === SHADOW_VARIANT[s.key])
+              : undefined;
+            return (
+              <div key={s.key} className="rounded-md border border-border/70 bg-background/30 px-3 py-2">
+                <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3">
+                  <span className="text-xs font-medium">{s.label}</span>
+                  <span className="text-[10px] text-muted-foreground">
+                    {s.state === "no_entries"
+                      ? "No qualifying paper entries yet"
+                      : `${s.closed} closed · ${s.open} open${s.closed ? ` · ${s.wins}W` : ""}`}
+                  </span>
+                  <span
+                    className={`text-right font-mono text-xs font-semibold ${
+                      s.state !== "has_closed"
+                        ? "text-muted-foreground"
+                        : s.pnl > 0
+                          ? "text-bull"
+                          : s.pnl < 0
+                            ? "text-bear"
+                            : "text-muted-foreground"
+                    }`}
+                  >
+                    {s.state === "has_closed"
+                      ? `${s.pnl >= 0 ? "+" : "−"}${usd.format(Math.abs(s.pnl))}`
+                      : s.state === "open_only"
+                        ? "awaiting close"
+                        : "—"}
+                  </span>
+                </div>
+                {shadow && (
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    Shadow gate log (not trades): {shadow.noEntry} no-entry · {shadow.eligibleNoAsset} eligible/no asset ·{" "}
+                    {shadow.paperOpenLinked} linked paper opens
+                  </p>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
       <p className="mt-3 border-t border-border/70 pt-2 text-[10px] text-muted-foreground">
-        Refreshes every 30 seconds. Open-position unrealized PnL is excluded. Results are grouped by recorded entry strategy.
+        Refreshes every 30 seconds. “—” means the strategy’s own gate has not yet opened a paper trade, not a zero result.
+        Open-position unrealized PnL is excluded.
       </p>
-
-      <div className="mt-3 rounded-md border border-dashed border-border px-3 py-2.5">
-        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Next: statistical evaluation
-        </p>
-        <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-          Pending metrics: win rate · average profit/loss per trade · maximum drawdown (max. peak-to-trough decline). These will be added after validating strategy attribution and historical data consistency.
-        </p>
-      </div>
     </section>
   );
 }
