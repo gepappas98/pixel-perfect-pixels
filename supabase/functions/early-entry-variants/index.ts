@@ -29,7 +29,7 @@ Deno.serve(async (req) => {
   const { data: candleRows, error: candleErr } = await db.from("market_candles").select("symbol,timeframe,open_time,close_time,captured_at,source,quote_volume,taker_buy_quote_volume").eq("timeframe","5m").gte("close_time",iso(15*60000)).lt("close_time",evaluationAt).lte("captured_at",evaluationAt).order("close_time",{ascending:false}).limit(600);
   if (candleErr) throw candleErr;
   const latestCandles = new Map<string, any>();
-  for (const c of candleRows ?? []) if (Date.parse(String(c.close_time)) < now.getTime() && Date.parse(String(c.captured_at)) <= now.getTime() && !latestCandles.has(String(c.symbol).toUpperCase())) latestCandles.set(String(c.symbol).toUpperCase(),c);
+  for (const c of candleRows ?? []) if (Date.parse(String(c.close_time)) < now.getTime() && Date.parse(String(c.captured_at)) >= Date.parse(String(c.close_time)) && Date.parse(String(c.captured_at)) <= now.getTime() && !latestCandles.has(String(c.symbol).toUpperCase())) latestCandles.set(String(c.symbol).toUpperCase(),c);
   // Persist normalized source identities once per evaluator run; avoid duplicating candle payloads in decision JSON.
   const candleEvaluationId = crypto.randomUUID();
   const candleLineageRows = [...latestCandles.values()]
