@@ -51,3 +51,9 @@ Deno.test("early-entry evaluators persist compact normalized candle lineage", ()
   assert(variantsSource.includes('source:String(c.source ?? "unknown")') && regimeSource.includes('source:String(c.source ?? "unknown")'), "lineage must include source identity");
   assert(variantsSource.includes('candle_lineage_write_status') && regimeSource.includes('candle_lineage_write_status'), "lineage write failures must be observable without changing strategy gates");
 });
+
+Deno.test("lineage rows carry evaluation time and enforce no-look-ahead bounds", () => {
+  assert(variantsSource.includes("evaluation_at:evaluationAt"), "variant lineage must persist evaluation time");
+  assert(regimeSource.includes("evaluation_at:candleEvaluationAt"), "baseline lineage must persist evaluation time");
+  assert(variantsSource.includes('Date.parse(String(c.captured_at)) <= now.getTime()') && regimeSource.includes('Date.parse(String(c.captured_at)) <= now.getTime()'), "only captured-before-evaluation candles may be recorded");
+});
