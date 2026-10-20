@@ -109,13 +109,15 @@ Deno.serve(async (req) => {
     // Taker-buy imbalance is calculated in quote volume (comparable USD notionals),
     // not by summing base units across different assets.
     const since15m = new Date(now.getTime() - 15 * 60 * 1000).toISOString();
+    const candleEvaluationAt = now.toISOString();
     const { data: candles5m, error: candlesError } = await db.from("market_candles")
-      .select("symbol,base_volume,taker_buy_base_volume,quote_volume,taker_buy_quote_volume,close_time")
+      .select("symbol,base_volume,taker_buy_base_volume,quote_volume,taker_buy_quote_volume,close_time,captured_at")
       .eq("timeframe", "5m").gte("close_time", since15m)
+      .lt("close_time", candleEvaluationAt).lte("captured_at", candleEvaluationAt)
       .order("close_time", { ascending: false }).limit(500);
     if (candlesError) throw candlesError;
     const latestCandles = new Map<string, any>();
-    for (const row of candles5m ?? []) if (!latestCandles.has(row.symbol)) latestCandles.set(row.symbol, row);
+    for (const row of candles5m ?? []) if (Date.parse(String(row.close_time)) < now.getTime() && Date.parse(String(row.captured_at)) <= now.getTime() && !latestCandles.has(row.symbol)) latestCandles.set(row.symbol, row);
     let candleBaseVolume = 0, takerBuyBaseVolume = 0, candleQuoteVolume = 0, takerBuyQuoteVolume = 0;
     for (const row of latestCandles.values()) {
       candleBaseVolume += Math.max(0, Number(row.base_volume) || 0);
@@ -187,6 +189,9 @@ Deno.serve(async (req) => {
       whale_was_neutral_or_distribution_in_window: whaleWasNeutralOrDistributionDuringWindow,
       taker_buy_confirmed: takerBuyConfirmed,
       taker_buy_is_hard_gate: false,
+      candle_evaluation_at: candleEvaluationAt,
+      candle_latest_close_time: latestCandles.size ? new Date(Math.max(...[...latestCandles.values()].map((c: any) => Date.parse(String(c.close_time))))).toISOString() : null,
+      candle_latest_captured_at: latestCandles.size ? new Date(Math.max(...[...latestCandles.values()].map((c: any) => Date.parse(String(c.captured_at))))).toISOString() : null,
     };
 
     // A transition opens paper research positions on the currently bullish 1h symbols.
