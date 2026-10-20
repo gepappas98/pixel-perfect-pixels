@@ -111,13 +111,30 @@ Deno.serve(async (req) => {
     const since15m = new Date(now.getTime() - 15 * 60 * 1000).toISOString();
     const candleEvaluationAt = now.toISOString();
     const { data: candles5m, error: candlesError } = await db.from("market_candles")
-      .select("symbol,base_volume,taker_buy_base_volume,quote_volume,taker_buy_quote_volume,close_time,captured_at")
+      .select("symbol,timeframe,open_time,close_time,captured_at,source,base_volume,taker_buy_base_volume,quote_volume,taker_buy_quote_volume")
       .eq("timeframe", "5m").gte("close_time", since15m)
       .lt("close_time", candleEvaluationAt).lte("captured_at", candleEvaluationAt)
       .order("close_time", { ascending: false }).limit(500);
     if (candlesError) throw candlesError;
     const latestCandles = new Map<string, any>();
     for (const row of candles5m ?? []) if (Date.parse(String(row.close_time)) < now.getTime() && Date.parse(String(row.captured_at)) <= now.getTime() && !latestCandles.has(row.symbol)) latestCandles.set(row.symbol, row);
+    // Store compact, immutable source candle identity separately from strategy JSON.
+    const candleEvaluationId = crypto.randomUUID();
+    const candleLineageRows = [...latestCandles.values()]
+      .filter((c:any) => Date.parse(String(c.open_time)) < Date.parse(String(c.close_time))
+        && Date.parse(String(c.close_time)) < now.getTime()
+        && Date.parse(String(c.captured_at)) >= Date.parse(String(c.close_time))
+        && Date.parse(String(c.captured_at)) <= now.getTime())
+      .map((c:any) => ({ evaluation_id:candleEvaluationId, function_name:"early-entry-regime",
+        symbol:String(c.symbol).toUpperCase(), timeframe:String(c.timeframe), open_time:c.open_time,
+        close_time:c.close_time, captured_at:c.captured_at, source:String(c.source ?? "unknown") }));
+    let candleLineageWriteStatus = candleLineageRows.length ? "pending" : "empty";
+    if (candleLineageRows.length) {
+      const { error: lineageError } = await db.from("early_entry_candle_lineage")
+        .upsert(candleLineageRows, { onConflict:"evaluation_id,symbol,timeframe,open_time,source", ignoreDuplicates:true });
+      if (lineageError) { candleLineageWriteStatus = "failed"; console.error("[EARLY_ENTRY_REGIME] candle lineage write failed", lineageError); }
+      else candleLineageWriteStatus = "written";
+    }
     let candleBaseVolume = 0, takerBuyBaseVolume = 0, candleQuoteVolume = 0, takerBuyQuoteVolume = 0;
     for (const row of latestCandles.values()) {
       candleBaseVolume += Math.max(0, Number(row.base_volume) || 0);
@@ -189,6 +206,8 @@ Deno.serve(async (req) => {
       whale_was_neutral_or_distribution_in_window: whaleWasNeutralOrDistributionDuringWindow,
       taker_buy_confirmed: takerBuyConfirmed,
       taker_buy_is_hard_gate: false,
+      candle_evaluation_id: candleEvaluationId,
+      candle_lineage_write_status: candleLineageWriteStatus,
       candle_evaluation_at: candleEvaluationAt,
       candle_latest_close_time: latestCandles.size ? new Date(Math.max(...[...latestCandles.values()].map((c: any) => Date.parse(String(c.close_time))))).toISOString() : null,
       candle_latest_captured_at: latestCandles.size ? new Date(Math.max(...[...latestCandles.values()].map((c: any) => Date.parse(String(c.captured_at))))).toISOString() : null,
@@ -271,6 +290,8 @@ Deno.serve(async (req) => {
               activation_key: activationKey,
               transition_observed_at: transitionObservation?.observed_at ?? null,
               transition_age_minutes: transitionAgeMinutes,
+              candle_evaluation_id: candleEvaluationId,
+              candle_lineage_write_status: candleLineageWriteStatus,
               gate_diagnostics: gateDiagnostics,
               entry_reason: "bearish_or_sideways_to_bullish_regime_transition",
               market_regime: regime,
