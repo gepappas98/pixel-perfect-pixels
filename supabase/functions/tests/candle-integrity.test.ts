@@ -41,3 +41,13 @@ Deno.test("both early-entry evaluators enforce strict close and capture-time bou
   assert(/Date\.parse\(String\(c\.close_time\)\)\s*<\s*now\.getTime\(\)/.test(variantsSource), "variants in-memory guard missing");
   assert(/Date\.parse\(String\(row\.close_time\)\)\s*<\s*now\.getTime\(\)/.test(regimeSource), "regime in-memory guard missing");
 });
+
+Deno.test("early-entry evaluators persist compact normalized candle lineage", () => {
+  assert(variantsSource.includes('from("early_entry_candle_lineage")'), "variants must persist lineage outside metrics JSON");
+  assert(regimeSource.includes('from("early_entry_candle_lineage")'), "baseline must persist lineage outside gate diagnostics");
+  assert(variantsSource.includes("candle_evaluation_id:candleEvaluationId"), "variant decisions must link to their lineage evaluation");
+  assert(regimeSource.includes("candle_evaluation_id: candleEvaluationId"), "baseline diagnostics must link to their lineage evaluation");
+  assert(variantsSource.includes('open_time:c.open_time') && regimeSource.includes('open_time:c.open_time'), "lineage must include candle open_time");
+  assert(variantsSource.includes('source:String(c.source ?? "unknown")') && regimeSource.includes('source:String(c.source ?? "unknown")'), "lineage must include source identity");
+  assert(variantsSource.includes('candle_lineage_write_status') && regimeSource.includes('candle_lineage_write_status'), "lineage write failures must be observable without changing strategy gates");
+});
