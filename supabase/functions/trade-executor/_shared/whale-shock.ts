@@ -157,3 +157,17 @@ export function aggregateWhaleShocks(
   }
   return qualifying;
 }
+export type WhaleShockGateStage =
+  | "PER_SYMBOL_CAP" | "COOLDOWN" | "REGIME_TRANSITION" | "MICRO_TIMEFRAME"
+  | "BTC_DOWNTREND" | "SIDEWAYS_MARKET" | "TECHNICAL_1H" | "PRICE_UNAVAILABLE" | "INSERT_FAILED";
+/** Stable per-run gate summary: counts by stage + bounded rejection samples. */
+export function recordWhaleShockRejection(
+  result: Record<string, unknown>, stage: WhaleShockGateStage, symbol: string,
+  reason?: string | null, maxSamples = 25,
+): void {
+  const counts = (result.gate_rejections ??= {}) as Record<string, number>;
+  counts[stage] = (counts[stage] ?? 0) + 1;
+  const samples = (result.rejection_samples ??= []) as Array<Record<string, unknown>>;
+  if (samples.length < maxSamples) samples.push({ symbol, stage, reason: reason ?? null });
+  result.skipped = Number(result.skipped ?? 0) + 1;
+}

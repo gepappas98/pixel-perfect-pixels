@@ -1,6 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { binancePair, decideExit, getBreakevenStopLossUpdate, normalizeExitSettings, type OpenTradeRow } from "../_shared/trade-exit.ts";
-import { aggregateWhaleShocks, DEFAULT_WHALE_SHOCK_CONFIG, evaluate1hTechnicalConfirmation, evaluateRegimeShockTransition } from "./_shared/whale-shock.ts";
+import { aggregateWhaleShocks, DEFAULT_WHALE_SHOCK_CONFIG, evaluate1hTechnicalConfirmation, evaluateRegimeShockTransition, recordWhaleShockRejection } from "./_shared/whale-shock.ts";
 import { evaluateMicroTimeframeGate, type MicroTimeframeState } from "./_shared/micro-trend-gate.ts";
 import { computeMarketRegimeAssessment, evaluateSidewaysEntryGate, type MarketRegimeAssessment } from "./_shared/market-regime-gate.ts";
 import { computeDivergenceAssessment, evaluateBtcDowntrendEntryGate, evaluateBtcTrend, type BtcTrendMetrics } from "./_shared/regime-divergence.ts";
@@ -615,6 +615,9 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
 
     const candidates = aggregateWhaleShocks(alerts ?? [], config);
     result.candidates = candidates.length;
+    result.alerts_in_window = (alerts ?? []).length;
+    result.candidate_symbols = candidates.map((c) => c.symbol);
+    result.gate_rejections = {};
     if (!candidates.length) return result;
     if (!marketRegime.ready || !marketRegime.assessment) {
       result.status = "error";
@@ -684,7 +687,7 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
       const exposureSymbol = normalizeExposureSymbol(candidate.symbol);
       const activeCount = activeCounts.get(exposureSymbol) ?? 0;
       if (activeCount >= MAX_ACTIVE_TRADES_PER_SYMBOL) {
-        result.skipped = Number(result.skipped) + 1;
+        recordWhaleShockRejection(result, "PER_SYMBOL_CAP", candidate.symbol, `active ${activeCount}/${MAX_ACTIVE_TRADES_PER_SYMBOL}`);
         const capSkip = {
           symbol: exposureSymbol, active_count: activeCount, cap: MAX_ACTIVE_TRADES_PER_SYMBOL,
           entry_source: "whale_shock", decision: "SKIP", stage: "PER_SYMBOL_CAP",
@@ -694,13 +697,13 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
         continue;
       }
       if (onCooldown.has(candidate.symbol)) {
-        result.skipped = Number(result.skipped) + 1;
+        recordWhaleShockRejection(result, "COOLDOWN", candidate.symbol, `${config.cooldownMinutes}m cooldown`);
         console.log("[WHALE_SHOCK] skipped on cooldown", candidate.symbol);
         continue;
       }
       const regimeTransition = regimeTransitions.get(candidate.symbol);
       if (!regimeTransition?.passed) {
-        result.skipped = Number(result.skipped) + 1;
+        recordWhaleShockRejection(result, "REGIME_TRANSITION", candidate.symbol, regimeTransition?.reason ?? "No regime history available");
         console.log("[WHALE_SHOCK] regime gate blocked", { symbol: candidate.symbol, reason: regimeTransition?.reason ?? "No regime history available" });
         continue;
       }
@@ -708,7 +711,7 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
 
       const micro = await getCachedMicroAssessment(supabase, candidate.symbol, microCache);
       if (!micro.ready || !micro.decision?.allowBuy) {
-        result.skipped = Number(result.skipped) + 1;
+        recordWhaleShockRejection(result, "MICRO_TIMEFRAME", candidate.symbol, micro.ready ? micro.decision?.reason : micro.reason);
         console.log("[WHALE_SHOCK] micro timeframe gate blocked", {
           symbol: candidate.symbol,
           reason: micro.ready ? micro.decision?.reason : micro.reason,
@@ -725,7 +728,7 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
         micro.state!,
       );
       if (!btcGate.allowBuy) {
-        result.skipped = Number(result.skipped) + 1;
+        recordWhaleShockRejection(result, "BTC_DOWNTREND", candidate.symbol, btcGate.reason);
         console.log("[BTC_DOWNTREND_ENTRY_GATE] blocked whale_shock BUY", {
           symbol: candidate.symbol, reason: btcGate.reason, btc: btcTrend,
           whale_net: marketRegime.assessment!.whaleNet, micro_state: micro.state,
@@ -739,7 +742,7 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
         micro.state!,
       );
       if (!sidewaysGate.allowBuy) {
-        result.skipped = Number(result.skipped) + 1;
+        recordWhaleShockRejection(result, "SIDEWAYS_MARKET", candidate.symbol, sidewaysGate.reason);
         console.log("[WHALE_SHOCK] sideways market gate blocked", {
           symbol: candidate.symbol,
           market_score: marketRegime.assessment!.score,
@@ -752,7 +755,7 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
 
       const techCheck = evaluate1hTechnicalConfirmation(tech1hMap.get(candidate.symbol), config);
       if (!techCheck.passed) {
-        result.skipped = Number(result.skipped) + 1;
+        recordWhaleShockRejection(result, "TECHNICAL_1H", candidate.symbol, techCheck.reason);
         console.log("[WHALE_SHOCK] 1h technical gate blocked", { symbol: candidate.symbol, reason: techCheck.reason });
         continue;
       }
@@ -760,7 +763,7 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
       const price = prices.get(binancePair(candidate.symbol));
       if (!price || !Number.isFinite(price) || price <= 0) {
         errors.push(`no valid Binance Spot USDT price for ${binancePair(candidate.symbol)}`);
-        result.skipped = Number(result.skipped) + 1;
+        recordWhaleShockRejection(result, "PRICE_UNAVAILABLE", candidate.symbol, binancePair(candidate.symbol));
         continue;
       }
 
@@ -818,7 +821,7 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
 
       if (insertErr) {
         errors.push(`insert ${candidate.symbol}: ${insertErr.message}`);
-        result.skipped = Number(result.skipped) + 1;
+        recordWhaleShockRejection(result, "INSERT_FAILED", candidate.symbol, insertErr.message);
         continue;
       }
       openedTrades.push(trade as Record<string, unknown>);
@@ -840,7 +843,7 @@ async function executeWhaleShockTradesStage(supabase: ReturnType<typeof getServi
         signal: null,
         upstream: {
           whale_shock: candidate,
-          strategy: { version: "whale-shock-v1", config, required_volume_floor_usd: entryMetadata.required_volume_floor_usd },
+          strategy: { version: "whale-shock-reversal-v2", strategy_version: 2, config, required_volume_floor_usd: entryMetadata.required_volume_floor_usd },
           market_regime: { ...regimeTransition, source: "composite_signals_regime_history_6h" },
           technicals: { ...techCheck, timeframe: "1h" },
           micro_gate: micro.decision,
