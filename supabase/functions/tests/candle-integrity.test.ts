@@ -57,3 +57,9 @@ Deno.test("lineage rows carry evaluation time and enforce no-look-ahead bounds",
   assert(regimeSource.includes("evaluation_at:candleEvaluationAt"), "baseline lineage must persist evaluation time");
   assert(variantsSource.includes('Date.parse(String(c.captured_at)) <= now.getTime()') && regimeSource.includes('Date.parse(String(c.captured_at)) <= now.getTime()'), "only captured-before-evaluation candles may be recorded");
 });
+
+Deno.test("rejects candle records captured before their close time", () => {
+  assert(!usableAt("2026-10-20T12:00:00.000Z", "2026-10-20T11:59:59.000Z", "2026-10-20T12:00:01.000Z"), "a candle captured before its close must not be treated as closed evidence");
+  assert(variantsSource.includes('Date.parse(String(c.captured_at)) >= Date.parse(String(c.close_time))'), "variants must reject pre-close capture records");
+  assert(regimeSource.includes('Date.parse(String(row.captured_at)) >= Date.parse(String(row.close_time))'), "baseline must reject pre-close capture records");
+});
