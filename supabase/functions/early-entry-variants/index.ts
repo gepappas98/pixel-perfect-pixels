@@ -25,10 +25,11 @@ Deno.serve(async (req) => {
   const transitionSequence = normState(String(prev3?.whale_flow_state ?? "")) === "distribution" && normState(String(prev2?.whale_flow_state ?? "")) === "neutral" && whaleState === "accumulation";
   const whaleTurn = transitionSequence || (whaleDelta > 0 && whaleState !== "distribution" && ["distribution","neutral"].includes(normState(String(prev?.whale_flow_state ?? ""))));
 
-  const { data: candleRows, error: candleErr } = await db.from("market_candles").select("symbol,timeframe,close_time,quote_volume,taker_buy_quote_volume").eq("timeframe","5m").gte("close_time",iso(15*60000)).order("close_time",{ascending:false}).limit(600);
+  const evaluationAt=now.toISOString();
+  const { data: candleRows, error: candleErr } = await db.from("market_candles").select("symbol,timeframe,close_time,captured_at,quote_volume,taker_buy_quote_volume").eq("timeframe","5m").gte("close_time",iso(15*60000)).lt("close_time",evaluationAt).lte("captured_at",evaluationAt).order("close_time",{ascending:false}).limit(600);
   if (candleErr) throw candleErr;
   const latestCandles = new Map<string, any>();
-  for (const c of candleRows ?? []) if (!latestCandles.has(String(c.symbol).toUpperCase())) latestCandles.set(String(c.symbol).toUpperCase(),c);
+  for (const c of candleRows ?? []) if (Date.parse(String(c.close_time)) < now.getTime() && Date.parse(String(c.captured_at)) <= now.getTime() && !latestCandles.has(String(c.symbol).toUpperCase())) latestCandles.set(String(c.symbol).toUpperCase(),c);
   const totalQuote = [...latestCandles.values()].reduce((s,c)=>s+Math.max(0,num(c.quote_volume)),0);
   const totalTakerQuote = [...latestCandles.values()].reduce((s,c)=>s+Math.max(0,num(c.taker_buy_quote_volume)),0);
   const takerImbalance = totalQuote > 0 ? 2*totalTakerQuote/totalQuote-1 : 0;
@@ -80,7 +81,7 @@ Deno.serve(async (req) => {
    {id:"C_ADAPTIVE_REVERSAL",source:"early_entry_c_adaptive",eligible:cEligible,reason:"C — ADAPTIVE REVERSAL: reversal gate normalized to recent whale/taker-buy history; warm-up temporarily uses B-style taker threshold."}
   ];
   for(const v of variants){
-   const metrics={whale_state:whaleState,whale_net:whaleNet,whale_delta:whaleDelta,whale_turn:whaleTurn,transition_sequence_distribution_neutral_accumulation:transitionSequence,taker_buy_imbalance_5m:takerImbalance,taker_buy_z:adaptiveTakerZ,whale_delta_z:whaleZ,candle_symbols:latestCandles.size,breadth_1h:{bullish:bull,bearish:bear,neutral,delta_bullish:breadthDelta,improving:breadthImproving},regime_at_signal:String(prev?.market_regime??"unknown"),confluence,adaptive_warmup:warmup,research_only:true,live_orders_submitted:0};
+   const metrics={whale_state:whaleState,whale_net:whaleNet,whale_delta:whaleDelta,whale_turn:whaleTurn,transition_sequence_distribution_neutral_accumulation:transitionSequence,taker_buy_imbalance_5m:takerImbalance,taker_buy_z:adaptiveTakerZ,whale_delta_z:whaleZ,candle_symbols:latestCandles.size,candle_latest_close_time:latestCandles.size?new Date(Math.max(...[...latestCandles.values()].map((c:any)=>Date.parse(String(c.close_time))))).toISOString():null,candle_latest_captured_at:latestCandles.size?new Date(Math.max(...[...latestCandles.values()].map((c:any)=>Date.parse(String(c.captured_at))))).toISOString():null,candle_evaluation_at:evaluationAt,breadth_1h:{bullish:bull,bearish:bear,neutral,delta_bullish:breadthDelta,improving:breadthImproving},regime_at_signal:String(prev?.market_regime??"unknown"),confluence,adaptive_warmup:warmup,research_only:true,live_orders_submitted:0};
    if(v.id==="A_CURRENT"){
     // A is the already-running strict baseline. Observe its actual paper trades;
     // never open a second A position from this evaluator.
