@@ -38,7 +38,7 @@ jobs:
         run: deno check --no-lock supabase/functions/market-candle-collector/index.ts supabase/functions/early-entry-variants/index.ts supabase/functions/early-entry-regime/index.ts
 
       - name: Run early-entry candle integrity regression tests
-        run: deno test --no-lock supabase/functions/tests/candle-integrity.test.ts
+        run: deno test --no-lock --allow-read=supabase/functions supabase/functions/tests/candle-integrity.test.ts
 
       - name: Run weighted MTF scoring tests
         run: deno test --no-lock supabase/functions/_shared/mtf-scoring.test.ts
