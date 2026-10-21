@@ -898,11 +898,14 @@ Deno.serve(async (req) => {
       // Capture the complete source context at signal-evaluation time.
       // indicator_snapshots is a mutable current-state table, so the copied
       // JSON is the research record; indicator_snapshot_id remains provenance only.
+      const evaluationTimestamp = new Date().toISOString();
+
       const entryContextSnapshot = {
         schema_version: 1,
-        captured_at: new Date().toISOString(),
+        captured_at: evaluationTimestamp,
         symbol,
         signal: {
+          evaluated_at: evaluationTimestamp,
           recommendation: gate.recommendation,
           confidence: result.confidence,
           score: result.score,
@@ -964,7 +967,9 @@ Deno.serve(async (req) => {
         source_tags: sourceTags,
         fingerprint: signalFingerprint,
         entry_context_snapshot: entryContextSnapshot,
-        created_at: new Date().toISOString(),
+        // created_at is the first evaluation for this fingerprint; a DB trigger
+        // preserves it on conflict. last_upserted_at is maintained by that trigger.
+        created_at: evaluationTimestamp,
       };
       compositeRowsToUpsert.push(compRow);
 
