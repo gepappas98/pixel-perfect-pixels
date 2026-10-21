@@ -92,14 +92,20 @@ def main():
                         info.update({"table":name,"chunk":chunk_no,"rows":chunk_rows})
                         manifest["files"].append(info); table_meta["chunks"].append(info)
                         fh=None; gz=None
-                cur.execute(f"SELECT * FROM {safe_table}{order_sql}")
-                while True:
-                    rows=cur.fetchmany(500)
-                    if not rows: break
-                    for row in rows:
-                        encoded=(json.dumps({k:normalize(v) for k,v in row.items()},ensure_ascii=False,separators=(",",":"),allow_nan=False)+"\n").encode()
-                        if gz is None or (raw_size+len(encoded)>MAX_RAW_BYTES and chunk_rows>0):
-                            if gz: close_chunk()
+                # Named/server-side cursor streams rows without buffering an entire large table in runner memory.
+                with conn.cursor(name=("arc_" + str(len(manifest["tables"])) + "_" + str(abs(hash(name)) % 100000000)), cursor_factory=RealDictCursor) as data_cur:
+                    data_cur.itersize = 500
+                    data_cur.execute(f"SELECT * FROM {safe_table}{order_sql}")
+                    while True:
+                        rows=data_cur.fetchmany(500)
+                        if not rows: break
+                        for row in rows:
+                            encoded=(json.dumps({k:normalize(v) for k,v in row.items()},ensure_ascii=False,separators=(",",":"),allow_nan=False)+"\\n").encode()
+                            if gz is None or (raw_size+len(encoded)>MAX_RAW_BYTES and chunk_rows>0):
+                                if gz: close_chunk()
+                                open_chunk(); chunk_rows=0
+                            gz.write(encoded); raw_size+=len(encoded); row_count+=1; chunk_rows+=1
+                if gz: close_chunk()
                             open_chunk(); chunk_rows=0
                         gz.write(encoded); raw_size+=len(encoded); row_count+=1; chunk_rows+=1
                 if gz: close_chunk()
