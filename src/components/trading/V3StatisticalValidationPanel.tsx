@@ -56,6 +56,16 @@ export default function V3StatisticalValidationPanel() {
     return { name, ...outcomeMetrics(rows) };
   }).sort((a, b) => (b.winRatePct ?? -1) - (a.winRatePct ?? -1)) : null;
   const weeks = deduped ? chronologicalCohorts(deduped.units) : [];
+  const strategyCohorts = live ? [...new Set(live.map(row => row.strategy_name ?? "unknown"))].sort().map(name => {
+    const strategyRows = live.filter(row => (row.strategy_name ?? "unknown") === name);
+    const result = dedupeSymbolCycles(strategyRows);
+    const keys = new Set(result.units.map(unit => JSON.stringify([unit.symbol, unit.cycle])));
+    return { name, rawRows: strategyRows.length, ...outcomeMetrics(result.units.map(unit => ({ outcome: unit.outcome, pnl_pct: unit.pnlPct }))), keys };
+  }) : null;
+  const symbolDispersion = deduped ? [...new Set(deduped.units.map(unit => unit.symbol))].map(symbol => {
+    const rows = deduped.units.filter(unit => unit.symbol === symbol);
+    return { symbol, ...outcomeMetrics(rows.map(unit => ({ outcome: unit.outcome, pnl_pct: unit.pnlPct }))) };
+  }).filter(row => row.n >= 5).sort((a, b) => b.n - a.n) : [];
   const snapshotMode = !live;
   return <section aria-label="V3 Statistical Validation" className="space-y-4 border-t border-border py-5">
     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -84,6 +94,19 @@ export default function V3StatisticalValidationPanel() {
       <h3 className="text-sm font-medium">Strategy comparison · raw variant rows</h3>
       <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr className="border-b border-border">{["Strategy","N","W / L","Win rate","Wilson 95% CI","Mean PnL","Median PnL","Profit factor"].map(label => <th key={label} className="whitespace-nowrap px-2 py-2">{label}</th>)}</tr></thead>
       <tbody>{(snapshotMode ? AUDIT_SNAPSHOT.strategies.map(s => ({ name:s.name,n:s.n,wins:s.wins,losses:s.losses,winRatePct:s.wins/s.n*100,wilson95Pct:null,meanPnlPct:s.mean,medianPnlPct:null,profitFactor:null })) : strategies ?? []).map(row => <tr key={row.name} className="border-b border-border/60"><td className="px-2 py-2 font-medium">{row.name}</td><td className="px-2 py-2">{row.n}</td><td className="px-2 py-2">{row.wins}/{row.losses}</td><td className="px-2 py-2">{pct(row.winRatePct)}</td><td className="whitespace-nowrap px-2 py-2">{interval(row.wilson95Pct)}</td><td className="px-2 py-2">{signed(row.meanPnlPct)}</td><td className="px-2 py-2">{signed(row.medianPnlPct)}</td><td className="px-2 py-2">{row.profitFactor == null ? "—" : row.profitFactor.toFixed(2)}</td></tr>)}</tbody></table></div>
+    </div>
+    <div className="space-y-2">
+      <h3 className="text-sm font-medium">Per-strategy symbol-cycle comparison</h3>
+      <p className="text-xs text-muted-foreground">Each strategy is deduplicated independently by symbol + explicit cycle ID. “Matched cycles” counts units also represented in at least one other strategy; comparisons should be made on these shared cycles, not as independent raw rows.</p>
+      {snapshotMode ? <p className="text-xs text-muted-foreground">Unavailable in fallback snapshot; refresh when the read-only V3 query is available.</p> : <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr className="border-b border-border">{["Strategy","Raw rows","Unique cycles","Matched cycles","Win rate","Wilson 95% CI","Mean PnL"].map(label => <th key={label} className="whitespace-nowrap px-2 py-2">{label}</th>)}</tr></thead><tbody>{(strategyCohorts ?? []).map(row => {
+        const otherKeys = new Set((strategyCohorts ?? []).filter(other => other.name !== row.name).flatMap(other => [...other.keys]));
+        const matched = [...row.keys].filter(key => otherKeys.has(key)).length;
+        return <tr key={row.name} className="border-b border-border/60"><td className="px-2 py-2 font-medium">{row.name}</td><td className="px-2 py-2">{row.rawRows}</td><td className="px-2 py-2">{row.n}</td><td className="px-2 py-2">{matched}</td><td className="px-2 py-2">{pct(row.winRatePct)}</td><td className="px-2 py-2">{interval(row.wilson95Pct)}</td><td className="px-2 py-2">{signed(row.meanPnlPct)}</td></tr>;
+      })}</tbody></table></div>}
+    </div>
+    <div className="space-y-2">
+      <h3 className="text-sm font-medium">Symbol dispersion · minimum 5 resolved cycles</h3>
+      {snapshotMode ? <p className="text-xs text-muted-foreground">Audit examples: ZK 48/66 wins (72.73%); BAT 24/57 (42.11%, mean −0.0526%); WLD 25/26 (96.15%); BONK 22/22; METIS 0/12; KAVA 0/12. Refresh for live per-symbol metrics.</p> : <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr className="border-b border-border">{["Symbol","N","W / L","Win rate","Wilson 95% CI","Mean PnL"].map(label => <th key={label} className="px-2 py-2">{label}</th>)}</tr></thead><tbody>{symbolDispersion.map(row => <tr key={row.symbol} className="border-b border-border/60"><td className="px-2 py-2 font-medium">{row.symbol}</td><td className="px-2 py-2">{row.n}</td><td className="px-2 py-2">{row.wins}/{row.losses}</td><td className="px-2 py-2">{pct(row.winRatePct)}</td><td className="px-2 py-2">{interval(row.wilson95Pct)}</td><td className="px-2 py-2">{signed(row.meanPnlPct)}</td></tr>)}</tbody></table></div>}
     </div>
     {!snapshotMode && <div className="space-y-2">
       <h3 className="text-sm font-medium">Chronological cohorts · deduplicated units</h3>
