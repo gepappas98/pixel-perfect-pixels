@@ -158,7 +158,7 @@ def main() -> int:
 
         for index, chunk in enumerate(chunks):
             payload = {
-                "backup_type": "source_file_chunk",
+                "backup_type": "full_repository_file_chunk",
                 "repository": REPO,
                 "branch": branch,
                 "commit_sha": commit,
