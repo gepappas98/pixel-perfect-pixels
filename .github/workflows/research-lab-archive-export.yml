@@ -1,0 +1,48 @@
+name: Research Lab — Read-only archive export
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_export:
+        description: "Type EXPORT to run a read-only production snapshot"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-lab-archive-export
+  cancel-in-progress: false
+
+jobs:
+  export:
+    if: inputs.confirm_export == 'EXPORT'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    environment: research-lab-archive
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install exporter dependencies
+        run: python -m pip install --disable-pip-version-check psycopg2-binary requests
+      - name: Export read-only production snapshot and upload to private bucket
+        env:
+          PROD_READONLY_DATABASE_URL: ${{ secrets.PROD_READONLY_DATABASE_URL }}
+          ARCHIVE_SUPABASE_URL: ${{ secrets.ARCHIVE_SUPABASE_URL }}
+          ARCHIVE_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.ARCHIVE_SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          test -n "$PROD_READONLY_DATABASE_URL"
+          test -n "$ARCHIVE_SUPABASE_URL"
+          test -n "$ARCHIVE_SUPABASE_SERVICE_ROLE_KEY"
+          python scripts/archive/export_research_lab.py
+      - name: Retain local manifest as workflow artifact for audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: research-lab-archive-export-audit
+          path: archive-out/
+          if-no-files-found: ignore
+          retention-days: 30
