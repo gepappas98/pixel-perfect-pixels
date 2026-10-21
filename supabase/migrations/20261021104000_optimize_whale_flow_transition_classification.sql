@@ -101,11 +101,6 @@ BEGIN
 END;
 $function$;
 
-REVOKE EXECUTE ON FUNCTION public.refresh_whale_flow_transition_classification(integer)
-  FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.refresh_whale_flow_transition_classification(integer)
-  TO service_role;
-
 -- The transition-context trigger filters by observed_at without constraining asset.
 -- The existing (asset, observed_at) index cannot efficiently serve that global time-window predicate.
 CREATE INDEX IF NOT EXISTS idx_asset_sentiment_observed_at
