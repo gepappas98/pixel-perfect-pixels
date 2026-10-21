@@ -21,8 +21,8 @@ describe("V3 statistical validation", () => {
   });
   it("calculates Wilson interval for 5/10 around the expected 23.6%–76.4%", () => {
     const interval = wilsonInterval(5, 10);
-    expect(interval?.low).toBeCloseTo(23.6, 0);
-    expect(interval?.high).toBeCloseTo(76.4, 0);
+    expect(interval?.low ?? NaN).toBeCloseTo(23.6, 0);
+    expect(interval?.high ?? NaN).toBeCloseTo(76.4, 0);
   });
   it("returns null interval and safe metrics for empty data", () => {
     expect(wilsonInterval(0, 0)).toBeNull();
