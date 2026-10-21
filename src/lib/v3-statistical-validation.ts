@@ -58,7 +58,7 @@ export function outcomeMetrics(rows: Array<{ outcome: string | null; pnl_pct: nu
   const negative = Math.abs(values.filter(value => value < 0).reduce((sum, value) => sum + value, 0));
   const mean = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
   const middle = Math.floor(values.length / 2);
-  const median = values.length ? (values.length % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2) : null;
+  const median = values.length ? (values.length % 2 ? (values[middle] ?? null) : ((values[middle - 1] ?? 0) + (values[middle] ?? 0)) / 2) : null;
   return {
     n: resolved.length,
     wins,
@@ -95,16 +95,18 @@ export function dedupeSymbolCycles(rows: V3OutcomeRow[]): { units: SymbolCycle[]
   const units: SymbolCycle[] = [];
   let conflictingUnits = 0;
   for (const [key, group] of groups) {
+    const first = group[0];
+    if (!first) continue;
     const outcomes = new Set(group.map(row => (row.outcome ?? "").toLowerCase()));
     if (outcomes.size !== 1) { conflictingUnits++; continue; }
     const parsed = group.map(row => finite(row.pnl_pct) as number);
     units.push({
       key,
-      symbol: group[0].symbol as string,
-      cycle: (cycleFromFingerprint(group[0].source_fingerprint) as { cycle: string }).cycle,
+      symbol: first.symbol as string,
+      cycle: (cycleFromFingerprint(first.source_fingerprint) as { cycle: string }).cycle,
       outcome: [...outcomes][0] as "win" | "loss",
       pnlPct: parsed.reduce((sum, value) => sum + value, 0) / parsed.length,
-      createdAt: group.map(row => row.created_at).sort()[0],
+      createdAt: group.map(row => row.created_at).sort()[0] ?? first.created_at,
       resolvedAt: group.map(row => row.resolved_at as string).sort().at(-1) as string,
       strategies: [...new Set(group.map(row => row.strategy_name ?? "unknown"))].sort(),
       rawRows: group.length,
