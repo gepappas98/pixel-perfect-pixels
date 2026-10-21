@@ -43,3 +43,11 @@ describe("V3 statistical validation", () => {
     expect(result.invalidRows).toBe(1);
   });
 });
+
+import { v3PanelMode } from "../v3-statistical-validation";
+describe("v3PanelMode", () => {
+  it("uses live data when the query succeeds", () => { expect(v3PanelMode({ data: [{}], isError: false })).toBe("live"); });
+  it("keeps live data even if a later refetch errors", () => { expect(v3PanelMode({ data: [{}], isError: true })).toBe("live"); });
+  it("falls back to snapshot only on error without data", () => { expect(v3PanelMode({ data: undefined, isError: true })).toBe("fallback"); });
+  it("does not show snapshot while loading", () => { expect(v3PanelMode({ data: undefined, isError: false })).toBe("loading"); });
+});

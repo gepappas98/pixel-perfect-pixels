@@ -143,3 +143,11 @@ export function chronologicalCohorts(units: SymbolCycle[]): Array<{ week: string
     metrics: outcomeMetrics(rows.map(row => ({ outcome: row.outcome, pnl_pct: row.pnlPct }))),
   }));
 }
+
+export type V3PanelMode = "loading" | "live" | "fallback";
+
+/** Live data wins whenever present; snapshot is shown only after a real failure, never while loading. */
+export function v3PanelMode(state: { data: unknown[] | undefined; isError: boolean }): V3PanelMode {
+  if (state.data) return "live";
+  return state.isError ? "fallback" : "loading";
+}
