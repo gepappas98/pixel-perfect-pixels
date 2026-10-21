@@ -11,8 +11,8 @@ describe("V3 statistical validation", () => {
   it("deduplicates shared symbol-cycle rows across strategies", () => {
     const result = dedupeSymbolCycles([row(), row({ id: "2", strategy_name: "balanced" })]);
     expect(result.units).toHaveLength(1);
-    expect(result.units[0].rawRows).toBe(2);
-    expect(result.units[0].strategies).toEqual(["balanced", "whale-focused"]);
+    expect(result.units[0]?.rawRows).toBe(2);
+    expect(result.units[0]?.strategies).toEqual(["balanced", "whale-focused"]);
   });
   it("excludes conflicting outcomes for the same symbol-cycle", () => {
     const result = dedupeSymbolCycles([row(), row({ id: "2", outcome: "loss", pnl_pct: -3 })]);
