@@ -80,6 +80,34 @@ function compactStageForStorage(stage: any): any {
     };
   }
 
+  // Early Entry is research-only. Keep enough structured diagnostics to audit
+  // gates and entry failures without duplicating full trade rows in pipeline_runs.
+  if (stage.name === "early-entry-regime") {
+    const opened = Array.isArray(result.opened) ? result.opened : [];
+    const entryErrors = Array.isArray(result.entry_errors) ? result.entry_errors : [];
+    return {
+      ...stage,
+      result: {
+        status: result.status ?? (stage.ok ? "observed" : "error"),
+        transition_state: result.transition_state ?? null,
+        opened_count: Number(result.opened_count ?? opened.length),
+        opened_symbols: opened.slice(0, 10).map((item: any) => String(item?.symbol ?? "")).filter(Boolean),
+        entry_errors_count: entryErrors.length,
+        entry_errors: entryErrors.slice(0, 5).map((item: any) =>
+          typeof item === "string"
+            ? item.slice(0, 240)
+            : {
+              symbol: item?.symbol == null ? null : String(item.symbol),
+              error: String(item?.error ?? item?.message ?? "unknown entry error").slice(0, 240),
+            }
+        ),
+        live_orders_submitted: Number(result.live_orders_submitted ?? 0),
+        gate_diagnostics: result.gate_diagnostics ?? null,
+        raw_payload_storage: "early_entry_regime_observations_and_trades",
+      },
+    };
+  }
+
   return stage;
 }
 
@@ -143,8 +171,11 @@ async function call(name: string, timeout: number) {
     }
     return {
       name,
-      // CMC functions intentionally return HTTP 200 on fail-open errors; preserve their body-level failure in pipeline diagnostics.
-      ok: response.ok && (!(name === "cmc-macro-sync" || name === "cmc-listings-sync") || body?.ok !== false),
+      // Some functions intentionally return HTTP 200 for body-level outcomes.
+      // Preserve explicit failures/partial results in stage diagnostics without aborting independent stages.
+      ok: response.ok
+        && (!(name === "cmc-macro-sync" || name === "cmc-listings-sync") || body?.ok !== false)
+        && (name !== "early-entry-regime" || body?.status !== "partial"),
       status: response.status,
       duration_ms: Date.now() - t,
       result: body,
@@ -267,6 +298,16 @@ Deno.serve(async (req) => {
       captureAccumulationResearch(db),
     ]);
     results.push(earlyEntryStage, researchStage);
+    if (!earlyEntryStage.ok) {
+      console.error("[ORCHESTRATOR] non-blocking early-entry-regime issue", JSON.stringify({
+        http_status: earlyEntryStage.status,
+        body_status: earlyEntryStage.result?.status ?? null,
+        opened_count: earlyEntryStage.result?.opened_count ?? null,
+        entry_errors_count: Array.isArray(earlyEntryStage.result?.entry_errors)
+          ? earlyEntryStage.result.entry_errors.length
+          : null,
+      }));
+    }
     await updateRunProgress("phase_2_synthesis_complete");
 
     // Independent CMC research strategy: paper-only, source-tagged, no live orders.
