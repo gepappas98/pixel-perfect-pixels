@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
-import { chronologicalCohorts, dedupeSymbolCycles, outcomeMetrics, type V3OutcomeRow } from "@/lib/v3-statistical-validation";
+import { chronologicalCohorts, dedupeSymbolCycles, outcomeMetrics, v3PanelMode, type V3OutcomeRow } from "@/lib/v3-statistical-validation";
 
 const AUDIT_SNAPSHOT = {
   asOf: "2026-10-21",
@@ -46,8 +46,13 @@ async function readV3Rows(): Promise<V3OutcomeRow[]> {
 }
 
 export default function V3StatisticalValidationPanel() {
-  const query = useQuery({ queryKey: ["v3-statistical-validation"], queryFn: readV3Rows, staleTime: 60_000, retry: false });
+  const query = useQuery({ queryKey: ["v3-statistical-validation"], queryFn: readV3Rows, staleTime: 60_000, retry: 2, retryDelay: attempt => 1000 * 2 ** attempt });
+  const mode = v3PanelMode({ data: query.data, isError: query.isError });
   const live = query.data;
+  if (mode === "loading") return <section aria-label="V3 Statistical Validation" className="space-y-2 border-t border-border py-5">
+    <h2 className="text-lg font-medium">V3 Statistical Validation</h2>
+    <p role="status" className="text-sm text-muted-foreground">Loading live read-only V3 data…</p>
+  </section>;
   const deduped = live ? dedupeSymbolCycles(live) : null;
   const rawOverall = live ? outcomeMetrics(live) : null;
   const unitMetrics = deduped ? outcomeMetrics(deduped.units.map(unit => ({ outcome: unit.outcome, pnl_pct: unit.pnlPct }))) : null;
@@ -75,8 +80,8 @@ export default function V3StatisticalValidationPanel() {
       </div>
       <Button variant="outline" size="sm" onClick={() => void query.refetch()} disabled={query.isFetching}><RefreshCw className={`mr-2 size-4 ${query.isFetching ? "animate-spin" : ""}`} />Refresh</Button>
     </div>
-    {query.isError && <div role="status" className="rounded-md border border-warn/40 bg-warn/5 p-3 text-sm">
-      Live V3 query unavailable. Showing the labeled audit snapshot from {AUDIT_SNAPSHOT.asOf}; these values are not live.
+    {mode === "fallback" && <div role="status" className="rounded-md border border-warn/40 bg-warn/5 p-3 text-sm">
+      Live V3 query unavailable{query.error instanceof Error || (query.error as { message?: string } | null)?.message ? ` (${(query.error as { message: string }).message})` : ""}. Showing the labeled audit snapshot from {AUDIT_SNAPSHOT.asOf}; these values are not live.
     </div>}
     <div className="rounded-md border border-warn/40 bg-warn/5 p-3 text-sm">
       <p className="flex items-center gap-2 font-medium"><AlertTriangle className="size-4 shrink-0" />Out-of-sample validation is not established</p>
