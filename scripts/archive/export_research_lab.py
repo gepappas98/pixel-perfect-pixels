@@ -30,7 +30,16 @@ def upload(path, object_name, content_type="application/gzip"):
     with open(path, "rb") as f:
         resp = session.post(url, data=f, headers={"Content-Type":content_type})
     if resp.status_code not in (200, 201): raise RuntimeError(f"Storage upload failed ({resp.status_code}) for {object_name}: {resp.text[:300]}")
-    return {"path":object_name,"bytes":path.stat().st_size,"sha256":hashlib.sha256(path.read_bytes()).hexdigest(),"storage_status":resp.status_code}
+    local_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    # Read the object back through the authenticated private-bucket endpoint and
+    # verify the stored bytes, not just the local upload payload.
+    check = session.get(f"{BASE}/storage/v1/object/authenticated/{BUCKET}/{object_name}")
+    if check.status_code != 200:
+        raise RuntimeError(f"Storage read-back failed ({check.status_code}) for {object_name}: {check.text[:300]}")
+    remote_sha = hashlib.sha256(check.content).hexdigest()
+    if remote_sha != local_sha or len(check.content) != path.stat().st_size:
+        raise RuntimeError(f"Storage checksum/size mismatch for {object_name}")
+    return {"path":object_name,"bytes":path.stat().st_size,"sha256":local_sha,"readback_sha256":remote_sha,"storage_status":resp.status_code,"readback_verified":True}
 
 def main():
     manifest = {"format":"research-lab-table-jsonl-gzip-v1","run_id":RUN,"source_project_ref":"yckewtpfttvwiptmmrfq","created_at":datetime.datetime.now(datetime.timezone.utc).isoformat(),"snapshot_isolation":"REPEATABLE READ, READ ONLY","tables":[],"files":[]}
