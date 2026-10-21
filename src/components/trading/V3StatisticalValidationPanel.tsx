@@ -29,7 +29,7 @@ const pct = (value: number | null | undefined) => value == null ? "—" : `${val
 const interval = (value: { low: number; high: number } | null) => value ? `${value.low.toFixed(1)}–${value.high.toFixed(1)}%` : "—";
 const signed = (value: number | null | undefined) => value == null ? "—" : `${value > 0 ? "+" : ""}${value.toFixed(4)}%`;
 
-type ReadQuery = { select: (columns: string) => ReadQuery; like: (column: string, value: string) => ReadQuery; in: (column: string, values: string[]) => ReadQuery; order: (column: string, options: { ascending: boolean }) => ReadQuery; range: (from: number, to: number) => PromiseLike<{ data: unknown[] | null; error: { message: string } | null }> };
+type ReadQuery = { select: (columns: string) => ReadQuery; like: (column: string, value: string) => ReadQuery; in: (column: string, values: string[]) => ReadQuery; not: (column: string, operator: string, value: unknown) => ReadQuery; order: (column: string, options: { ascending: boolean }) => ReadQuery; range: (from: number, to: number) => PromiseLike<{ data: unknown[] | null; error: { message: string } | null }> };
 
 async function readV3Rows(): Promise<V3OutcomeRow[]> {
   const readOnlyDb = supabase as unknown as { from: (table: string) => ReadQuery };
@@ -38,6 +38,7 @@ async function readV3Rows(): Promise<V3OutcomeRow[]> {
     .select("id,strategy_name,symbol,created_at,resolved_at,outcome,pnl_pct,source_fingerprint")
     .like("source_fingerprint", "v3|%")
     .in("outcome", ["win", "loss"])
+    .not("resolved_at", "is", null)
     .order("created_at", { ascending: true })
     .range(0, 4999);
   if (error) throw error;
