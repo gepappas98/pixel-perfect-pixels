@@ -6,17 +6,6 @@ on:
     - cron: "17 2 * * *"
   push:
     branches: [main]
-    paths:
-      - "scripts/archive/**"
-      - ".github/workflows/research-lab-code-backup.yml"
-      - "src/**"
-      - "supabase/**"
-      - "docs/**"
-      - "PROJECT_STATE.md"
-      - "package.json"
-      - "bun.lock"
-      - "vite.config.*"
-      - "tsconfig*.json"
 
 permissions:
   contents: read
