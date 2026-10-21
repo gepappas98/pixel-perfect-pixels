@@ -1,0 +1,66 @@
+name: Research Lab — Full repository archive backup
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 2 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "scripts/archive/**"
+      - ".github/workflows/research-lab-code-backup.yml"
+      - "src/**"
+      - "supabase/**"
+      - "docs/**"
+      - "PROJECT_STATE.md"
+      - "package.json"
+      - "bun.lock"
+      - "vite.config.*"
+      - "tsconfig*.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-lab-code-backup
+  cancel-in-progress: false
+
+jobs:
+  full-source-backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: research-lab-archive
+    steps:
+      - name: Checkout exact source commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uploader dependency
+        run: python -m pip install --disable-pip-version-check requests
+
+      - name: Validate uploader syntax
+        run: python -m py_compile scripts/archive/backup_repository_to_supabase.py
+
+      - name: Upload every tracked file to the archive Supabase project
+        env:
+          ARCHIVE_SUPABASE_URL: ${{ secrets.ARCHIVE_SUPABASE_URL }}
+          ARCHIVE_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.ARCHIVE_SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          test -n "$ARCHIVE_SUPABASE_URL" || (echo "::error::Missing ARCHIVE_SUPABASE_URL secret"; exit 1)
+          test -n "$ARCHIVE_SUPABASE_SERVICE_ROLE_KEY" || (echo "::error::Missing ARCHIVE_SUPABASE_SERVICE_ROLE_KEY secret"; exit 1)
+          python scripts/archive/backup_repository_to_supabase.py
+
+      - name: Retain manifest and run summary as audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repository-backup-audit-${{ github.sha }}
+          path: archive-out/
+          if-no-files-found: warn
+          retention-days: 90
