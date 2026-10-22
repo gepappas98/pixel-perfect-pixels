@@ -16,13 +16,14 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from urllib.parse import quote
+from urllib.parse import urlparse
 
 import requests
 
 REPO = "gepappas98/pixel-perfect-pixels"
 SOURCE_PROJECT_REF = "gepappas98/pixel-perfect-pixels"
 TABLE = "research_archive_documents"
+EXPECTED_ARCHIVE_PROJECT_REF = "ragdznxfozdpxetwisrd"
 RAW_CHUNK_BYTES = 24_000
 UPSERT_BATCH_SIZE = 4
 REQUEST_TIMEOUT = 45
@@ -104,6 +105,25 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
+
+    parsed_url = urlparse(supabase_url)
+    expected_host = f"{EXPECTED_ARCHIVE_PROJECT_REF}.supabase.co"
+    if (
+        parsed_url.scheme != "https"
+        or parsed_url.hostname != expected_host
+        or parsed_url.port not in (None, 443)
+        or parsed_url.username is not None
+        or parsed_url.password is not None
+        or parsed_url.path not in ("", "/")
+        or parsed_url.query
+        or parsed_url.fragment
+    ):
+        print(
+            "Refusing upload: ARCHIVE_SUPABASE_URL must point only to "
+            f"https://{expected_host}/. No files uploaded.",
+            file=sys.stderr,
+        )
+        return 4
 
     commit = run_git("rev-parse", "HEAD")
     branch = run_git("rev-parse", "--abbrev-ref", "HEAD")
