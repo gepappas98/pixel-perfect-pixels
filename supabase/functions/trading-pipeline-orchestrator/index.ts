@@ -141,6 +141,38 @@ async function captureAccumulationResearch(db: any) {
   }
 }
 
+/**
+ * Persist research-only case/evidence updates after post-mortems.
+ * This must remain non-blocking: failure cannot affect scoring, gates, or execution.
+ */
+async function syncResearchKnowledge(db: any) {
+  const t = Date.now();
+  try {
+    const { data, error } = await db
+      .rpc("refresh_research_knowledge_cases", { p_lookback_hours: 72 })
+      .abortSignal(AbortSignal.timeout(12000));
+    return {
+      name: "research-knowledge-sync",
+      ok: !error,
+      status: error ? 500 : 200,
+      duration_ms: Date.now() - t,
+      research_only: true,
+      result: error
+        ? { code: error.code ?? "unknown", error: error.message.slice(0, 200) }
+        : data,
+    };
+  } catch (e) {
+    return {
+      name: "research-knowledge-sync",
+      ok: false,
+      status: 500,
+      duration_ms: Date.now() - t,
+      research_only: true,
+      result: { error: e instanceof Error ? e.message.slice(0, 200) : "research knowledge sync failed" },
+    };
+  }
+}
+
 async function call(name: string, timeout: number) {
   const t = Date.now();
   const controller = new AbortController();
@@ -329,6 +361,14 @@ Deno.serve(async (req) => {
     const lessonsStage = await call("council-lessons", 40000);
     results.push(lessonsStage);
     if (!lessonsStage.ok) console.error("[ORCHESTRATOR] non-blocking council-lessons failure", lessonsStage.status);
+
+    // Research-only case/evidence refresh. It runs after post-mortems and must
+    // never block the pipeline or feed back into scoring, entry gates, or orders.
+    const researchKnowledgeStage = await syncResearchKnowledge(db);
+    results.push(researchKnowledgeStage);
+    if (!researchKnowledgeStage.ok) {
+      console.error("[ORCHESTRATOR] non-blocking research-knowledge-sync failure", researchKnowledgeStage.result);
+    }
   } catch (error) {
     const errMessage = error instanceof Error ? error.message : String(error);
     await db.from("pipeline_runs").update({
