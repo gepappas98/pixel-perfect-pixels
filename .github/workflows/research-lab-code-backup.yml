@@ -46,6 +46,7 @@ jobs:
             echo "::warning::Supabase mirror skipped: archive secrets are not configured. The independent source artifact will still be uploaded."
             exit 0
           fi
+          python -m pip install --disable-pip-version-check requests
           python scripts/archive/backup_repository_to_supabase.py
 
       - name: Retain full source archive, manifest, and verification summary
