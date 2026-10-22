@@ -146,18 +146,12 @@ async function loadStrategySnapshot(supabase: ReturnType<typeof getServiceClient
 }
 
 /**
- * Historical strategy-authority shadow.
+ * Strategy-authority diagnostic shadow.
  *
- * This mirrors the proven legacy ruleBased() scoring contract for the
- * dimensions available in the canonical Edge combiner:
- * - strategy_config weights are authoritative inputs
- * - MTF score × technical weight
- * - council conviction × 0.75 × council weight
- * - historical ±2.2 / 0.5 classification
- *
- * This remains a diagnostic comparator for the base whale/technicals/council
- * score. The production score may separately receive the bounded accumulation
- * booster, and this shadow deliberately does not include that booster.
+ * Uses the shared weighted MTF direction score so technical scoring no longer
+ * diverges from live/V4. The council multiplier (0.75), historical ±2.2 / 0.5
+ * classification thresholds, and no-booster behavior remain intentionally
+ * legacy diagnostics; this is not the V4 executable-policy comparator.
  */
 function calculateConfiguredShadow(
   whale: any | null,
@@ -176,18 +170,16 @@ function calculateConfiguredShadow(
   if (whale?.direction === "accumulation") { components.whale = weights.whale; score += components.whale; }
   else if (whale?.direction === "distribution") { components.whale = -weights.whale; score += components.whale; }
 
-  // Historical evaluateMultiTimeframe() score:
-  // primary direction is ±1, matching fast/trend multiplies 1.3,
-  // conflicting non-neutral timeframes multiply 0.7.
-  if (safeMtf.p !== "neutral") {
-    let mtfScore = safeMtf.p === "bullish" ? 1 : -1;
-    if (safeMtf.f === safeMtf.p) mtfScore *= 1.3;
-    else if (safeMtf.f !== "neutral") mtfScore *= 0.7;
-    if (safeMtf.t === safeMtf.p) mtfScore *= 1.3;
-    else if (safeMtf.t !== "neutral") mtfScore *= 0.7;
-    components.technicals = mtfScore * weights.technicals;
-    score += components.technicals;
-  }
+  // Use the same direction-only weighted MTF function as the live scorer and
+  // versioned research variants. Keep this shadow's historical council multiplier
+  // (0.75) and classification thresholds unchanged; this isolates the MTF fix.
+  const mtfScore = calculateWeightedMtfScore([
+    { signal: safeMtf.p, available: safeMtf.primary !== null, weight: 1 },
+    { signal: safeMtf.f, available: safeMtf.fast !== null, weight: 0.65 },
+    { signal: safeMtf.t, available: safeMtf.trend !== null, weight: 0.65 },
+  ]);
+  components.technicals = mtfScore * weights.technicals;
+  score += components.technicals;
 
   if (council?.final_verdict) {
     const convictionRaw = Number(council.conviction);
@@ -610,7 +602,7 @@ Deno.serve(async (req) => {
     const freshnessNowIso = new Date(freshnessNow).toISOString();
     // Versioned research identity: one strategy/symbol sample per 10-minute observation window.
     // This is separate from council row IDs, which can churn without a new market observation.
-    // The v3 prefix isolates observations using the corrected shared MTF scoring.
+    // V4 policy rows are fingerprinted separately from historical V3 observations.
     const variantSampleBucket = Math.floor(freshnessNow / (10 * 60 * 1000));
     const since = new Date(freshnessNow - WHALE_LOOKBACK_MS).toISOString();
     // Regime inputs use the neutral 30-minute council window because the regime
@@ -840,20 +832,50 @@ Deno.serve(async (req) => {
         gate.recommendation,
       ].join("|");
 
-      // Observational strategy variants: same canonical inputs, isolated from composite signal/trades.
-      // Long-only benchmark: only BUY variants are persisted.
+      // V3 rows are historical observations using the pre-policy methodology.
+      // New V4 rows use the same MTF score, dynamic-watchlist accumulation booster,
+      // BUY/SELL thresholds, and configured MTF gate as the live recommendation path.
+      // Versioning the fingerprint prevents mixing old V3 outcomes with V4 policy.
       const variantEntryPrice = Number(indicator?.price ?? 0);
       if (variantEntryPrice > 0 && spotTradingSymbols?.has(dbSymbol)) {
         const variantRows = Object.entries(VARIANT_PRESETS)
           .map(([strategy_name, weights]) => {
             const vr = calculateVariant(whale, mtf, council, marketSentiment, weights);
+            const accumulation = mtf.trend?.raw?.accumulation;
+            const rawAccumulationScore = Number(accumulation?.score);
+            const accumulationEligible = inFreshDynamicWatchlist
+              && vr.score >= 0
+              && Number.isFinite(rawAccumulationScore)
+              && rawAccumulationScore >= 60
+              && ["ACCUMULATION_WATCH", "BREAKOUT_CONFIRMED"].includes(String(accumulation?.status ?? ""));
+            const accumulationBoost = accumulationEligible
+              ? Math.min(0.5, Math.max(0, rawAccumulationScore / 200))
+              : 0;
+            const score = vr.score + accumulationBoost;
+            let recommendation = score >= 1.5 ? "buy"
+              : score <= -1.5 ? "sell"
+              : Math.abs(score) < 0.5 ? "hold"
+              : "watch";
+            const gate = applyMtfGate(recommendation, mtf, mtfGate);
+            recommendation = gate.recommendation;
+            const max = weights.whale + weights.technicals + weights.sentiment
+              + 1.5 * weights.council + (accumulationBoost > 0 ? 0.5 : 0);
+            const confidence = max > 0 ? Math.min(1, Math.abs(score) / max) : 0;
+            const reasoning = [
+              vr.reasoning,
+              accumulationBoost > 0
+                ? `dynamic-watchlist accumulation booster +${accumulationBoost.toFixed(2)} (score ${rawAccumulationScore}/100)`
+                : null,
+              gate.note,
+              "policy=v4_live_aligned",
+            ].filter(Boolean).join("; ");
             return {
               strategy_name,
               symbol,
-              confidence: vr.confidence,
-              recommendation: vr.recommendation,
-              reasoning: vr.reasoning,
-              score: vr.score,
+              confidence,
+              recommendation,
+              reasoning,
+              score,
               entry_price: variantEntryPrice,
               outcome: "open",
               production_regime_label: productionRegimeLabel,
@@ -861,32 +883,38 @@ Deno.serve(async (req) => {
               market_session: productionMarketSession,
               created_at: new Date().toISOString(),
               source_fingerprint: [
-                "v3", strategy_name, symbol, variantSampleBucket,
+                "v4", strategy_name, symbol, variantSampleBucket,
               ].join("|"),
             };
           });
 
+        // Keep the standalone accumulation hypothesis as a separate strategy, but
+        // require the same configured MTF gate before recording a V4 BUY observation.
         if (inFreshDynamicWatchlist) {
           const accumulation = calculateAccumulationVariant(mtf.trend);
-          if (accumulation.recommendation === "buy") {
-            variantRows.push({
-              strategy_name: "accumulation",
-              symbol,
-              confidence: accumulation.confidence,
-              recommendation: accumulation.recommendation,
-              reasoning: accumulation.reasoning,
-              score: accumulation.score,
-              entry_price: variantEntryPrice,
-              outcome: "open",
-              production_regime_label: productionRegimeLabel,
-              regime_label: productionRegimeLabel,
-              market_session: productionMarketSession,
-              created_at: new Date().toISOString(),
-              source_fingerprint: [
-                "v3", "accumulation", symbol, variantSampleBucket,
-              ].join("|"),
-            });
-          }
+          const accumulationGate = applyMtfGate(accumulation.recommendation, mtf, mtfGate);
+          const recommendation = accumulationGate.recommendation;
+          variantRows.push({
+            strategy_name: "accumulation",
+            symbol,
+            confidence: accumulation.confidence,
+            recommendation,
+            reasoning: [
+              accumulation.reasoning,
+              accumulationGate.note,
+              "policy=v4_live_aligned_mtf_gate",
+            ].filter(Boolean).join("; "),
+            score: accumulation.score,
+            entry_price: variantEntryPrice,
+            outcome: "open",
+            production_regime_label: productionRegimeLabel,
+            regime_label: productionRegimeLabel,
+            market_session: productionMarketSession,
+            created_at: new Date().toISOString(),
+            source_fingerprint: [
+              "v4", "accumulation", symbol, variantSampleBucket,
+            ].join("|"),
+          });
         }
 
         const buyVariantRows = variantRows.filter((v) => v.recommendation === "buy");
