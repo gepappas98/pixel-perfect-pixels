@@ -280,6 +280,7 @@ def main() -> int:
         "tracked_file_count": len(manifest_files),
         "total_file_bytes": total_bytes,
         "chunk_count": total_chunks,
+        "all_tracked_files_included": True,
         "upload_batches": total_requests,
         "manifest_document_key": manifest_key,
         "latest_pointer_key": "code-backup-latest",
