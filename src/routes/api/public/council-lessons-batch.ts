@@ -59,7 +59,7 @@ export const Route = createFileRoute("/api/public/council-lessons-batch")({
         if (!Array.isArray(trades) || trades.length < 1 || trades.length > 5 ||
           !trades.every((t) => t && typeof t === "object" &&
             typeof t.source_trade_id === "string" && /^[0-9a-f-]{36}$/i.test(t.source_trade_id) &&
-            typeof t.symbol === "string" && /^[A-Z0-9][A-Z0-9/_.-]{1,29}$/.test(t.symbol) &&
+            typeof t.symbol === "string" && /^[A-Z0-9][A-Z0-9/_.-]{0,29}$/.test(t.symbol) &&
             typeof t.outcome === "string" && ["win", "loss", "breakeven"].includes(t.outcome) &&
             typeof t.pnl_pct === "number" && Number.isFinite(t.pnl_pct) &&
             typeof t.close_reason === "string")) {
