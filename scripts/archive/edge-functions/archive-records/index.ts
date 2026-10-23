@@ -26,8 +26,8 @@ Deno.serve(async (req: Request) => {
     const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     if (!url || !key) return new Response(JSON.stringify({ error: "Archive server configuration missing" }), { status: 500, headers: cors });
     const body = await req.json().catch(() => ({}));
-    const requested = Array.isArray(body.categories)
-      ? [...new Set(body.categories.filter((x: unknown) => typeof x === "string" && ALLOWED.has(x)))]
+    const requested: string[] = Array.isArray(body.categories)
+      ? [...new Set((body.categories as unknown[]).filter((x): x is string => typeof x === "string" && ALLOWED.has(x)))]
       : [];
     if (!requested.length) return new Response(JSON.stringify({ error: "No allowed archive categories requested" }), { status: 400, headers: cors });
     const limit = Math.max(1, Math.min(500, Number.isFinite(Number(body.limit)) ? Math.floor(Number(body.limit)) : 150));
