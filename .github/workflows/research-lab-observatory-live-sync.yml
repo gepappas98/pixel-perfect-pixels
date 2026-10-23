@@ -30,7 +30,15 @@ jobs:
           ARCHIVE_SUPABASE_URL: ${{ secrets.ARCHIVE_SUPABASE_URL }}
           ARCHIVE_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.ARCHIVE_SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          test -n "$PROD_READONLY_DATABASE_URL"
-          test -n "$ARCHIVE_SUPABASE_URL"
-          test -n "$ARCHIVE_SUPABASE_SERVICE_ROLE_KEY"
+          missing=0
+          for name in PROD_READONLY_DATABASE_URL ARCHIVE_SUPABASE_URL ARCHIVE_SUPABASE_SERVICE_ROLE_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required secret in GitHub Actions environment 'research-lab-archive': $name"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::No archive rows were written. Configure the three values as environment secrets; never put credentials in repository files or logs."
+            exit 1
+          fi
           python scripts/archive/sync_live_tables_to_archive.py
