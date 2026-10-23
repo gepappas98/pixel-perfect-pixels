@@ -40,6 +40,7 @@ Deno.serve(async (req: Request) => {
     for (let offset = 0; offset < MAX_DOCUMENTS; offset += PAGE_SIZE) {
       const { data: docs, error } = await db.from("research_archive_documents")
         .select("id,payload,created_at,generated_at")
+        .in("payload->>record_type", requested)
         .order("created_at", { ascending: false })
         .range(offset, offset + PAGE_SIZE - 1);
       if (error) return new Response(JSON.stringify({ error: "Archive payload query failed", detail: error.message, scanned_documents: scannedDocuments }), { status: 502, headers: cors });
