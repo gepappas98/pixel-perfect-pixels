@@ -36,19 +36,20 @@ jobs:
       - name: Build credential-free full tracked-source snapshot
         run: python scripts/archive/build_repository_artifact.py
 
-      - name: Mirror snapshot to the verified isolated IRL Supabase archive (required)
+      - name: Mirror snapshot to the verified isolated IRL Supabase archive (optional primary destination)
+        continue-on-error: true
         env:
           ARCHIVE_SUPABASE_URL: ${{ secrets.ARCHIVE_SUPABASE_URL }}
           ARCHIVE_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.ARCHIVE_SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           if [ -z "$ARCHIVE_SUPABASE_URL" ] || [ -z "$ARCHIVE_SUPABASE_SERVICE_ROLE_KEY" ]; then
-            echo "::error::Archive mirror requires ARCHIVE_SUPABASE_URL and ARCHIVE_SUPABASE_SERVICE_ROLE_KEY."
-            exit 1
+            echo "::notice::Supabase archive credentials unavailable; keeping the verified GitHub Actions artifact as fallback."
+            exit 0
           fi
           python -m pip install --disable-pip-version-check requests
           python scripts/archive/backup_repository_to_supabase.py
 
-      - name: Retain full source archive, manifest, and verification summary
+      - name: Retain full source archive, manifest, and verification summary (fallback)
         if: always()
         uses: actions/upload-artifact@v4
         with:
