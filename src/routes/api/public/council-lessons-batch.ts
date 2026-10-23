@@ -5,6 +5,21 @@ const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_v0BSD7Eg6ze85nuYPRMJ6w_M_lwwXjx
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const MAX_BODY_BYTES = 50_000;
 
+function rateLimitFallback(trade: { pnl_pct: number; close_reason: string }): string {
+  const reason = trade.close_reason.toLowerCase().replace(/[_-]+/g, " ").slice(0, 60);
+  const pnl = Number(trade.pnl_pct);
+  const pnlSummary = Number.isFinite(pnl)
+    ? String(Math.abs(pnl).toFixed(2)) + "% " + (pnl > 0 ? "gain" : pnl < 0 ? "loss" : "change")
+    : "unavailable P&L";
+  if (/take profit|target/.test(reason)) {
+    return "Rule-based fallback (AI rate-limited): take-profit/target closed this trade at a " + pnlSummary + "; treat it as one observation, not proof of a repeatable edge.";
+  }
+  if (/stop loss|stop hit/.test(reason)) {
+    return "Rule-based fallback (AI rate-limited): stop-loss closed this trade with a " + pnlSummary + "; compare similar trades before considering any risk-setting change.";
+  }
+  return "Rule-based fallback (AI rate-limited): trade closed (" + (reason || "unknown reason") + ") with a " + pnlSummary + "; review comparable trades before drawing conclusions.";
+}
+
 function isServiceRoleJwt(token: string): boolean {
   const parts = token.split(".");
   if (parts.length !== 3) return false;
@@ -109,7 +124,16 @@ export const Route = createFileRoute("/api/public/council-lessons-batch")({
             }),
             signal: AbortSignal.timeout(20_000)
           });
-          if (!upstream.ok) return Response.json({ error: "ai_provider_error", status: upstream.status }, { status: 502 });
+          if (!upstream.ok) {
+            if (upstream.status === 429) {
+              const results = trades.map((rawTrade) => {
+                const trade = rawTrade as { source_trade_id: string; pnl_pct: number; close_reason: string };
+                return { source_trade_id: trade.source_trade_id, lesson: rateLimitFallback(trade) };
+              });
+              return Response.json({ results, fallback: "rate_limited_rule_based" });
+            }
+            return Response.json({ error: "ai_provider_error", status: upstream.status }, { status: 502 });
+          }
           const data = await upstream.json() as { choices?: { message?: { content?: string | null } }[] };
           const raw = data.choices?.[0]?.message?.content;
           if (!raw) return Response.json({ error: "empty_ai_response" }, { status: 502 });
