@@ -23,6 +23,9 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Syntax-check archive synchronization and backup scripts
+        run: python -m py_compile scripts/archive/sync_live_tables_to_archive.py scripts/archive/backup_repository_to_supabase.py scripts/archive/build_repository_artifact.py
+
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
