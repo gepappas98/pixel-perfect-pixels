@@ -13,7 +13,7 @@ const ALLOWED = new Set([
   "cmc_listing_snapshots_latest", "cmc_macro_snapshots", "early_entry_variant_decisions",
   "early_entry_regime_observations", "event_flow_study_snapshots", "event_flow_paper_decisions",
   "event_flow_transmissions", "accumulation_shadow_observations", "dynamic_watchlist_snapshots",
-  "market_candles", "market_regime_telemetry", "market_sentiment_snapshots", "strategy_config", "research_live_sync_manifest",
+  "market_candles", "market_regime_telemetry", "market_sentiment_snapshots", "strategy_config", "research_live_sync_manifest", "research_source_inventory",
 ]);
 const PAGE_SIZE = 500;
 const MAX_DOCUMENTS = 20000;
