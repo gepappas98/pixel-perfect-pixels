@@ -36,15 +36,14 @@ jobs:
       - name: Build credential-free full tracked-source snapshot
         run: python scripts/archive/build_repository_artifact.py
 
-      - name: Mirror snapshot to the isolated IRL Supabase archive when credentials are configured
-        continue-on-error: true
+      - name: Mirror snapshot to the verified isolated IRL Supabase archive (required)
         env:
           ARCHIVE_SUPABASE_URL: ${{ secrets.ARCHIVE_SUPABASE_URL }}
           ARCHIVE_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.ARCHIVE_SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           if [ -z "$ARCHIVE_SUPABASE_URL" ] || [ -z "$ARCHIVE_SUPABASE_SERVICE_ROLE_KEY" ]; then
-            echo "::warning::Supabase mirror skipped: archive secrets are not configured. The independent source artifact will still be uploaded."
-            exit 0
+            echo "::error::Archive mirror requires ARCHIVE_SUPABASE_URL and ARCHIVE_SUPABASE_SERVICE_ROLE_KEY."
+            exit 1
           fi
           python -m pip install --disable-pip-version-check requests
           python scripts/archive/backup_repository_to_supabase.py
