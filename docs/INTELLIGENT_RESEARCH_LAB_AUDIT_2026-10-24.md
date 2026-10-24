@@ -14,7 +14,7 @@
 - Storage read-back SHA-256 matched; `readback_verified=true`.
 - The snapshot is retained as a recovery point. Do not reset production or delete source rows based solely on this export.
 
-**Scope limitation:** This is a table-data export, not a full PostgreSQL backup. It does not include routines/function bodies, triggers, policies/grants, extensions, cron job definitions, or view definitions. Public schema currently has 65 base tables and 3 views: `cmc_listing_research_observations`, `council_lessons_link_audit`, and `portfolio_summary`. Their source tables are included, but the view definitions are not part of the archive manifest.
+**Scope limitation:** This is a table-data export, not a full PostgreSQL backup. It does not include routines/function bodies, triggers, policies/grants, extensions, cron job definitions, or view definitions. The live database inventory is 65 public base tables, 3 views (`cmc_listing_research_observations`, `council_lessons_link_audit`, `portfolio_summary`), 66 public routines, 10 public triggers, 117 public RLS policies, 8 extensions, and 16 cron jobs (13 active). These object definitions are not part of the archive manifest. The views' source tables are included, but the view definitions are not.
 
 ## 2. Retention/deletion guard
 
@@ -23,6 +23,8 @@ The active cron job calls `cleanup_research_data(72,168,false)`. The database co
 - `allow_source_delete=false`
 
 The function returns before archival or DELETE statements when archive is disabled. Source deletion is therefore locked by the current flags. Keep both flags false until the archive and evidence-value review is complete. Do not enable retention deletion as part of this audit.
+
+The read-only call `get_research_archive_status(72,168)` currently reports **incomplete**: 138,601 eligible retention-source rows, 0 archived in `research_evidence`, 138,601 missing evidence keys. By source table: asset_news_events 948; asset_flow_snapshots 44,190; whale_flow_snapshots 6,524; asset_price_snapshots 44,186; whale_flow_transitions 2,578; event_flow_transmissions 30; asset_sentiment_snapshots 35,006; whale_flow_shock_followups 2,561; whale_flow_transition_context 2,578. This is the separate evidence/retention archive, not the 1.124M-row Storage snapshot. It indicates no qualifying retention sources have yet been captured into `research_evidence`; it does not mean the source rows are missing. Deletion remains disabled.
 
 ## 3. V3 benchmark — live database counts
 
@@ -101,7 +103,7 @@ Recommended retention priority:
 ## 8. Next actions (non-destructive)
 
 1. Merge/deploy the V3 pagination fix only after code review and validation.
-2. Export the missing database-object layer: views, functions/procedures, triggers, RLS policies/grants, extensions, cron jobs, Vault secret **names only** (never secret values), and Edge Function source/version/config metadata.
+2. Export the missing database-object layer: views, functions/procedures, triggers, RLS policies/grants, extensions, cron jobs, Vault secret **names only** (never secret values), and Edge Function source/version/config metadata. Keep the separate retention archive paused until the 138,601-source evidence gap is addressed and verified.
 3. Investigate the 29 orphaned Council lesson links; do not fabricate or rewrite source trade IDs.
 4. Populate `research_findings` only with reproducible, timestamp-safe findings linked to existing cases/evidence.
 5. Continue MTF parity audit across live scorer, variant resolver, V3 benchmark, and shadow diagnostics. Keep V2/legacy excluded from active V3 analysis.
