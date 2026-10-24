@@ -61,11 +61,11 @@ The per-strategy RPC `observatory_v3_benchmark_summary()` is a **raw variant-row
 
 `src/components/trading/V3StatisticalValidationPanel.tsx` requested only `.range(0,4999)`. The live query currently has 5,620 resolved win/loss rows, so the panel could silently omit at least 620 rows. This biases raw metrics and symbol-cycle deduplication, because the query sorts oldest-first.
 
-A proposed code-only fix is in branch `fix/v3-benchmark-pagination-2026-10-24`: fetch stable, ordered pages of 1,000 until the final partial page. It is not merged or deployed. Review and run project validation before merging; Lovable production deployment remains a separate explicit step.
+The code-only fix is in branch `fix/v3-benchmark-pagination-2026-10-24`: fetch stable, ordered pages of 1,000 until the final partial page. It remains unmerged and not deployed to Lovable. The PR-head app, Edge Function, and SQL regression workflows later passed; see Section 16.
 
 ## 5. Historical paper-trade ledger (USD PnL)
 
-Current `trades` table: **465 rows**, 442 closed and 23 open.
+At the initial audit snapshot, `trades` had **465 rows**, 442 closed and 23 open. See Section 16 for the later live refresh.
 
 | Entry source | Closed | Closed PnL sum (USD) | Open |
 |---|---:|---:|---:|
@@ -78,9 +78,9 @@ These are current source-table totals, not the older dashboard snapshots. Preser
 
 ## 6. Intelligent Research Lab enrichment status
 
-- `research_evidence`: 13,037 rows after the V4 backfill (8,815 before backfill)
-- `research_cases`: 12,999 rows: 2,250 V2, 6,062 V3, 4,222 V4 and 465 paper-trade cases marked Unknown
-- `research_findings`: 0 rows — candidate/validated findings layer is not yet populated
+- `research_evidence`: 13,038 rows at the 2026-10-24 06:45 UTC live refresh (13,037 in the previous audit snapshot; 8,815 before V4 backfill)
+- `research_cases`: 13,000 rows at the 2026-10-24 06:45 UTC live refresh. The prior snapshot had 12,999 (2,250 V2, 6,062 V3, 4,222 V4 and 465 paper-trade cases marked Unknown); current exact cohort split requires refresh.
+- `research_findings`: 10 candidate-only findings; confidence 0, not live scorer inputs (verified again at 2026-10-24 06:45 UTC)
 - `council_lessons`: 471 rows
 - Council lesson links: 442 linked; 29 orphaned source trade IDs; 0 missing source_trade_id values.
 - `cmc_listing_research_observations` view: 28,000 observations across 1,050 assets; 24,810 have a 24h forward label and 16,722 have a 72h label. These are derived labels for retrospective research, not entry-time features.
@@ -165,3 +165,14 @@ As of the latest read-only check at 2026-10-24 06:20 UTC, `get_research_archive_
 The 29 orphaned `council_lessons.source_trade_id` UUIDs were searched across all currently accessible `research_archive_documents.payload` content, including the archived Council lesson batches and trade/entry-context reconciliation batches. The exact UUIDs occur in the archived Council lesson snapshots, but **none of the 29 UUIDs was found in the archived trade-record payloads**. This means the existing archive can preserve the lessons themselves but does not currently provide a deterministic source-trade row for those IDs.
 
 No fuzzy re-linking was performed based on symbol/time alone, because multiple same-symbol lessons can refer to different trades. Keep all 29 orphan references intact and report them as unresolved lineage until a stronger source is found.
+
+
+## 16. Live refresh and PR validation (2026-10-24 06:45 UTC)
+
+Read-only recheck against canonical production returned:
+- `research_findings`: 10 rows; `research_evidence`: 13,038 rows; `research_cases`: 13,000 rows; `council_lessons`: 471 rows.
+- `trades`: 466 rows total, 443 closed and 23 open. A grouped query over `coalesce(net_pnl,pnl,0)` returned -$1,478.07 across closed paper trades; this is an aggregate fallback calculation, not a reconciled strategy-source ledger, and must not replace the source-specific sums in Section 5.
+- PR #146 head commit `732beb3acb4239760619567bdd778c3a6f932944` has successful latest associated checks: app build/type-check/unit tests (run 40070094618), Edge Function/MTF regression tests (run 40070094633), and archive SQL migration regression tests (run 40070094708).
+- PR #146 remains Draft, unmerged, and not deployed to Lovable. No production trade/history rows were modified during this refresh.
+
+The count drift is expected in a live database. Treat the counts above as a new as-of snapshot; do not interpret differences as deletion or loss without matching primary keys and timestamps. The strategy-level `trades` grouping is still pending a safe query because the prior source grouping was not successfully retrieved.
