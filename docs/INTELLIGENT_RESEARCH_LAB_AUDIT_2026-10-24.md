@@ -100,11 +100,35 @@ Recommended retention priority:
 - `signal-combiner` imports the shared `_shared/mtf-scoring.ts` function and uses 4h/1h/1d technical inputs. The shadow diagnostic path intentionally retains separate legacy council multipliers/thresholds; compare those diagnostic semantics to the active scorer before using them as benchmark evidence.
 - The deployed `council-lessons` function is currently `verify_jwt=false` while using a service-role client and writing lessons/trade flags. Review invocation/authentication boundaries before expanding automated use; this audit did not change the function.
 
+
+## 9. Research findings populated (candidate-only, additive)
+
+The previously empty `research_findings` table now contains **10 candidate findings** added without modifying trade, signal, benchmark, evidence, or case rows:
+- 9 per-strategy V3 raw win/loss summaries, totaling 5,620 case references and 5,620 evidence references across those findings.
+- 1 data-lineage finding, linked to all 6,062 V3 research cases and their 6,062 evidence references.
+
+Every candidate has `confidence=0`, status `candidate`, and explicit limitations. These are not validated strategy edges and are not live scorer inputs. The summaries use win/loss outcomes only; expired/open observations are excluded from win rate and mean PnL.
+
+## 10. Critical cohort provenance mismatch
+
+A read-only join of `strategy_variant_signals` to `research_cases` found:
+- `v2|` rows: 65,735 raw rows in the source table, dated 2026-10-14 15:30 UTC to 2026-10-19 16:50 UTC.
+- `v3|` rows: 6,062, dated 2026-10-19 17:00 UTC to 2026-10-22 22:30 UTC; **0** carry the `policy=v4_live_aligned` tag.
+- `v4|` rows: 4,209, dated 2026-10-22 22:40 UTC to 2026-10-24 06:00 UTC; all 4,209 carry `policy=v4_live_aligned`.
+- All 6,062 `v3|` rows are currently represented as `research_cases.cohort='V3'` and `scorer_version='v3-mtf-aligned'`, despite the code comment explicitly describing historical V3 rows as pre-policy methodology.
+- The current `research_cases` population has 2,250 V2 cases, 6,062 V3 cases and 465 paper-trade cases marked Unknown. **There are no V4 research cases**, because the current cohort constraint/model does not include V4.
+
+This is a material provenance/coverage discrepancy. The shared MTF score helper is used in current live/variant scoring, but that alone does not prove the historical V3 rows were generated with the same policy. Keep V3 results provisional; do not relabel historical records or mix V3 and V4. The added candidate finding `research-data-lineage-v3-v4-20261024` records this discrepancy with source case/evidence links.
+
+## 11. Council orphan audit
+
+The 29 orphaned Council lesson links date from 2026-10-12 through 2026-10-14; all are older than the 442 currently linked lessons (2026-10-15 through 2026-10-24). Examples point to UUIDs absent from the current `trades` table. This suggests historical source-trade lineage may have been removed or the identifiers were created from a different source, but it is not sufficient to distinguish those possibilities. No IDs were rewritten and no lessons deleted. Next step is to search archived snapshot rows for the exact UUIDs and recover links only where a deterministic match exists.
+
 ## 8. Next actions (non-destructive)
 
 1. Merge/deploy the V3 pagination fix only after code review and validation.
 2. Export the missing database-object layer: views, functions/procedures, triggers, RLS policies/grants, extensions, cron jobs, Vault secret **names only** (never secret values), and Edge Function source/version/config metadata. Keep the separate retention archive paused until the 138,601-source evidence gap is addressed and verified.
-3. Investigate the 29 orphaned Council lesson links; do not fabricate or rewrite source trade IDs.
+3. Investigate the 29 orphaned Council lesson links against the archived trade snapshot; do not fabricate or rewrite source trade IDs.
 4. Populate `research_findings` only with reproducible, timestamp-safe findings linked to existing cases/evidence.
-5. Continue MTF parity audit across live scorer, variant resolver, V3 benchmark, and shadow diagnostics. Keep V2/legacy excluded from active V3 analysis.
+5. Reconcile the V3 scorer-version label with source-code provenance and extend the research-case model to represent V4 before importing V4 cases. Continue MTF parity audit across live scorer, variant generation, V3 benchmark, and shadow diagnostics. Keep V2/legacy excluded from active V3 analysis.
 6. Keep source-deletion flags disabled until a full recoverability test and explicit retention review are complete.
