@@ -132,3 +132,29 @@ The 29 orphaned Council lesson links date from 2026-10-12 through 2026-10-14; al
 4. Keep the 10 `research_findings` as candidate-only until independent deduplicated symbol-cycle and out-of-sample checks validate them; all currently have confidence 0 and are not live scorer inputs.
 5. Reconcile the V3 scorer-version label with source-code provenance; V4 cohort support/backfill is now complete. Continue MTF parity audit across live scorer, variant generation, V3 benchmark, and shadow diagnostics. Keep V2/legacy excluded from active V3 analysis.
 6. Keep source-deletion flags disabled until a full recoverability test and explicit retention review are complete.
+
+
+## 12. Independent repository backup verified
+
+The merged full-repository backup workflow completed successfully on `main` at commit `d5fa398335466d0357722ea1ff65260228fc0517` (run [40060991374](https://github.com/gepappas98/pixel-perfect-pixels/actions/runs/40060991374)). The workflow log explicitly records:
+- `tracked_file_count: 408`
+- `all_tracked_files_included: true`
+- full source archive, manifest and verification summary retained as an artifact
+- isolated IRL archive mirror step completed successfully
+
+Artifact: [full-repository-source-backup-d5fa398335466d0357722ea1ff65260228fc0517](https://github.com/gepappas98/pixel-perfect-pixels/actions/runs/40060991374). ZIP size 703,629 bytes; artifact digest `sha256:62f458d1bb75d0a3866a1332e93fbb0bff5908f1a55b8413bd6a6d443a641976`; retention expiry 2027-01-22. This verifies the code snapshot for that commit, not a PostgreSQL schema/data backup and not the later unmerged PR branch.
+
+## 13. Production object inventory (2026-10-24)
+
+A read-only catalog query confirmed:
+- 65 public base tables, 3 views, 1,046 public columns
+- 241 constraints, 254 indexes
+- 66 public routines (signatures inventoried; routine bodies are not part of the table-data snapshot)
+- 10 non-internal triggers, 117 public RLS policies
+- 8 extensions, 16 cron jobs (13 active)
+
+This is the inventory of the missing object layer that must accompany a recoverable database backup. The earlier table-data manifest does not contain these definitions. A metadata-only archive write was attempted but was rejected by the connected archive SQL tool; therefore **do not claim the object bundle has been durably exported yet**. Next step is to export a versioned metadata document through the verified repository archive workflow or a supported archive API, verify its read-back hash, and include view/trigger/policy/constraint/index definitions. Routine source bodies and cron command text must remain excluded or separately reviewed for embedded secrets.
+
+## 14. Retention gap refreshed
+
+As of the latest read-only check at 2026-10-24 06:20 UTC, `get_research_archive_status(72,168)` reports `status=incomplete`, `eligible_sources=138,953`, `archived_sources=0`, `missing_sources=138,953`, `archive_enabled=false`, and `delete_enabled=false`. The per-table source counts drift as new rows arrive, so use this latest snapshot rather than the earlier 138,601 count. No archive/delete flags were changed.
