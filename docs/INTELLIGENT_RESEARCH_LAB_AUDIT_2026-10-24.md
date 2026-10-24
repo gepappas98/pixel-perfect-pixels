@@ -158,3 +158,10 @@ This is the inventory of the missing object layer that must accompany a recovera
 ## 14. Retention gap refreshed
 
 As of the latest read-only check at 2026-10-24 06:20 UTC, `get_research_archive_status(72,168)` reports `status=incomplete`, `eligible_sources=138,953`, `archived_sources=0`, `missing_sources=138,953`, `archive_enabled=false`, and `delete_enabled=false`. The per-table source counts drift as new rows arrive, so use this latest snapshot rather than the earlier 138,601 count. No archive/delete flags were changed.
+
+
+## 15. Council orphan cross-check against archive
+
+The 29 orphaned `council_lessons.source_trade_id` UUIDs were searched across all currently accessible `research_archive_documents.payload` content, including the archived Council lesson batches and trade/entry-context reconciliation batches. The exact UUIDs occur in the archived Council lesson snapshots, but **none of the 29 UUIDs was found in the archived trade-record payloads**. This means the existing archive can preserve the lessons themselves but does not currently provide a deterministic source-trade row for those IDs.
+
+No fuzzy re-linking was performed based on symbol/time alone, because multiple same-symbol lessons can refer to different trades. Keep all 29 orphan references intact and report them as unresolved lineage until a stronger source is found.
