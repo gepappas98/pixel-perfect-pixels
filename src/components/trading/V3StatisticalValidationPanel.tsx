@@ -33,16 +33,30 @@ type ReadQuery = { select: (columns: string) => ReadQuery; like: (column: string
 
 async function readV3Rows(): Promise<V3OutcomeRow[]> {
   const readOnlyDb = supabase as unknown as { from: (table: string) => ReadQuery };
-  const { data, error } = await readOnlyDb
-    .from("strategy_variant_signals")
-    .select("id,strategy_name,symbol,created_at,resolved_at,outcome,pnl_pct,source_fingerprint")
-    .like("source_fingerprint", "v3|%")
-    .in("outcome", ["win", "loss"])
-    .not("resolved_at", "is", null)
-    .order("created_at", { ascending: true })
-    .range(0, 4999);
-  if (error) throw error;
-  return (data ?? []) as unknown as V3OutcomeRow[];
+  const pageSize = 1000;
+  const rows: V3OutcomeRow[] = [];
+
+  // PostgREST applies a server-side row cap. Fetch every page so the statistical
+  // validation never silently drops older/newer resolved rows when the cohort
+  // grows beyond 5,000 observations.
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await readOnlyDb
+      .from("strategy_variant_signals")
+      .select("id,strategy_name,symbol,created_at,resolved_at,outcome,pnl_pct,source_fingerprint")
+      .like("source_fingerprint", "v3|%")
+      .in("outcome", ["win", "loss"])
+      .not("resolved_at", "is", null)
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, from + pageSize - 1);
+
+    if (error) throw error;
+    const page = (data ?? []) as unknown as V3OutcomeRow[];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+
+  return rows;
 }
 
 export default function V3StatisticalValidationPanel() {
