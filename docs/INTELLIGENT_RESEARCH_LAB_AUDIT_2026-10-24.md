@@ -109,16 +109,16 @@ The previously empty `research_findings` table now contains **10 candidate findi
 
 Every candidate has `confidence=0`, status `candidate`, and explicit limitations. These are not validated strategy edges and are not live scorer inputs. The summaries use win/loss outcomes only; expired/open observations are excluded from win rate and mean PnL.
 
-## 10. Critical cohort provenance mismatch
+## 10. Critical cohort policy-scope and provenance caveat
 
 A read-only join of `strategy_variant_signals` to `research_cases` found:
 - `v2|` rows: 65,735 raw rows in the source table, dated 2026-10-14 15:30 UTC to 2026-10-19 16:50 UTC.
 - `v3|` rows: 6,062, dated 2026-10-19 17:00 UTC to 2026-10-22 22:30 UTC; **0** carry the `policy=v4_live_aligned` tag.
 - `v4|` rows: 4,209, dated 2026-10-22 22:40 UTC to 2026-10-24 06:00 UTC; all 4,209 carry `policy=v4_live_aligned`.
-- All 6,062 `v3|` rows are currently represented as `research_cases.cohort='V3'` and `scorer_version='v3-mtf-aligned'`, despite the code comment explicitly describing historical V3 rows as pre-policy methodology.
+- All 6,062 `v3|` rows are represented as `research_cases.cohort='V3'` and `scorer_version='v3-mtf-aligned'`. The current source code explicitly describes V3 as pre-V4 policy methodology, while V4 rows carry `policy=v4_live_aligned`. The V3 label should be treated as MTF-component designation only; it does not prove full policy parity with V4.
 - The current `research_cases` population originally lacked V4. An additive production migration `add_v4_research_cohort_and_backfill_cases` has now extended the cohort constraint and backfilled V4 separately. Verification after backfill: **4,222 V4 cases**, all linked to entry-context evidence; 1,422 are open and 2,800 resolved. The cohort counts are now 2,250 V2, 6,062 V3, 4,222 V4, and 465 paper-trade cases marked Unknown.
 
-This is a material provenance/coverage discrepancy. The shared MTF score helper is used in current live/variant scoring, but that alone does not prove the historical V3 rows were generated with the same policy. Keep V3 results provisional; do not relabel historical records or mix V3 and V4. The candidate finding `research-data-lineage-v3-v4-20261024` records the remaining V3 provenance discrepancy and the completed V4 backfill with source case/evidence links.
+This is a material policy-scope/provenance caveat, not proof that the MTF formula itself differs. The shared MTF helper is used in current live/variant scoring, but current metadata does not prove that every historical V3 row used the same MTF implementation, gate, booster and thresholds. Keep V3 results provisional; do not relabel historical records or mix V3 and V4. The candidate finding `research-data-lineage-v3-v4-20261024` records the remaining V3 provenance discrepancy and the completed V4 backfill with source case/evidence links.
 
 ## 11. Council orphan audit
 
