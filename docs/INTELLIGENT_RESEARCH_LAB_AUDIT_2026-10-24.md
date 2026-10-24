@@ -65,14 +65,16 @@ The code-only fix is in branch `fix/v3-benchmark-pagination-2026-10-24`: fetch s
 
 ## 5. Historical paper-trade ledger (USD PnL)
 
-At the initial audit snapshot, `trades` had **465 rows**, 442 closed and 23 open. See Section 16 for the later live refresh.
+The initial audit snapshot had 465 rows, 442 closed and 23 open. The source-level ledger was refreshed at 2026-10-24 06:45 UTC; current counts and PnL are shown below.
 
 | Entry source | Closed | Closed PnL sum (USD) | Open |
 |---|---:|---:|---:|
 | cmc_paper | 294 | -1,038.36 | 13 |
 | early_entry_regime | 26 | +210.90 | 0 |
-| event_flow_paper | 48 | -429.65 | 9 |
+| event_flow_paper | 49 | -463.10 | 9 |
 | standard | 74 | -187.51 | 1 |
+
+As of 2026-10-24 06:45 UTC, these source groups sum to 443 closed trades and 23 open trades (466 total), with closed PnL -$1,478.07. These are source-specific sums using `coalesce(net_pnl,pnl,0)`; the source-level totals supersede the earlier snapshot above.
 
 These are current source-table totals, not the older dashboard snapshots. Preserve row-level history; do not replace prior reported snapshots without recording their as-of time and calculation semantics.
 
@@ -175,4 +177,4 @@ Read-only recheck against canonical production returned:
 - PR #146 head commit `732beb3acb4239760619567bdd778c3a6f932944` has successful latest associated checks: app build/type-check/unit tests (run 40070094618), Edge Function/MTF regression tests (run 40070094633), and archive SQL migration regression tests (run 40070094708).
 - PR #146 remains Draft, unmerged, and not deployed to Lovable. No production trade/history rows were modified during this refresh.
 
-The count drift is expected in a live database. Treat the counts above as a new as-of snapshot; do not interpret differences as deletion or loss without matching primary keys and timestamps. The strategy-level `trades` grouping is still pending a safe query because the prior source grouping was not successfully retrieved.
+The count drift is expected in a live database. Treat the counts above as a new as-of snapshot; do not interpret differences as deletion or loss without matching primary keys and timestamps. The strategy-level `trades` grouping is now reconciled by `entry_source`; see Section 5 for current per-source totals.
